@@ -72,11 +72,11 @@ else
 		CC = /usr/bin/clang
 		AR = /usr/bin/libtool
 		INDIGO_CUDA =
-		ifeq ($(findstring arm64e,$(shell file $(CC))),arm64e)
-			MAC_ARCH = -arch x86_64 -arch arm64
-		else
+#		ifeq ($(findstring arm64e,$(shell file $(CC))),arm64e)
+#			MAC_ARCH = -arch x86_64 -arch arm64
+#		else
 			MAC_ARCH = -arch x86_64
-		endif
+#		endif
 		CFLAGS = $(DEBUG_BUILD) $(MAC_ARCH) -mmacosx-version-min=10.10 -fPIC -O3 -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_mac_drivers -I$(BUILD_INCLUDE) -std=gnu11 -DINDIGO_MACOS -Duint=unsigned
 		CXXFLAGS = $(DEBUG_BUILD) $(MAC_ARCH) -mmacosx-version-min=10.10 -fPIC -O3 -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_mac_drivers -I$(BUILD_INCLUDE) -std=gnu++11 -DINDIGO_MACOS
 		MFLAGS = $(DEBUG_BUILD) $(MAC_ARCH) -mmacosx-version-min=10.10 -fPIC -fno-common -O3 -fobjc-arc -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_mac_drivers -I$(BUILD_INCLUDE) -std=gnu11 -DINDIGO_MACOS -Wobjc-property-no-attribute
@@ -84,6 +84,7 @@ else
 		ARFLAGS = -static -o
 		SOEXT = dylib
 		INSTALL_ROOT = $(INDIGO_ROOT)/install
+#		INSTALL_ROOT = /
 	endif
 	ifeq ($(OS_DETECTED),Linux)
 		ifeq ($(ARCH_DETECTED),armv6l)

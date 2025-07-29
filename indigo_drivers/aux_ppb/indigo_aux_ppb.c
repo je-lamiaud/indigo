@@ -405,7 +405,7 @@ static void aux_connection_handler(indigo_device *device) {
 							AUX_DSLR_POWER_PROPERTY->hidden = false;
 							AUX_POWER_OUTLET_PROPERTY->count = 2;
 							break;
-						} else if (!strcmp(response, "SPB")) {
+						} else if (!strncmp(response, "SPB", 3)) {
 							INDIGO_DRIVER_LOG(DRIVER_NAME, "Connected to SPB %s", DEVICE_PORT_ITEM->text.value);
 							PRIVATE_DATA->is_advance = false;
 							PRIVATE_DATA->is_micro = false;

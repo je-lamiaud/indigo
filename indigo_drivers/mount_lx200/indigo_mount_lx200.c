@@ -131,7 +131,11 @@
 #define NYX_LEVELER_PROPERTY				(PRIVATE_DATA->nyx_leveler_property)
 #define NYX_LEVELER_PICH_ITEM				(NYX_LEVELER_PROPERTY->items+0)
 #define NYX_LEVELER_ROLL_ITEM				(NYX_LEVELER_PROPERTY->items+1)
-#define NYX_LEVELER_COMPASS_ITEM		(NYX_LEVELER_PROPERTY->items+2)
+#define NYX_LEVELER_COMPASS_ITEM			(NYX_LEVELER_PROPERTY->items+2)
+
+#define NYX_MERIDIAN_FLIP_PROPERTY		(PRIVATE_DATA->nyx_meridian_flip_property)
+#define NYX_MERIDIAN_FLIP_ENABLED_ITEM	(NYX_MERIDIAN_FLIP_PROPERTY->items+0)
+#define NYX_MERIDIAN_FLIP_DISABLED_ITEM	(NYX_MERIDIAN_FLIP_PROPERTY->items+1)
 
 #define NYX_WIFI_AP_PROPERTY_NAME				"X_NYX_WIFI_AP"
 #define NYX_WIFI_AP_SSID_ITEM_NAME			"AP_SSID"
@@ -148,6 +152,10 @@
 #define NYX_LEVELER_PICH_ITEM_NAME			"PICH"
 #define NYX_LEVELER_ROLL_ITEM_NAME			"ROLL"
 #define NYX_LEVELER_COMPASS_ITEM_NAME		"COMPASS"
+
+#define NYX_MERIDIAN_FLIP_PROPERTY_NAME	"X_NYX_MERIDIAN_FLIP"
+#define NYX_MERIDIAN_FLIP_ENABLED_ITEM_NAME	"ENABLED"
+#define NYX_MERIDIAN_FLIP_DISABLED_ITEM_NAME	"DISABLED"
 
 #define AUX_WEATHER_PROPERTY            (PRIVATE_DATA->weather_property)
 #define AUX_WEATHER_TEMPERATURE_ITEM    (AUX_WEATHER_PROPERTY->items + 0)
@@ -196,6 +204,7 @@ typedef struct {
 	indigo_property *nyx_wifi_cl_property;
 	indigo_property *nyx_wifi_reset_property;
 	indigo_property *nyx_leveler_property;
+	indigo_property *nyx_meridian_flip_property;
 	indigo_property *weather_property;
 	indigo_property *info_property;
 	indigo_property *power_outlet_property;
@@ -846,6 +855,21 @@ static bool meade_slew(indigo_device *device, double ra, double dec) {
 	if (!meade_command(device, command, response, 1, 0) || *response != '1') {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "%s failed with response: %s", command, response);
 		return false;
+	}
+	if (MOUNT_TYPE_NYX_ITEM->sw.value && NYX_MERIDIAN_FLIP_DISABLED_ITEM->sw.value) {
+		// Check target meridian side
+		if (!meade_command(device, ":MD#", response, sizeof(response), 0) || *response == '2') {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, ":MD# failed");
+			return false;
+		}
+		if ((MOUNT_SIDE_OF_PIER_EAST_ITEM->sw.value && *response == '1')
+		    || (MOUNT_SIDE_OF_PIER_WEST_ITEM->sw.value && *response == '0')) {
+			indigo_send_message(device, "Meridian flip is disabled, but target is on the opposite side of the pier");
+			return false;
+		} else if (!MOUNT_SIDE_OF_PIER_EAST_ITEM->sw.value && !MOUNT_SIDE_OF_PIER_WEST_ITEM->sw.value) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Unknown side of pier with meridian flip disabled");
+			return false;
+		}
 	}
 	if (!meade_command(device, ":MS#", response, 1, 100000) || *response != '0') {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, ":MS# failed with response: %s", response);
@@ -1753,6 +1777,7 @@ static void meade_init_nyx_mount(indigo_device *device) {
 	NYX_WIFI_CL_PROPERTY->hidden = false;
 	NYX_WIFI_RESET_PROPERTY->hidden = false;
 	NYX_LEVELER_PROPERTY->hidden = false;
+	NYX_MERIDIAN_FLIP_PROPERTY->hidden = false;
 	strcpy(MOUNT_INFO_VENDOR_ITEM->text.value, "PegasusAstro");
 	if (meade_command(device, ":GVN#", response, sizeof(response), 0)) {
 		INDIGO_DRIVER_LOG(DRIVER_NAME, "Firmware: %s", response);
@@ -1801,6 +1826,7 @@ static void meade_init_nyx_mount(indigo_device *device) {
 	indigo_define_property(device, NYX_WIFI_CL_PROPERTY, NULL);
 	indigo_define_property(device, NYX_WIFI_RESET_PROPERTY, NULL);
 	indigo_define_property(device, NYX_LEVELER_PROPERTY, NULL);
+	indigo_define_property(device, NYX_MERIDIAN_FLIP_PROPERTY, NULL);
 	meade_update_site_items(device);
 	meade_update_mount_state(device);
 }
@@ -1888,6 +1914,7 @@ static void meade_init_mount(indigo_device *device) {
 	NYX_WIFI_CL_PROPERTY->hidden = true;
 	NYX_WIFI_RESET_PROPERTY->hidden = true;
 	NYX_LEVELER_PROPERTY->hidden = true;
+	NYX_MERIDIAN_FLIP_PROPERTY->hidden = true;
 	memset(PRIVATE_DATA->prev_state, 0, sizeof(PRIVATE_DATA->prev_state));
 	if (MOUNT_TYPE_MEADE_ITEM->sw.value) {
 		meade_init_meade_mount(device);
@@ -2736,6 +2763,7 @@ static void mount_connect_callback(indigo_device *device) {
 		indigo_delete_property(device, NYX_WIFI_CL_PROPERTY, NULL);
 		indigo_delete_property(device, NYX_WIFI_RESET_PROPERTY, NULL);
 		indigo_delete_property(device, NYX_LEVELER_PROPERTY, NULL);
+		indigo_delete_property(device, NYX_MERIDIAN_FLIP_PROPERTY, NULL);
 		MOUNT_TYPE_PROPERTY->perm = INDIGO_RW_PERM;
 		indigo_delete_property(device, MOUNT_TYPE_PROPERTY, NULL);
 		indigo_define_property(device, MOUNT_TYPE_PROPERTY, NULL);
@@ -3143,6 +3171,13 @@ static indigo_result mount_attach(indigo_device *device) {
 		indigo_init_number_item(NYX_LEVELER_PICH_ITEM, NYX_LEVELER_PICH_ITEM_NAME, "Pitch [°]", 0, 360, 0, 0);
 		indigo_init_number_item(NYX_LEVELER_ROLL_ITEM, NYX_LEVELER_ROLL_ITEM_NAME, "Roll [°]", 0, 360, 0, 0);
 		indigo_init_number_item(NYX_LEVELER_COMPASS_ITEM, NYX_LEVELER_COMPASS_ITEM_NAME, "Compas [°]", 0, 360, 0, 0);
+		// ---------------------------------------------------------------------------- MERIDIAN_FLIP
+		NYX_MERIDIAN_FLIP_PROPERTY = indigo_init_switch_property(NULL, device->name, NYX_MERIDIAN_FLIP_PROPERTY_NAME, MOUNT_ADVANCED_GROUP, "Meridian flip", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
+		if (NYX_MERIDIAN_FLIP_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_switch_item(NYX_MERIDIAN_FLIP_ENABLED_ITEM, NYX_MERIDIAN_FLIP_ENABLED_ITEM_NAME, "Enabled", true);
+		indigo_init_switch_item(NYX_MERIDIAN_FLIP_DISABLED_ITEM, NYX_MERIDIAN_FLIP_DISABLED_ITEM_NAME, "Disabled", false);
+		NYX_MERIDIAN_FLIP_PROPERTY->hidden = true;
 		// --------------------------------------------------------------------------------
 		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->port_mutex, NULL);
@@ -3163,6 +3198,9 @@ static indigo_result mount_enumerate_properties(indigo_device *device, indigo_cl
 		indigo_define_matching_property(NYX_WIFI_RESET_PROPERTY);
 		if (indigo_property_match(NYX_LEVELER_PROPERTY, property))
 			indigo_define_property(device, NYX_WIFI_RESET_PROPERTY, NULL);
+		if (indigo_property_match(NYX_MERIDIAN_FLIP_PROPERTY, property)) {
+			indigo_define_property(device, NYX_MERIDIAN_FLIP_PROPERTY, NULL);
+		}
 	}
 	return indigo_mount_enumerate_properties(device, NULL, NULL);
 }
@@ -3390,11 +3428,19 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		indigo_update_property(device, NYX_WIFI_RESET_PROPERTY, NULL);
 		indigo_set_timer(device, 0, nyx_reset_callback, NULL);
 		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(NYX_MERIDIAN_FLIP_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- NYX_MERIDIAN_FLIP
+		indigo_property_copy_values(NYX_MERIDIAN_FLIP_PROPERTY, property, false);
+		indigo_update_property(device, NYX_MERIDIAN_FLIP_PROPERTY, NULL);
+		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, FORCE_FLIP_PROPERTY);
 			indigo_save_property(device, NULL, MOUNT_TYPE_PROPERTY);
+			if (MOUNT_TYPE_NYX_ITEM->sw.value) {
+				indigo_save_property(device, NULL, NYX_MERIDIAN_FLIP_PROPERTY);
+			}
 		}
 		// --------------------------------------------------------------------------------
 	}
@@ -3414,6 +3460,7 @@ static indigo_result mount_detach(indigo_device *device) {
 	indigo_release_property(NYX_WIFI_CL_PROPERTY);
 	indigo_release_property(NYX_WIFI_RESET_PROPERTY);
 	indigo_release_property(NYX_LEVELER_PROPERTY);
+	indigo_release_property(NYX_MERIDIAN_FLIP_PROPERTY);
 	indigo_release_property(MOUNT_TYPE_PROPERTY);
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_mount_detach(device);

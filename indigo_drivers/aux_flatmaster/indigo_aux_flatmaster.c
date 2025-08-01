@@ -23,7 +23,7 @@
  \file indigo_aux_flatmaster.c
  */
 
-#define DRIVER_VERSION 0x0006
+#define DRIVER_VERSION 0x0007
 #define DRIVER_NAME "indigo_aux_flatmaster"
 
 #include <stdlib.h>
@@ -184,7 +184,9 @@ static void aux_connection_handler(indigo_device *device) {
 	} else {
 		indigo_delete_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
 		indigo_delete_property(device, AUX_LIGHT_SWITCH_PROPERTY, NULL);
-		// turn off flatmaster at disconnect
+		// set intensity to 0 and turn off flatmaster at disconnect
+		sprintf(command, "L:%d", CALCULATE_INTENSITY(0));
+		flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response));
 		flatmaster_command(PRIVATE_DATA->handle, "E:0", response, sizeof(response));
 		close(PRIVATE_DATA->handle);
 		PRIVATE_DATA->handle = 0;
@@ -197,20 +199,20 @@ static void aux_connection_handler(indigo_device *device) {
 
 static void aux_intensity_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	char command[16],	response[16];
-	/* bring 220-20 in range of 0-100 */
+	char command[16], response[16];
 	sprintf(command, "L:%d", CALCULATE_INTENSITY(AUX_LIGHT_INTENSITY_ITEM->number.value));
-	if (flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response)))
+	if (flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response))) {
 		AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_OK_STATE;
-	else
+	} else {
 		AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
 	indigo_update_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
 	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 }
 
 static void aux_switch_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	char command[16],	response[16];
+	char command[16], response[16];
 	bool success;
 	/* Switch the panel */
 	sprintf(command, "E:%c", SWITCH_VALUE(AUX_LIGHT_SWITCH_ON_ITEM));
@@ -220,11 +222,13 @@ static void aux_switch_handler(indigo_device *device) {
 		sprintf(command, "L:%d", CALCULATE_INTENSITY(AUX_LIGHT_INTENSITY_ITEM->number.value));
 		success = flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response));
 	}
-	if (success)
+	if (success) {
 		AUX_LIGHT_SWITCH_PROPERTY->state = INDIGO_OK_STATE;
-	else
+	} else {
 		AUX_LIGHT_SWITCH_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
 	indigo_update_property(device, AUX_LIGHT_SWITCH_PROPERTY, NULL);
+
 	if (AUX_LIGHT_INTENSITY_PROPERTY->state == INDIGO_BUSY_STATE) {
 		if (success)
 			AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_OK_STATE;

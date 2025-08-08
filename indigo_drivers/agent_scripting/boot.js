@@ -120,7 +120,7 @@ function indigo_on_delete_property(device_name, property_name, message) {
 	var properties = indigo_devices[device_name];
 	if (properties == null) {
 		return;
-	} else if (property_name == null) {
+	} else if (property_name == null || property_name == "") {
 		for (property_name in properties) {
 			var property = properties[property_name];
 			property.message = message;

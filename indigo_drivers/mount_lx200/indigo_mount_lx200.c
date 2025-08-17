@@ -129,7 +129,7 @@
 #define NYX_WIFI_RESET_ITEM					(NYX_WIFI_RESET_PROPERTY->items+0)
 
 #define NYX_LEVELER_PROPERTY				(PRIVATE_DATA->nyx_leveler_property)
-#define NYX_LEVELER_PICH_ITEM				(NYX_LEVELER_PROPERTY->items+0)
+#define NYX_LEVELER_PITCH_ITEM			(NYX_LEVELER_PROPERTY->items+0)
 #define NYX_LEVELER_ROLL_ITEM				(NYX_LEVELER_PROPERTY->items+1)
 #define NYX_LEVELER_COMPASS_ITEM			(NYX_LEVELER_PROPERTY->items+2)
 
@@ -137,21 +137,21 @@
 #define NYX_MERIDIAN_FLIP_ENABLED_ITEM	(NYX_MERIDIAN_FLIP_PROPERTY->items+0)
 #define NYX_MERIDIAN_FLIP_DISABLED_ITEM	(NYX_MERIDIAN_FLIP_PROPERTY->items+1)
 
-#define NYX_WIFI_AP_PROPERTY_NAME				"X_NYX_WIFI_AP"
-#define NYX_WIFI_AP_SSID_ITEM_NAME			"AP_SSID"
+#define NYX_WIFI_AP_PROPERTY_NAME		"X_NYX_WIFI_AP"
+#define NYX_WIFI_AP_SSID_ITEM_NAME		"AP_SSID"
 #define NYX_WIFI_AP_PASSWORD_ITEM_NAME	"AP_PASSWORD"
 
-#define NYX_WIFI_CL_PROPERTY_NAME				"X_NYX_WIFI_CL"
-#define NYX_WIFI_CL_SSID_ITEM_NAME			"CL_SSID"
+#define NYX_WIFI_CL_PROPERTY_NAME		"X_NYX_WIFI_CL"
+#define NYX_WIFI_CL_SSID_ITEM_NAME		"CL_SSID"
 #define NYX_WIFI_CL_PASSWORD_ITEM_NAME	"CL_PASSWORD"
 
-#define NYX_WIFI_RESET_PROPERTY_NAME		"X_NYX_WIFI_RESET"
-#define NYX_WIFI_RESET_ITEM_NAME				"RESET"
+#define NYX_WIFI_RESET_PROPERTY_NAME	"X_NYX_WIFI_RESET"
+#define NYX_WIFI_RESET_ITEM_NAME			"RESET"
 
-#define NYX_LEVELER_PROPERTY_NAME				"X_NYX_LEVELER"
-#define NYX_LEVELER_PICH_ITEM_NAME			"PICH"
-#define NYX_LEVELER_ROLL_ITEM_NAME			"ROLL"
-#define NYX_LEVELER_COMPASS_ITEM_NAME		"COMPASS"
+#define NYX_LEVELER_PROPERTY_NAME		"X_NYX_LEVELER"
+#define NYX_LEVELER_PITCH_ITEM_NAME		"PITCH"
+#define NYX_LEVELER_ROLL_ITEM_NAME		"ROLL"
+#define NYX_LEVELER_COMPASS_ITEM_NAME	"COMPASS"
 
 #define NYX_MERIDIAN_FLIP_PROPERTY_NAME	"X_NYX_MERIDIAN_FLIP"
 #define NYX_MERIDIAN_FLIP_ENABLED_ITEM_NAME	"ENABLED"
@@ -1812,7 +1812,7 @@ static void meade_init_nyx_mount(indigo_device *device) {
 
 	if (meade_command(device, ":GX9D#", response, sizeof(response), 0) && (separator = strchr(response, ':'))) {
 		*separator++ = 0;
-		NYX_LEVELER_PICH_ITEM->number.value = atof(response);
+		NYX_LEVELER_PITCH_ITEM->number.value = atof(response);
 		NYX_LEVELER_ROLL_ITEM->number.value = atof(separator);
 	}
 	if (meade_command(device, ":GX9E#", response, sizeof(response), 0)) {
@@ -2476,8 +2476,8 @@ static void meade_update_nyx_state(indigo_device *device) {
 		*colon++ = 0;
 		double pitch = atof(response);
 		double roll = atof(colon);
-		if (NYX_LEVELER_PICH_ITEM->number.value != pitch || NYX_LEVELER_ROLL_ITEM->number.value != roll) {
-			NYX_LEVELER_PICH_ITEM->number.value = pitch;
+		if (NYX_LEVELER_PITCH_ITEM->number.value != pitch || NYX_LEVELER_ROLL_ITEM->number.value != roll) {
+			NYX_LEVELER_PITCH_ITEM->number.value = pitch;
 			NYX_LEVELER_ROLL_ITEM->number.value = roll;
 			leveler_change = true;
 		}
@@ -3168,7 +3168,7 @@ static indigo_result mount_attach(indigo_device *device) {
 		if (NYX_LEVELER_PROPERTY == NULL)
 			return INDIGO_FAILED;
 		NYX_LEVELER_PROPERTY->hidden = true;
-		indigo_init_number_item(NYX_LEVELER_PICH_ITEM, NYX_LEVELER_PICH_ITEM_NAME, "Pitch [°]", 0, 360, 0, 0);
+		indigo_init_number_item(NYX_LEVELER_PITCH_ITEM, NYX_LEVELER_PITCH_ITEM_NAME, "Pitch [°]", 0, 360, 0, 0);
 		indigo_init_number_item(NYX_LEVELER_ROLL_ITEM, NYX_LEVELER_ROLL_ITEM_NAME, "Roll [°]", 0, 360, 0, 0);
 		indigo_init_number_item(NYX_LEVELER_COMPASS_ITEM, NYX_LEVELER_COMPASS_ITEM_NAME, "Compas [°]", 0, 360, 0, 0);
 		// ---------------------------------------------------------------------------- MERIDIAN_FLIP

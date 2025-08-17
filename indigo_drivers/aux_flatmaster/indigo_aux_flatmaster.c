@@ -1,4 +1,5 @@
 // Copyright (c) 2019 Rumen G. Bogdanovski
+// Copyright (c) 2025 J-E. Lamiaud
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -50,6 +51,26 @@
 #define AUX_LIGHT_INTENSITY_PROPERTY                          (PRIVATE_DATA->light_intensity_property)
 #define AUX_LIGHT_INTENSITY_ITEM                              (AUX_LIGHT_INTENSITY_PROPERTY->items+0)
 
+#define AUX_LIGHT_ADD_PRESET_PROPERTY                         (PRIVATE_DATA->light_add_preset_property)
+#define AUX_LIGHT_ADD_PRESET_NAME_ITEM                        (AUX_LIGHT_ADD_PRESET_PROPERTY->items+0)
+
+#define AUX_LIGHT_PRESETS_INTENSITY_PROPERTY                  (PRIVATE_DATA->light_presets_intensity_property)
+
+#define AUX_LIGHT_REMOVE_PRESET_PROPERTY                      (PRIVATE_DATA->light_remove_preset_property)
+#define AUX_LIGHT_REMOVE_PRESET_NAME_ITEM                     (AUX_LIGHT_REMOVE_PRESET_PROPERTY->items+0)
+
+#define AUX_LIGHT_PRESETS_PROPERTY                            (PRIVATE_DATA->light_presets_property)
+
+#define AUX_LIGHT_ADD_PRESET_PROPERTY_NAME                    "X_FLM_ADD_PRESET"
+#define AUX_LIGHT_ADD_PRESET_NAME_ITEM_NAME                   "NAME"
+
+#define AUX_LIGHT_PRESETS_INTENSITY_PROPERTY_NAME             "X_FLM_PRESETS_INTENSITY"
+
+#define AUX_LIGHT_REMOVE_PRESET_PROPERTY_NAME                 "X_FLM_REMOVE_PRESET"
+#define AUX_LIGHT_REMOVE_PRESET_NAME_ITEM_NAME                "NAME"
+
+#define AUX_LIGHT_PRESETS_PROPERTY_NAME                       "X_FLM_PRESETS"
+
 /* bring 220-20 in range of 0-100 */
 #define CALCULATE_INTENSITY(intensity)                        ((int)floor((100 - (int)(intensity) - 0) * (220 - 20) / (100 - 0) + 20))
 
@@ -60,6 +81,10 @@ typedef struct {
 	int handle;
 	indigo_property *light_switch_property;
 	indigo_property *light_intensity_property;
+	indigo_property *light_add_preset_property;
+	indigo_property *light_presets_intensity_property;
+	indigo_property *light_remove_preset_property;
+	indigo_property *light_presets_property;
 	pthread_mutex_t mutex;
 } flatmaster_private_data;
 
@@ -73,6 +98,17 @@ static bool flatmaster_command(int handle, char *command, char *response, int re
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "%d -> %s (%s)", handle, response, result ? "OK" : strerror(errno));
 	}
 	return result;
+}
+
+static int index_of_preset(indigo_device *device, const char *name) {
+	int i;
+	for (i = 0; i < AUX_LIGHT_PRESETS_PROPERTY->count; i++) {
+		if (!strncasecmp((AUX_LIGHT_PRESETS_PROPERTY->items+i)->label, name, INDIGO_NAME_SIZE))
+			return i;
+	}
+
+	// Not found
+	return -1;
 }
 
 static void aux_intensity_handler(indigo_device *device);
@@ -99,6 +135,24 @@ static indigo_result aux_attach(indigo_device *device) {
 			return INDIGO_FAILED;
 		indigo_init_number_item(AUX_LIGHT_INTENSITY_ITEM, AUX_LIGHT_INTENSITY_ITEM_NAME, "Intensity (%)", 0, 100, 1, 50);
 		strcpy(AUX_LIGHT_INTENSITY_ITEM->number.format, "%g");
+		// -------------------------------------------------------------------------------- AUX_LIGHT_ADD_PRESET
+		AUX_LIGHT_ADD_PRESET_PROPERTY = indigo_init_text_property(NULL, device->name, AUX_LIGHT_ADD_PRESET_PROPERTY_NAME, AUX_MAIN_GROUP, "Add a preset", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
+		if (AUX_LIGHT_ADD_PRESET_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_text_item(AUX_LIGHT_ADD_PRESET_NAME_ITEM, AUX_LIGHT_ADD_PRESET_NAME_ITEM_NAME, "Name", "");
+		// -------------------------------------------------------------------------------- AUX_LIGHT_PRESETS_INTENSITY
+		AUX_LIGHT_PRESETS_INTENSITY_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY_NAME, AUX_MAIN_GROUP, "Presets intensity", INDIGO_OK_STATE, INDIGO_RW_PERM, 0);
+		if (AUX_LIGHT_PRESETS_INTENSITY_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		// -------------------------------------------------------------------------------- AUX_LIGHT_REMOVE_PRESET
+		AUX_LIGHT_REMOVE_PRESET_PROPERTY = indigo_init_text_property(NULL, device->name, AUX_LIGHT_REMOVE_PRESET_PROPERTY_NAME, AUX_MAIN_GROUP, "Remove a preset", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
+		if (AUX_LIGHT_REMOVE_PRESET_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_text_item(AUX_LIGHT_REMOVE_PRESET_NAME_ITEM, AUX_LIGHT_REMOVE_PRESET_NAME_ITEM_NAME, "Name", "");
+		// -------------------------------------------------------------------------------- AUX_LIGHT_PRESETS
+		AUX_LIGHT_PRESETS_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_LIGHT_PRESETS_PROPERTY_NAME, AUX_MAIN_GROUP, "Presets", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 0);
+		if (AUX_LIGHT_PRESETS_PROPERTY == NULL)
+			return INDIGO_FAILED;
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
@@ -124,6 +178,10 @@ static indigo_result aux_attach(indigo_device *device) {
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
+		indigo_define_matching_property(AUX_LIGHT_ADD_PRESET_PROPERTY);
+		indigo_define_matching_property(AUX_LIGHT_PRESETS_INTENSITY_PROPERTY);
+		indigo_define_matching_property(AUX_LIGHT_REMOVE_PRESET_PROPERTY);
+		indigo_define_matching_property(AUX_LIGHT_PRESETS_PROPERTY);
 		indigo_define_matching_property(AUX_LIGHT_INTENSITY_PROPERTY);
 		indigo_define_matching_property(AUX_LIGHT_SWITCH_PROPERTY);
 	}
@@ -151,11 +209,9 @@ static void aux_connection_handler(indigo_device *device) {
 			if (flatmaster_command(PRIVATE_DATA->handle, "V", response, sizeof(response))) {
 				snprintf(INFO_DEVICE_FW_REVISION_ITEM->text.value, INDIGO_VALUE_SIZE, "%s", response);
 				indigo_update_property(device, INFO_PROPERTY, NULL);
-
 			}
 
 			AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_OK_STATE;
-			indigo_define_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
 
 			/* Switch the panel according to the property state */
 			sprintf(command, "E:%c", SWITCH_VALUE(AUX_LIGHT_SWITCH_ON_ITEM));
@@ -163,7 +219,6 @@ static void aux_connection_handler(indigo_device *device) {
 				AUX_LIGHT_SWITCH_PROPERTY->state = INDIGO_OK_STATE;
 			else
 				AUX_LIGHT_SWITCH_PROPERTY->state = INDIGO_ALERT_STATE;
-			indigo_define_property(device, AUX_LIGHT_SWITCH_PROPERTY, NULL);
 
 			/* If, On, set the intensity according to the property */
 			if (AUX_LIGHT_SWITCH_ON_ITEM->sw.value) {
@@ -184,12 +239,18 @@ static void aux_connection_handler(indigo_device *device) {
 			}
 
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+
+			aux_enumerate_properties(device, NULL, NULL);
 		} else {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to connect to %s", DEVICE_PORT_ITEM->text.value);
 			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 			indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		}
 	} else {
+		indigo_delete_property(device, AUX_LIGHT_ADD_PRESET_PROPERTY, NULL);
+		indigo_delete_property(device, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, NULL);
+		indigo_delete_property(device, AUX_LIGHT_REMOVE_PRESET_PROPERTY, NULL);
+		indigo_delete_property(device, AUX_LIGHT_PRESETS_PROPERTY, NULL);
 		indigo_delete_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
 		indigo_delete_property(device, AUX_LIGHT_SWITCH_PROPERTY, NULL);
 		// set intensity to 0 and turn off flatmaster at disconnect
@@ -277,6 +338,17 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 		indigo_property_copy_values(AUX_LIGHT_INTENSITY_PROPERTY, property, false);
 		AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
+		/* Deselect current preset, if any */
+		bool needsUpdate = false;
+		for (int i = 0; i < AUX_LIGHT_PRESETS_PROPERTY->count; i++) {
+			if ((AUX_LIGHT_PRESETS_PROPERTY->items+i)->sw.value) {
+				indigo_set_switch(AUX_LIGHT_PRESETS_PROPERTY, AUX_LIGHT_PRESETS_PROPERTY->items+i, false);
+				needsUpdate = true;
+			}
+		}
+		if (needsUpdate) {
+			indigo_update_property(device, AUX_LIGHT_PRESETS_PROPERTY, NULL);
+		}
 		/* Switch on if needed (it will also apply the intensity) */
 		if (AUX_LIGHT_SWITCH_OFF_ITEM->sw.value) {
 			indigo_set_switch(AUX_LIGHT_SWITCH_PROPERTY, AUX_LIGHT_SWITCH_ON_ITEM, true);
@@ -288,11 +360,113 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 			/* Already switched on, update the intensity */
 			indigo_set_timer(device, 0.0, aux_intensity_handler, NULL);
 		return INDIGO_OK;
+		// -------------------------------------------------------------------------------- AUX_LIGHT_ADD_PRESET
+	} else if (indigo_property_match_changeable(AUX_LIGHT_ADD_PRESET_PROPERTY, property)) {
+		char name[INDIGO_NAME_SIZE];
+
+		indigo_property_copy_values(AUX_LIGHT_ADD_PRESET_PROPERTY, property, false);
+		if (index_of_preset(device, AUX_LIGHT_ADD_PRESET_NAME_ITEM->text.value) < 0) {
+			indigo_delete_property(device, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, NULL);
+			indigo_delete_property(device, AUX_LIGHT_PRESETS_PROPERTY, NULL);
+			AUX_LIGHT_PRESETS_INTENSITY_PROPERTY = indigo_resize_property(AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->count + 1);
+			snprintf(name, INDIGO_NAME_SIZE, "X_FLM_PRESET_INTENSITY_%d", AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->count);
+			indigo_init_number_item(AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->items+AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->count-1,
+											name, AUX_LIGHT_ADD_PRESET_NAME_ITEM->text.value,
+											0, 100, 1, AUX_LIGHT_INTENSITY_ITEM->number.value);
+			AUX_LIGHT_PRESETS_PROPERTY = indigo_resize_property(AUX_LIGHT_PRESETS_PROPERTY, AUX_LIGHT_PRESETS_PROPERTY->count + 1);
+			snprintf(name, INDIGO_NAME_SIZE, "X_FLM_PRESET_%d", AUX_LIGHT_PRESETS_PROPERTY->count);
+			indigo_init_switch_item(AUX_LIGHT_PRESETS_PROPERTY->items+AUX_LIGHT_PRESETS_PROPERTY->count-1, name, AUX_LIGHT_ADD_PRESET_NAME_ITEM->text.value, false);
+			indigo_define_property(device, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, NULL);
+			indigo_define_property(device, AUX_LIGHT_PRESETS_PROPERTY, NULL);
+
+			AUX_LIGHT_ADD_PRESET_PROPERTY->state = INDIGO_OK_STATE;
+		} else {
+			AUX_LIGHT_ADD_PRESET_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+		indigo_update_property(device, AUX_LIGHT_ADD_PRESET_PROPERTY, NULL);
+
+		// -------------------------------------------------------------------------------- AUX_LIGHT_PRESETS_INTENSITY
+	} else if (indigo_property_match_changeable(AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, property)) {
+		indigo_property_copy_values(AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, property, false);
+		AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, NULL);
+
+		// -------------------------------------------------------------------------------- AUX_LIGHT_REMOVE_PRESET
+	} else if (indigo_property_match_changeable(AUX_LIGHT_REMOVE_PRESET_PROPERTY, property)) {
+		int preset_index;
+		indigo_property_copy_values(AUX_LIGHT_REMOVE_PRESET_PROPERTY, property, false);
+		preset_index = index_of_preset(device, AUX_LIGHT_REMOVE_PRESET_NAME_ITEM->text.value);
+		if (preset_index >= 0) {
+			indigo_delete_property(device, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, NULL);
+			indigo_delete_property(device, AUX_LIGHT_PRESETS_PROPERTY, NULL);
+			// bring down all items above
+			for ( int i = preset_index; i < AUX_LIGHT_PRESETS_PROPERTY->count - 1; i++) {
+				indigo_init_number_item(AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->items+i,
+				                        (AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->items+i+1)->name,
+											   (AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->items+i+1)->label,
+											   0, 100, 1,
+										      (AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->items+i+1)->number.value);
+				indigo_init_switch_item(AUX_LIGHT_PRESETS_PROPERTY->items+i,
+				                        (AUX_LIGHT_PRESETS_PROPERTY->items+i+1)->name,
+											   (AUX_LIGHT_PRESETS_PROPERTY->items+i+1)->label,
+											   (AUX_LIGHT_PRESETS_PROPERTY->items+i+1)->sw.value);
+			}
+			AUX_LIGHT_PRESETS_INTENSITY_PROPERTY = indigo_resize_property(AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->count - 1);
+			AUX_LIGHT_PRESETS_PROPERTY = indigo_resize_property(AUX_LIGHT_PRESETS_PROPERTY, AUX_LIGHT_PRESETS_PROPERTY->count - 1);
+
+			indigo_define_property(device, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, NULL);
+			indigo_define_property(device, AUX_LIGHT_PRESETS_PROPERTY, NULL);
+
+			AUX_LIGHT_REMOVE_PRESET_PROPERTY->state = INDIGO_OK_STATE;
+		} else {
+			AUX_LIGHT_REMOVE_PRESET_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+		indigo_update_property(device, AUX_LIGHT_REMOVE_PRESET_PROPERTY, NULL);
+
+		// -------------------------------------------------------------------------------- AUX_LIGHT_PRESETS
+	} else if (indigo_property_match_changeable(AUX_LIGHT_PRESETS_PROPERTY, property)) {
+		indigo_property_copy_values(AUX_LIGHT_PRESETS_PROPERTY, property, false);
+		int i;
+		for (i = 0; i < AUX_LIGHT_PRESETS_PROPERTY->count; i++) {
+			if ((AUX_LIGHT_PRESETS_PROPERTY->items+i)->sw.value) {
+				AUX_LIGHT_INTENSITY_ITEM->number.value = (AUX_LIGHT_PRESETS_INTENSITY_PROPERTY->items+i)->number.value;
+				AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_BUSY_STATE;
+				indigo_update_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
+				if (AUX_LIGHT_SWITCH_OFF_ITEM->sw.value) {
+					indigo_set_switch(AUX_LIGHT_SWITCH_PROPERTY, AUX_LIGHT_SWITCH_ON_ITEM, true);
+					AUX_LIGHT_SWITCH_PROPERTY->state = INDIGO_BUSY_STATE;
+					indigo_update_property(device, AUX_LIGHT_SWITCH_PROPERTY, NULL);
+					indigo_set_timer(device, 0.0, aux_switch_handler, NULL);
+				} else {
+					indigo_set_timer(device, 0.0, aux_intensity_handler, NULL);
+				}
+				break;
+			}
+		}
+		AUX_LIGHT_PRESETS_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, AUX_LIGHT_PRESETS_PROPERTY, NULL);
+
 		// -------------------------------------------------------------------------------- CONFIG
 	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, AUX_LIGHT_INTENSITY_PROPERTY);
 			indigo_save_property(device, NULL, AUX_LIGHT_SWITCH_PROPERTY);
+			// Store presets creation in the config (it will recreate them with null intensities)
+			char presetName[INDIGO_NAME_SIZE];
+			indigo_copy_name(presetName, AUX_LIGHT_ADD_PRESET_NAME_ITEM->text.value);  // Save previous value
+			for (int i = 0; i < AUX_LIGHT_PRESETS_PROPERTY->count; i++) {
+				indigo_copy_name(AUX_LIGHT_ADD_PRESET_NAME_ITEM->text.value,
+					              (AUX_LIGHT_PRESETS_PROPERTY->items+i)->label);
+				indigo_save_property(device, NULL, AUX_LIGHT_ADD_PRESET_PROPERTY);
+			}
+			indigo_copy_name(AUX_LIGHT_ADD_PRESET_NAME_ITEM->text.value, presetName);  // Restore value
+			// Now that presets are ensured to be recreated, we can save their intensities
+			indigo_save_property(device, NULL, AUX_LIGHT_PRESETS_INTENSITY_PROPERTY);
+		} else if (indigo_switch_match(CONFIG_LOAD_ITEM, property)) {
+			// Remove existing presets, if any, before loading the configuration
+			indigo_resize_property(AUX_LIGHT_PRESETS_INTENSITY_PROPERTY, 0);
+			indigo_resize_property(AUX_LIGHT_PRESETS_PROPERTY, 0);
+			// It is now safe to load
 		}
 	}
 	return indigo_aux_change_property(device, client, property);
@@ -306,6 +480,10 @@ static indigo_result aux_detach(indigo_device *device) {
 	}
 	indigo_release_property(AUX_LIGHT_INTENSITY_PROPERTY);
 	indigo_release_property(AUX_LIGHT_SWITCH_PROPERTY);
+	indigo_release_property(AUX_LIGHT_ADD_PRESET_PROPERTY);
+	indigo_release_property(AUX_LIGHT_PRESETS_INTENSITY_PROPERTY);
+	indigo_release_property(AUX_LIGHT_REMOVE_PRESET_PROPERTY);
+	indigo_release_property(AUX_LIGHT_PRESETS_PROPERTY);
 	pthread_mutex_destroy(&PRIVATE_DATA->mutex);
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_aux_detach(device);

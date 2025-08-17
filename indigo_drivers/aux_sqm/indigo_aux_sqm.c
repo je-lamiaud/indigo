@@ -176,7 +176,7 @@ static indigo_result aux_attach(indigo_device *device) {
 	assert(PRIVATE_DATA != NULL);
 	if (indigo_aux_attach(device, DRIVER_NAME, DRIVER_VERSION, INDIGO_INTERFACE_AUX_SQM) == INDIGO_OK) {
 		// -------------------------------------------------------------------------------- INFO
-		AUX_INFO_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_INFO_PROPERTY_NAME, "Srnsor readings", "Sensor readings", INDIGO_OK_STATE, INDIGO_RO_PERM, 3);
+		AUX_INFO_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_INFO_PROPERTY_NAME, "Sensor readings", "Sensor readings", INDIGO_OK_STATE, INDIGO_RO_PERM, 3);
 		if (AUX_INFO_PROPERTY == NULL)
 			return INDIGO_FAILED;
 		indigo_init_number_item(X_AUX_SENSOR_FREQUENCY_ITEM, "X_AUX_SENSOR_FREQUENCY", "SQM sensor frequency [Hz]", 0, 1000000000, 0, 0);
@@ -204,12 +204,12 @@ static indigo_result aux_attach(indigo_device *device) {
 		}
 #endif
 #ifdef INDIGO_LINUX
-	if (DEVICE_PORTS_PROPERTY->count > 1) {
-		/* 0 is refresh button */
-		indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[1].name);
-	} else {
-		strcpy(DEVICE_PORT_ITEM->text.value, "/dev/ttyUSB0");
-	}
+		if (DEVICE_PORTS_PROPERTY->count > 1) {
+			/* 0 is refresh button */
+			indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[1].name);
+		} else {
+			strcpy(DEVICE_PORT_ITEM->text.value, "/dev/ttyUSB0");
+		}
 #endif
 		// --------------------------------------------------------------------------------
 		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;

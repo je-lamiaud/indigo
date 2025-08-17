@@ -173,6 +173,14 @@ static void aux_connection_handler(indigo_device *device) {
 					AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_ALERT_STATE;
 					indigo_update_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
 				}
+			} else if (AUX_LIGHT_SWITCH_OFF_ITEM->sw.value) {
+				/* Set the intensity to 0 for an off panel,
+				 * this will make pre an post V2 firmware behave the same */
+				sprintf(command, "L:%d", CALCULATE_INTENSITY(0));
+				if (!flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response))) {
+					AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_ALERT_STATE;
+					indigo_update_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
+				}
 			}
 
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
@@ -213,29 +221,34 @@ static void aux_intensity_handler(indigo_device *device) {
 static void aux_switch_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[16], response[16];
-	bool success;
 	/* Switch the panel */
 	sprintf(command, "E:%c", SWITCH_VALUE(AUX_LIGHT_SWITCH_ON_ITEM));
-	success = flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response));
-	if (AUX_LIGHT_SWITCH_ON_ITEM->sw.value && success) {
-		/* When switching on, restore (or set) the intensity */
-		sprintf(command, "L:%d", CALCULATE_INTENSITY(AUX_LIGHT_INTENSITY_ITEM->number.value));
-		success = flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response));
-	}
-	if (success) {
+	if (flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response))) {
 		AUX_LIGHT_SWITCH_PROPERTY->state = INDIGO_OK_STATE;
+		if (AUX_LIGHT_SWITCH_ON_ITEM->sw.value) {
+			/* When switching on, restore (or set) the intensity */
+			sprintf(command, "L:%d", CALCULATE_INTENSITY(AUX_LIGHT_INTENSITY_ITEM->number.value));
+			if (flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response))) {
+				AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_OK_STATE;
+			} else {
+				AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
+			indigo_update_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
+		} else if (AUX_LIGHT_SWITCH_OFF_ITEM->sw.value) {
+			/* When switching off, set the intensity to 0 (for pre V2 firmware) */
+			sprintf(command, "L:%d", CALCULATE_INTENSITY(0));
+			if (flatmaster_command(PRIVATE_DATA->handle, command, response, sizeof(response))) {
+				AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_OK_STATE;
+			} else {
+				AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
+			indigo_update_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
+		}
 	} else {
 		AUX_LIGHT_SWITCH_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	indigo_update_property(device, AUX_LIGHT_SWITCH_PROPERTY, NULL);
 
-	if (AUX_LIGHT_INTENSITY_PROPERTY->state == INDIGO_BUSY_STATE) {
-		if (success)
-			AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_OK_STATE;
-		else
-			AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_ALERT_STATE;
-		indigo_update_property(device, AUX_LIGHT_INTENSITY_PROPERTY, NULL);
-	}
 	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 }
 

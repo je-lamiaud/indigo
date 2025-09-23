@@ -94,6 +94,18 @@
 #define JOYSTICK_OPTIONS_SWAP_RA_ITEM									(JOYSTICK_OPTIONS_PROPERTY->items+1)
 #define JOYSTICK_OPTIONS_SWAP_DEC_ITEM								(JOYSTICK_OPTIONS_PROPERTY->items+2)
 
+#define JOYSTICK_AXES_THRESHOLD_PROPERTY_NAME					"X_JOYSTICK_AXES_THRESHOLD"
+#define JOYSTICK_AXES_GUIDE_THRESHOLD_ITEM_NAME					"GUIDE_THRESHOLD"
+#define JOYSTICK_AXES_CENTER_THRESHOLD_ITEM_NAME				"CENTERING_THRESHOLD"
+#define JOYSTICK_AXES_FIND_THRESHOLD_ITEM_NAME					"FIND_THRESHOLD"
+#define JOYSTICK_AXES_MAX_THRESHOLD_ITEM_NAME					"MAX_THRESHOLD"
+
+#define JOYSTICK_AXES_THRESHOLD_PROPERTY							(PRIVATE_DATA->joystick_axes_theshold_property)
+#define JOYSTICK_AXES_GUIDE_THRESHOLD_ITEM						(JOYSTICK_AXES_THRESHOLD_PROPERTY->items+0)
+#define JOYSTICK_AXES_CENTER_THRESHOLD_ITEM						(JOYSTICK_AXES_THRESHOLD_PROPERTY->items+1)
+#define JOYSTICK_AXES_FIND_THRESHOLD_ITEM							(JOYSTICK_AXES_THRESHOLD_PROPERTY->items+2)
+#define JOYSTICK_AXES_MAX_THRESHOLD_ITEM							(JOYSTICK_AXES_THRESHOLD_PROPERTY->items+3)
+
 #define MOUNT_PARK_PROPERTY														(PRIVATE_DATA->mount_park_property)
 #define MOUNT_PARK_PARKED_ITEM												(MOUNT_PARK_PROPERTY->items+0)
 #define MOUNT_PARK_UNPARKED_ITEM											(MOUNT_PARK_PROPERTY->items+1)
@@ -137,6 +149,7 @@ typedef struct {
 	indigo_property *joystick_axes_property;
 	indigo_property *joystick_mapping_property;
 	indigo_property *joystick_options_property;
+	indigo_property *joystick_axes_theshold_property;
 	indigo_property *mount_park_property;
 	indigo_property *mount_home_property;
 	indigo_property *mount_slew_rate_property;
@@ -204,13 +217,21 @@ static indigo_result aux_attach(indigo_device *device) {
 		indigo_init_number_item(JOYSTICK_MAPPING_RATE_MAX_ITEM, JOYSTICK_MAPPING_RATE_MAX_ITEM_NAME, "Max rate button", 0, PRIVATE_DATA->button_count, 1, 4);
 		indigo_init_number_item(JOYSTICK_MAPPING_FOCUS_IN_ITEM, JOYSTICK_MAPPING_FOCUS_IN_ITEM_NAME, "Focus in button", 0, PRIVATE_DATA->button_count, 1, 11);
 		indigo_init_number_item(JOYSTICK_MAPPING_FOCUS_OUT_ITEM, JOYSTICK_MAPPING_FOCUS_OUT_ITEM_NAME, "Focus out button", 0, PRIVATE_DATA->button_count, 1, 12);
-		// -------------------------------------------------------------------------------- MOUNT_PARK
+		// -------------------------------------------------------------------------------- JOYSTICK_OPTIONS
 		JOYSTICK_OPTIONS_PROPERTY = indigo_init_switch_property(NULL, device->name, JOYSTICK_OPTIONS_PROPERTY_NAME, JOYSTICK_MAIN_GROUP, "Options", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 3);
 		if (JOYSTICK_OPTIONS_PROPERTY == NULL)
 			return INDIGO_FAILED;
 		indigo_init_switch_item(JOYSTICK_OPTIONS_ANALOG_STICK_ITEM, JOYSTICK_OPTIONS_ANALOG_STICK_ITEM_NAME, "Use stick in analog mode", false);
 		indigo_init_switch_item(JOYSTICK_OPTIONS_SWAP_RA_ITEM, JOYSTICK_OPTIONS_SWAP_RA_ITEM_NAME, "Swap RA axis", false);
 		indigo_init_switch_item(JOYSTICK_OPTIONS_SWAP_DEC_ITEM, JOYSTICK_OPTIONS_SWAP_DEC_ITEM_NAME, "Swap Dec axis", false);
+		// -------------------------------------------------------------------------------- AXES_THRESHOLD
+		JOYSTICK_AXES_THRESHOLD_PROPERTY = indigo_init_number_property(NULL, device->name, JOYSTICK_AXES_THRESHOLD_PROPERTY_NAME, JOYSTICK_MAIN_GROUP, "Axes motion threshold", INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
+		if (JOYSTICK_AXES_THRESHOLD_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_number_item(JOYSTICK_AXES_GUIDE_THRESHOLD_ITEM, JOYSTICK_AXES_GUIDE_THRESHOLD_ITEM_NAME, "Guide motion threshold", 0, 100000, 1, 10000);
+		indigo_init_number_item(JOYSTICK_AXES_CENTER_THRESHOLD_ITEM, JOYSTICK_AXES_CENTER_THRESHOLD_ITEM_NAME, "Centering motion threshold", 0, 100000, 1, 32000);
+		indigo_init_number_item(JOYSTICK_AXES_FIND_THRESHOLD_ITEM, JOYSTICK_AXES_FIND_THRESHOLD_ITEM_NAME, "Find motion threshold", 0, 100000, 1, 60000);
+		indigo_init_number_item(JOYSTICK_AXES_MAX_THRESHOLD_ITEM, JOYSTICK_AXES_MAX_THRESHOLD_ITEM_NAME, "Max motion threshold", 0, 100000, 1, 65000);
 		// -------------------------------------------------------------------------------- MOUNT_PARK
 		MOUNT_PARK_PROPERTY = indigo_init_switch_property(NULL, device->name, MOUNT_PARK_PROPERTY_NAME, JOYSTICK_MAPPING_GROUP, "Park", INDIGO_OK_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 2);
 		if (MOUNT_PARK_PROPERTY == NULL)
@@ -273,6 +294,7 @@ static indigo_result aux_enumerate_properties(indigo_device *device, indigo_clie
 		indigo_define_matching_property(JOYSTICK_AXES_PROPERTY);
 		indigo_define_matching_property(JOYSTICK_MAPPING_PROPERTY);
 		indigo_define_matching_property(JOYSTICK_OPTIONS_PROPERTY);
+		indigo_define_matching_property(JOYSTICK_AXES_THRESHOLD_PROPERTY);
 		indigo_define_matching_property(MOUNT_PARK_PROPERTY);
 		indigo_define_matching_property(MOUNT_HOME_PROPERTY);
 		indigo_define_matching_property(MOUNT_SLEW_RATE_PROPERTY);
@@ -316,6 +338,7 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 				indigo_define_property(device, JOYSTICK_BUTTONS_PROPERTY, NULL);
 				indigo_define_property(device, JOYSTICK_MAPPING_PROPERTY, NULL);
 				indigo_define_property(device, JOYSTICK_OPTIONS_PROPERTY, NULL);
+				indigo_define_property(device, JOYSTICK_AXES_THRESHOLD_PROPERTY, NULL);
 				indigo_define_property(device, MOUNT_PARK_PROPERTY, NULL);
 				indigo_define_property(device, MOUNT_HOME_PROPERTY, NULL);
 				indigo_define_property(device, MOUNT_SLEW_RATE_PROPERTY, NULL);
@@ -335,6 +358,7 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 			indigo_delete_property(device, JOYSTICK_BUTTONS_PROPERTY, NULL);
 			indigo_delete_property(device, JOYSTICK_MAPPING_PROPERTY, NULL);
 			indigo_delete_property(device, JOYSTICK_OPTIONS_PROPERTY, NULL);
+			indigo_delete_property(device, JOYSTICK_AXES_THRESHOLD_PROPERTY, NULL);
 			indigo_delete_property(device, MOUNT_PARK_PROPERTY, NULL);
 			indigo_delete_property(device, MOUNT_HOME_PROPERTY, NULL);
 			indigo_delete_property(device, MOUNT_SLEW_RATE_PROPERTY, NULL);
@@ -355,11 +379,17 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 		indigo_property_copy_values(JOYSTICK_OPTIONS_PROPERTY, property, false);
 		JOYSTICK_OPTIONS_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, JOYSTICK_OPTIONS_PROPERTY, NULL);
+	} else if (indigo_property_match_changeable(JOYSTICK_AXES_THRESHOLD_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- JOYSTICK_AXES_THRESHOLD
+		indigo_property_copy_values(JOYSTICK_AXES_THRESHOLD_PROPERTY, property, false);
+		JOYSTICK_AXES_THRESHOLD_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, JOYSTICK_AXES_THRESHOLD_PROPERTY, NULL);
 	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, JOYSTICK_MAPPING_PROPERTY);
 			indigo_save_property(device, NULL, JOYSTICK_OPTIONS_PROPERTY);
+			indigo_save_property(device, NULL, JOYSTICK_AXES_THRESHOLD_PROPERTY);
 		}
 	}
 	return indigo_aux_change_property(device, client, property);
@@ -376,6 +406,7 @@ static indigo_result aux_detach(indigo_device *device) {
 	indigo_release_property(JOYSTICK_BUTTONS_PROPERTY);
 	indigo_release_property(JOYSTICK_MAPPING_PROPERTY);
 	indigo_release_property(JOYSTICK_OPTIONS_PROPERTY);
+	indigo_release_property(JOYSTICK_AXES_THRESHOLD_PROPERTY);
 	indigo_release_property(MOUNT_PARK_PROPERTY);
 	indigo_release_property(MOUNT_HOME_PROPERTY);
 	indigo_release_property(MOUNT_SLEW_RATE_PROPERTY);
@@ -419,16 +450,16 @@ static void event_axis(indigo_device *device, int axis, int value) {
 	indigo_update_property(device, JOYSTICK_AXES_PROPERTY, NULL);
 	axis++;
 	if (value > 0) {
-		if (value < 1000) value = 0;
-		else if (value < 32000) value = 1;
-		else if (value < 60000) value = 2;
-		else if (value < 65000) value = 3;
+		if (value < JOYSTICK_AXES_GUIDE_THRESHOLD_ITEM->number.value) value = 0;
+		else if (value < JOYSTICK_AXES_CENTER_THRESHOLD_ITEM->number.value) value = 1;
+		else if (value < JOYSTICK_AXES_FIND_THRESHOLD_ITEM->number.value) value = 2;
+		else if (value < JOYSTICK_AXES_MAX_THRESHOLD_ITEM->number.value) value = 3;
 		else value = 4;
 	} else {
-		if (value < -65000) value = -4;
-		else if (value < -60000) value = -3;
-		else if (value < -32000) value = -2;
-		else if (value < -1000) value = -1;
+		if (value < -JOYSTICK_AXES_MAX_THRESHOLD_ITEM->number.value) value = -4;
+		else if (value < -JOYSTICK_AXES_FIND_THRESHOLD_ITEM->number.value) value = -3;
+		else if (value < -JOYSTICK_AXES_CENTER_THRESHOLD_ITEM->number.value) value = -2;
+		else if (value < -JOYSTICK_AXES_GUIDE_THRESHOLD_ITEM->number.value) value = -1;
 		else value = 0;
 	}
 	if (JOYSTICK_MAPPING_MOTION_DEC_ITEM->number.value == axis) {

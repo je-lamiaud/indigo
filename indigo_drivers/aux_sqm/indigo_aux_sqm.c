@@ -48,11 +48,13 @@
 #define X_AUX_SENSOR_FREQUENCY_ITEM                     (AUX_INFO_PROPERTY->items + 0)
 #define X_AUX_SENSOR_COUNTS_ITEM                        (AUX_INFO_PROPERTY->items + 1)
 #define X_AUX_SENSOR_PERIOD_ITEM                        (AUX_INFO_PROPERTY->items + 2)
+#define X_AUX_SENSOR_TEMPERATURE_ITEM                   (AUX_INFO_PROPERTY->items + 3)
 
 #define AUX_WEATHER_PROPERTY                            (PRIVATE_DATA->weather_property)
 #define AUX_WEATHER_SKY_BRIGHTNESS_ITEM                 (AUX_WEATHER_PROPERTY->items + 0)
-#define AUX_WEATHER_SKY_TEMPERATURE_ITEM                (AUX_WEATHER_PROPERTY->items + 1)
-#define AUX_WEATHER_SKY_BORTLE_CLASS_ITEM               (AUX_WEATHER_PROPERTY->items + 2)
+#define AUX_WEATHER_SKY_BORTLE_CLASS_ITEM               (AUX_WEATHER_PROPERTY->items + 1)
+
+#define X_AUX_SENSOR_TEMPERATURE_ITEM_NAME       "X_AUX_SENSOR_TEMPERATURE"
 
 #define RESPONSE_LENGTH 120
 
@@ -116,7 +118,7 @@ static void aux_timer_callback(indigo_device *device) {
 			X_AUX_SENSOR_FREQUENCY_ITEM->number.value = indigo_atod(strtok_r(NULL, ",", &pnt));
 			X_AUX_SENSOR_COUNTS_ITEM->number.value = indigo_atod(strtok_r(NULL, ",", &pnt));
 			X_AUX_SENSOR_PERIOD_ITEM->number.value = indigo_atod(strtok_r(NULL, ",", &pnt));
-			AUX_WEATHER_SKY_TEMPERATURE_ITEM->number.value = indigo_atod(strtok_r(NULL, ",", &pnt));
+			X_AUX_SENSOR_TEMPERATURE_ITEM->number.value = indigo_atod(strtok_r(NULL, ",", &pnt));
 			AUX_INFO_PROPERTY->state = INDIGO_OK_STATE;
 			AUX_WEATHER_PROPERTY->state = INDIGO_OK_STATE;
 		}
@@ -176,7 +178,7 @@ static indigo_result aux_attach(indigo_device *device) {
 	assert(PRIVATE_DATA != NULL);
 	if (indigo_aux_attach(device, DRIVER_NAME, DRIVER_VERSION, INDIGO_INTERFACE_AUX_SQM) == INDIGO_OK) {
 		// -------------------------------------------------------------------------------- INFO
-		AUX_INFO_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_INFO_PROPERTY_NAME, "Sensor readings", "Sensor readings", INDIGO_OK_STATE, INDIGO_RO_PERM, 3);
+		AUX_INFO_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_INFO_PROPERTY_NAME, "Sensor readings", "Sensor readings", INDIGO_OK_STATE, INDIGO_RO_PERM, 4);
 		if (AUX_INFO_PROPERTY == NULL)
 			return INDIGO_FAILED;
 		indigo_init_number_item(X_AUX_SENSOR_FREQUENCY_ITEM, "X_AUX_SENSOR_FREQUENCY", "SQM sensor frequency [Hz]", 0, 1000000000, 0, 0);
@@ -184,13 +186,13 @@ static indigo_result aux_attach(indigo_device *device) {
 		indigo_init_number_item(X_AUX_SENSOR_COUNTS_ITEM, "X_AUX_SENSOR_COUNTS", "SQM sensor period [counts]", 0, 1000000000, 0, 0);
 		strcpy(X_AUX_SENSOR_COUNTS_ITEM->number.format, "%.0f");
 		indigo_init_number_item(X_AUX_SENSOR_PERIOD_ITEM, "X_AUX_SENSOR_PERIOD", "SQM sensor period [sec]", 0, 1000000000, 0, 0);
+		indigo_init_number_item(X_AUX_SENSOR_TEMPERATURE_ITEM, X_AUX_SENSOR_TEMPERATURE_ITEM_NAME, "SQM Sensor temperature [\u00B0C]", -100, 100, 0, 0);
 
 		// -------------------------------------------------------------------------------- WEATHER
-		AUX_WEATHER_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_WEATHER_PROPERTY_NAME, "Sky quality", "Sky quality", INDIGO_OK_STATE, INDIGO_RO_PERM, 3);
+		AUX_WEATHER_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_WEATHER_PROPERTY_NAME, "Sky quality", "Sky quality", INDIGO_OK_STATE, INDIGO_RO_PERM, 2);
 		if (AUX_WEATHER_PROPERTY == NULL)
 			return INDIGO_FAILED;
 		indigo_init_number_item(AUX_WEATHER_SKY_BRIGHTNESS_ITEM, AUX_WEATHER_SKY_BRIGHTNESS_ITEM_NAME, "Sky brightness [m/arcsec\u00B2]", -20, 30, 0, 0);
-		indigo_init_number_item(AUX_WEATHER_SKY_TEMPERATURE_ITEM, AUX_WEATHER_SKY_TEMPERATURE_ITEM_NAME, "Sensor temperature [\u00B0C]", -100, 100, 0, 0);
 		indigo_init_number_item(AUX_WEATHER_SKY_BORTLE_CLASS_ITEM, AUX_WEATHER_SKY_BORTLE_CLASS_ITEM_NAME, "Sky Bortle class", 1, 9, 0, 0);
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;

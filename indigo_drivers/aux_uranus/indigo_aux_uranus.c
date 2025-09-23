@@ -77,6 +77,10 @@ typedef struct {
 	indigo_timer *aux_timer_callback;
 	indigo_timer *gps_timer_callback;
 	bool start_measure;
+	int altitude;            // Altitude is provided by the MA command which is used by the weather driver
+	bool altitude_available; // The GPS driver reuses it if available, otherwise it uses the MA command
+	time_t gps_time;
+	int gps_timeout;
 	pthread_mutex_t mutex;
 } uranus_private_data;
 
@@ -168,6 +172,7 @@ static void aux_timer_callback(indigo_device *device) {
 		}
 		PRIVATE_DATA->start_measure = true;
 
+		PRIVATE_DATA->altitude_available = false;
 		if (uranus_command(device, "MA", response, RESPONSE_LENGTH)) {
 			char *tok = strtok_r(response, ":", &pnt);
 			if (tok == NULL || strncmp(tok, "MS_OK", 5) != 0) {
@@ -177,8 +182,9 @@ static void aux_timer_callback(indigo_device *device) {
 				AUX_WEATHER_HUMIDITY_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
 				AUX_WEATHER_DEWPOINT_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
 				AUX_WEATHER_PRESSURE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
-				indigo_atod(strtok_r(NULL, ":", &pnt));
-				indigo_atod(strtok_r(NULL, ":", &pnt));
+				strtok_r(NULL, ":", &pnt); // MSL pressure
+				PRIVATE_DATA->altitude = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+				PRIVATE_DATA->altitude_available = true;
 				AUX_WEATHER_SKY_TEMPERATURE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
 			}
 		} else {
@@ -234,6 +240,7 @@ static void aux_connection_handler(indigo_device *device) {
 		}
 	} else {
 		indigo_cancel_timer_sync(device, &PRIVATE_DATA->aux_timer_callback);
+		PRIVATE_DATA->altitude_available = false;
 		PRIVATE_DATA->device_count--;
 		if (PRIVATE_DATA->device_count == 0)
 			uranus_close(device);
@@ -272,7 +279,7 @@ static indigo_result aux_attach(indigo_device *device) {
 		indigo_init_number_item(AUX_CLOUD_CLEAR_THRESHOLD_ITEM, AUX_CLOUD_CLEAR_ITEM_NAME, "Clear (less than)", 0, 100, 0, 10);
 		indigo_init_number_item(AUX_CLOUD_CLOUDY_THRESHOLD_ITEM, AUX_CLOUD_CLOUDY_ITEM_NAME, "Cloudy (less than)", 0, 100, 0, 80);
 		// -------------------------------------------------------------------------------- AUX_CLOUD
-		AUX_CLOUD_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_CLOUD_PROPERTY_NAME, AUX_WEATHER_GROUP, "Cloud conditions", INDIGO_BUSY_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
+		AUX_CLOUD_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_CLOUD_PROPERTY_NAME, AUX_WEATHER_GROUP, "Cloud conditions", INDIGO_OK_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
 		if (AUX_CLOUD_PROPERTY == NULL)
 			return INDIGO_FAILED;
 		indigo_init_switch_item(AUX_CLOUD_CLEAR_ITEM, AUX_CLOUD_CLEAR_ITEM_NAME, "Clear", false);
@@ -366,93 +373,130 @@ static void gps_timer_callback(indigo_device *device) {
 	if (!IS_CONNECTED) {
 		return;
 	}
-	char response[RESPONSE_LENGTH] = { 0 }, *pnt;
 
-	// Get time and location
-	if (uranus_command(device, "GP", response, RESPONSE_LENGTH)) {
-		char *tok = strtok_r(response, ":", &pnt);
-		if (tok == NULL || strncmp(tok, "GP", 2) != 0) {
+	if (PRIVATE_DATA->gps_timeout <= 0) {
+		PRIVATE_DATA->gps_timeout = 9;
+
+		char response[RESPONSE_LENGTH] = { 0 }, *pnt;
+
+		// Get time and location
+		if (uranus_command(device, "GP", response, RESPONSE_LENGTH)) {
+			char *tok = strtok_r(response, ":", &pnt);
+			if (tok == NULL || strncmp(tok, "GP", 2) != 0) {
+				GPS_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
+				GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+				GPS_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
+				GPS_ADVANCED_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
+				indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
+			} else {
+				const char *fix = strtok_r(NULL, ":", &pnt);
+				if (!strncmp(fix, "0", 1)) {
+					if (GPS_STATUS_PROPERTY->state != INDIGO_OK_STATE
+						|| GPS_STATUS_NO_FIX_ITEM->light.value != INDIGO_ALERT_STATE) {
+						GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_ALERT_STATE;
+						GPS_STATUS_2D_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
+						GPS_STATUS_3D_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
+						GPS_STATUS_PROPERTY->state = INDIGO_OK_STATE;
+						indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
+					}
+					if (GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state != INDIGO_BUSY_STATE)
+						GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
+					if (GPS_UTC_TIME_PROPERTY->state != INDIGO_BUSY_STATE)
+						GPS_UTC_TIME_PROPERTY->state = INDIGO_BUSY_STATE;
+				} else if (!strncmp(fix, "2", 1)) {
+					if (GPS_STATUS_PROPERTY->state != INDIGO_OK_STATE
+						|| GPS_STATUS_2D_FIX_ITEM->light.value != INDIGO_BUSY_STATE) {
+						GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
+						GPS_STATUS_2D_FIX_ITEM->light.value = INDIGO_BUSY_STATE;
+						GPS_STATUS_3D_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
+						GPS_STATUS_PROPERTY->state = INDIGO_OK_STATE;
+						indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
+					}
+					if (GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state != INDIGO_BUSY_STATE)
+						GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
+					if (GPS_UTC_TIME_PROPERTY->state != INDIGO_BUSY_STATE)
+						GPS_UTC_TIME_PROPERTY->state = INDIGO_BUSY_STATE;
+				} else if (!strncmp(fix, "3", 1)) {
+					if (GPS_STATUS_PROPERTY->state != INDIGO_OK_STATE
+						|| GPS_STATUS_3D_FIX_ITEM->light.value != INDIGO_OK_STATE) {
+						GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
+						GPS_STATUS_2D_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
+						GPS_STATUS_3D_FIX_ITEM->light.value = INDIGO_OK_STATE;
+						GPS_STATUS_PROPERTY->state = INDIGO_OK_STATE;
+						indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
+					}
+					if (GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state != INDIGO_OK_STATE)
+						GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
+					if (GPS_UTC_TIME_PROPERTY->state != INDIGO_OK_STATE)
+						GPS_UTC_TIME_PROPERTY->state = INDIGO_OK_STATE;
+				} else {
+					GPS_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
+					GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+					GPS_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
+					GPS_ADVANCED_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
+					indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
+				}
+				struct tm utc;
+				PRIVATE_DATA->gps_time = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+				if (gmtime_r(&PRIVATE_DATA->gps_time, &utc) != NULL) {
+					sprintf(GPS_UTC_ITEM->text.value, "%04d-%02d-%02dT%02d:%02d:%02d",
+							utc.tm_year + 1900, utc.tm_mon, utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec);
+				} else {
+					sprintf(GPS_UTC_ITEM->text.value, "0000-00-00T00:00:00.00");
+					GPS_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
+				}
+				GPS_UTC_OFFEST_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
+				GPS_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
+				GPS_GEOGRAPHIC_COORDINATES_LONGITUDE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
+				GPS_ADVANCED_STATUS_SVS_IN_USE_ITEM->number.value = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+				GPS_ADVANCED_STATUS_PROPERTY->state = INDIGO_OK_STATE;
+			}
+		} else {
 			GPS_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
 			GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
 			GPS_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
 			GPS_ADVANCED_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
 			indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
-		} else {
-			const char *fix = strtok_r(NULL, ":", &pnt);
-			if (!strncmp(fix, "0", 1)) {
-				if (GPS_STATUS_PROPERTY->state != INDIGO_OK_STATE
-					 || GPS_STATUS_NO_FIX_ITEM->light.value != INDIGO_ALERT_STATE) {
-					GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_ALERT_STATE;
-					GPS_STATUS_2D_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
-					GPS_STATUS_3D_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
-					GPS_STATUS_PROPERTY->state = INDIGO_OK_STATE;
-					indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
-				}
-				if (GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state != INDIGO_BUSY_STATE)
-					GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
-				if (GPS_UTC_TIME_PROPERTY->state != INDIGO_BUSY_STATE)
-					GPS_UTC_TIME_PROPERTY->state = INDIGO_BUSY_STATE;
-			} else if (!strncmp(fix, "2", 1)) {
-				if (GPS_STATUS_PROPERTY->state != INDIGO_OK_STATE
-					 || GPS_STATUS_2D_FIX_ITEM->light.value != INDIGO_BUSY_STATE) {
-					GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
-					GPS_STATUS_2D_FIX_ITEM->light.value = INDIGO_BUSY_STATE;
-					GPS_STATUS_3D_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
-					GPS_STATUS_PROPERTY->state = INDIGO_OK_STATE;
-					indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
-				}
-				if (GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state != INDIGO_BUSY_STATE)
-					GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
-				if (GPS_UTC_TIME_PROPERTY->state != INDIGO_BUSY_STATE)
-					GPS_UTC_TIME_PROPERTY->state = INDIGO_BUSY_STATE;
-			} else if (!strncmp(fix, "3", 1)) {
-				if (GPS_STATUS_PROPERTY->state != INDIGO_OK_STATE
-					 || GPS_STATUS_3D_FIX_ITEM->light.value != INDIGO_OK_STATE) {
-					GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
-					GPS_STATUS_2D_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
-					GPS_STATUS_3D_FIX_ITEM->light.value = INDIGO_OK_STATE;
-					GPS_STATUS_PROPERTY->state = INDIGO_OK_STATE;
-					indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
-				}
-				if (GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state != INDIGO_OK_STATE)
-					GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
-				if (GPS_UTC_TIME_PROPERTY->state != INDIGO_OK_STATE)
-					GPS_UTC_TIME_PROPERTY->state = INDIGO_OK_STATE;
-			} else {
-				GPS_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
-				GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
-				GPS_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
-				GPS_ADVANCED_PROPERTY->state = INDIGO_ALERT_STATE;
-				indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
-			}
-			struct tm utc;
-			time_t fixTime = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
-			if (gmtime_r(&fixTime, &utc) != NULL) {
-				sprintf(GPS_UTC_ITEM->text.value, "%04d-%02d-%02dT%02d:%02d:%02d",
-					     utc.tm_year + 1900, utc.tm_mon, utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec);
-			} else {
-				sprintf(GPS_UTC_ITEM->text.value, "0000-00-00T00:00:00.00");
-				GPS_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
-			}
-			GPS_UTC_OFFEST_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
-			GPS_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
-			GPS_GEOGRAPHIC_COORDINATES_LONGITUDE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
-			GPS_ADVANCED_STATUS_SVS_IN_USE_ITEM->number.value = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
-			GPS_ADVANCED_STATUS_PROPERTY->state = INDIGO_OK_STATE;
 		}
+
+		if (PRIVATE_DATA->altitude_available) {
+			GPS_GEOGRAPHIC_COORDINATES_ELEVATION_ITEM->number.value = PRIVATE_DATA->altitude;
+			PRIVATE_DATA->altitude_available = false;
+		} else {
+			// Interrogate altitude
+			if (uranus_command(device, "MA", response, RESPONSE_LENGTH)) {
+				char *tok = strtok_r(response, ":", &pnt);
+				if (tok == NULL || strncmp(tok, "MS_OK", 5) != 0) {
+					GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+				} else {
+					strtok_r(NULL, ":", &pnt);
+					strtok_r(NULL, ":", &pnt);
+					strtok_r(NULL, ":", &pnt);
+					strtok_r(NULL, ":", &pnt);
+					strtok_r(NULL, ":", &pnt);
+					GPS_GEOGRAPHIC_COORDINATES_ELEVATION_ITEM->number.value = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+				}
+			} else {
+				GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
+		}
+
+		indigo_update_property(device, GPS_GEOGRAPHIC_COORDINATES_PROPERTY, NULL);
+		indigo_update_property(device, GPS_UTC_TIME_PROPERTY, NULL);
+		indigo_update_property(device, GPS_ADVANCED_STATUS_PROPERTY, NULL);
 	} else {
-		GPS_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
-		GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
-		GPS_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
-		GPS_ADVANCED_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
-		indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
+		PRIVATE_DATA->gps_timeout--;
+		// Extrapolate the time in between interrogations
+		struct tm utc;
+		PRIVATE_DATA->gps_time++;
+		if (gmtime_r(&PRIVATE_DATA->gps_time, &utc) != NULL) {
+			sprintf(GPS_UTC_ITEM->text.value, "%04d-%02d-%02dT%02d:%02d:%02d",
+					utc.tm_year + 1900, utc.tm_mon, utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec);
+			indigo_update_property(device, GPS_UTC_TIME_PROPERTY, NULL);
+		}
 	}
 
-	indigo_update_property(device, GPS_GEOGRAPHIC_COORDINATES_PROPERTY, NULL);
-	indigo_update_property(device, GPS_UTC_TIME_PROPERTY, NULL);
-	indigo_update_property(device, GPS_ADVANCED_STATUS_PROPERTY, NULL);
-
-	indigo_reschedule_timer(device, 10, &PRIVATE_DATA->gps_timer_callback);
+	indigo_reschedule_timer(device, 1, &PRIVATE_DATA->gps_timer_callback);
 }
 
 static void gps_connection_handler(indigo_device *device) {
@@ -470,6 +514,7 @@ static void gps_connection_handler(indigo_device *device) {
 			GPS_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value = 0;
 			GPS_GEOGRAPHIC_COORDINATES_ELEVATION_ITEM->number.value = 0;
 			sprintf(GPS_UTC_ITEM->text.value, "0000-00-00T00:00:00.00");
+			PRIVATE_DATA->gps_timeout = 0;
 			indigo_set_timer(device, 0, gps_timer_callback, &PRIVATE_DATA->gps_timer_callback);
 		} else {
 			indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);

@@ -83,7 +83,7 @@ function setWeather(property)
    var humidity = null;
    var pressure = null;
    var windSpeed = null;
-   var windDirection
+   var windDirection = null;
 
    if (property != null)
    {

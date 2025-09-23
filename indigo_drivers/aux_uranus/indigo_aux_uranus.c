@@ -229,10 +229,34 @@ static void aux_connection_handler(indigo_device *device) {
 		}
 		
 		if (CONNECTION_PROPERTY->state == INDIGO_BUSY_STATE) {
+			char response[RESPONSE_LENGTH] = { 0 }, *pnt;
+
 			PRIVATE_DATA->device_count++;
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 			indigo_define_property(device, AUX_WEATHER_PROPERTY, NULL);
 			indigo_define_property(device, AUX_CLOUD_PROPERTY, NULL);
+
+			if (uranus_command(device, "MV", response, RESPONSE_LENGTH)) {
+				char *tok = strtok_r(response, ":", &pnt);
+				if (tok != NULL && strncmp(tok, "MV", 2) == 0) {
+					strncpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, strtok_r(NULL, ":", &pnt), INDIGO_VALUE_SIZE);
+				} else {
+					strncpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
+				}
+			} else {
+				strncpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
+			}
+			if (uranus_command(device, "SR", response, RESPONSE_LENGTH)) {
+				char *tok = strtok_r(response, ":", &pnt);
+				if (tok != NULL && strncmp(tok, "SR", 2) == 0) {
+					strncpy(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, strtok_r(NULL, ":", &pnt), INDIGO_VALUE_SIZE);
+				} else {
+					strncpy(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
+				}
+			} else {
+				strncpy(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
+			}
+			indigo_update_property(device, INFO_PROPERTY, NULL);
 			PRIVATE_DATA->start_measure = true;
 			indigo_set_timer(device, 0, aux_timer_callback, &PRIVATE_DATA->aux_timer_callback);
 		} else {
@@ -285,6 +309,12 @@ static indigo_result aux_attach(indigo_device *device) {
 		indigo_init_switch_item(AUX_CLOUD_CLEAR_ITEM, AUX_CLOUD_CLEAR_ITEM_NAME, "Clear", false);
 		indigo_init_switch_item(AUX_CLOUD_CLOUDY_ITEM, AUX_CLOUD_CLOUDY_ITEM_NAME, "Cloudy", false);
 		indigo_init_switch_item(AUX_CLOUD_OVERCAST_ITEM, AUX_CLOUD_OVERCAST_ITEM_NAME, "Overcast", false);
+		// -------------------------------------------------------------------------------- INFO
+		INFO_PROPERTY->count = 8;
+		strncpy(INFO_DEVICE_MODEL_ITEM->text.value, "Uranus Meteo Sensor", INDIGO_VALUE_SIZE);
+		strncpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
+		strncpy(INFO_DEVICE_HW_REVISION_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
+		strncpy(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;

@@ -57,20 +57,37 @@
 #define AUX_WEATHER_SKY_BRIGHTNESS_ITEM          (AUX_WEATHER_PROPERTY->items + 6)
 #define AUX_WEATHER_SKY_BORTLE_CLASS_ITEM        (AUX_WEATHER_PROPERTY->items + 7)
 
-#define AUX_CLOUD_THRESHOLDS_PROPERTY      		(PRIVATE_DATA->cloud_condition_thresholds_property)
-#define AUX_CLOUD_CLEAR_THRESHOLD_ITEM      	(AUX_CLOUD_THRESHOLDS_PROPERTY->items + 0)
-#define AUX_CLOUD_CLOUDY_THRESHOLD_ITEM     	(AUX_CLOUD_THRESHOLDS_PROPERTY->items + 1)
+#define AUX_CLOUD_THRESHOLDS_PROPERTY            (PRIVATE_DATA->cloud_condition_thresholds_property)
+#define AUX_CLOUD_CLEAR_THRESHOLD_ITEM      	    (AUX_CLOUD_THRESHOLDS_PROPERTY->items + 0)
+#define AUX_CLOUD_CLOUDY_THRESHOLD_ITEM     	    (AUX_CLOUD_THRESHOLDS_PROPERTY->items + 1)
 
-#define AUX_CLOUD_PROPERTY                  	(PRIVATE_DATA->cloud_condition_property)
-#define AUX_CLOUD_CLEAR_ITEM                	(AUX_CLOUD_PROPERTY->items + 0)
-#define AUX_CLOUD_CLOUDY_ITEM               	(AUX_CLOUD_PROPERTY->items + 1)
-#define AUX_CLOUD_OVERCAST_ITEM             	(AUX_CLOUD_PROPERTY->items + 2)
+#define AUX_CLOUD_PROPERTY                  	    (PRIVATE_DATA->cloud_condition_property)
+#define AUX_CLOUD_CLEAR_ITEM                	    (AUX_CLOUD_PROPERTY->items + 0)
+#define AUX_CLOUD_CLOUDY_ITEM               	    (AUX_CLOUD_PROPERTY->items + 1)
+#define AUX_CLOUD_OVERCAST_ITEM             	    (AUX_CLOUD_PROPERTY->items + 2)
+
+#define X_AUX_URANUS_HEALTH_PROPERTY             (PRIVATE_DATA->health_property)
+#define X_AUX_URANUS_HEALTH_ITEM                 (X_AUX_URANUS_HEALTH_PROPERTY->items + 0)
+#define X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY	 (PRIVATE_DATA->battery_voltage_property)
+#define X_AUX_URANUS_BATTERY_VOLTAGE_ITEM        (X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY->items + 0)
+#define X_AUX_URANUS_RESET_PROPERTY              (PRIVATE_DATA->reset_property)
+#define X_AUX_URANUS_RESET_ITEM                  (X_AUX_URANUS_RESET_PROPERTY->items + 0)
+
+#define X_AUX_URANUS_HEALTH_PROPERTY_NAME        "X_AUX_URANUS_HEALTH"
+#define X_AUX_URANUS_HEALTH_ITEM_NAME            "HEALTH"
+#define X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY_NAME "X_AUX_URANUS_BATTERY_VOLTAGE"
+#define X_AUX_URANUS_BATTERY_VOLTAGE_ITEM_NAME   "BATTERY_VOLTAGE"
+#define X_AUX_URANUS_RESET_PROPERTY_NAME         "X_AUX_URANUS_RESET"
+#define X_AUX_URANUS_RESET_ITEM_NAME             "RESET"
 
 #define RESPONSE_LENGTH 120
 
 typedef struct {
 	int handle;
 	int device_count;
+	indigo_property *health_property;
+	indigo_property *battery_voltage_property;
+	indigo_property *reset_property;
 	indigo_property *weather_property;
 	indigo_property *cloud_condition_thresholds_property;
 	indigo_property *cloud_condition_property;
@@ -110,7 +127,7 @@ static bool uranus_command(indigo_device *device, const char *command, char *res
 			result = false;
 		}
 	}
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command %s -> %s", command, (result && response != NULL) ? response : "NULL");
+	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command %s -> %s", command, (result && response != NULL) ? response : "");
 	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 	return result;
 }
@@ -128,8 +145,12 @@ static bool uranus_connect(indigo_device *device) {
 		return false;
 
 	char response[16] = { 0 };
-	if (uranus_command(device, "M#", response, 16) && strncmp(response, "MS_OK", 5) == 0)
+	if (uranus_command(device, "M#", response, 16) && strncmp(response, "MS_", 3) == 0) {
+		strncpy(X_AUX_URANUS_HEALTH_ITEM->text.value, &response[3], INDIGO_VALUE_SIZE);
+		X_AUX_URANUS_HEALTH_PROPERTY->state = strncmp(response, "OK", sizeof(response)) == 0 ? INDIGO_OK_STATE : INDIGO_ALERT_STATE;
+		indigo_update_property(device, X_AUX_URANUS_HEALTH_PROPERTY, NULL);
 		return true;
+	}
 
 	INDIGO_DRIVER_ERROR(DRIVER_NAME, "Handshake failed");
 	uranus_close(device);
@@ -177,6 +198,7 @@ static void aux_timer_callback(indigo_device *device) {
 			char *tok = strtok_r(response, ":", &pnt);
 			if (tok == NULL || strncmp(tok, "MS_OK", 5) != 0) {
 				AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
+				X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY->state = INDIGO_ALERT_STATE;
 			} else {
 				AUX_WEATHER_TEMPERATURE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
 				AUX_WEATHER_HUMIDITY_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
@@ -186,9 +208,14 @@ static void aux_timer_callback(indigo_device *device) {
 				PRIVATE_DATA->altitude = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
 				PRIVATE_DATA->altitude_available = true;
 				AUX_WEATHER_SKY_TEMPERATURE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
+				strtok_r(NULL, ":", &pnt); // Infrared sensor temperature
+				strtok_r(NULL, ":", &pnt); // Battery usage indcator
+				X_AUX_URANUS_BATTERY_VOLTAGE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
+				X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY->state = INDIGO_OK_STATE;
 			}
 		} else {
 			AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
+			X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 		if (uranus_command(device, "CI", response, RESPONSE_LENGTH)) {
 			char *tok = strtok_r(response, ":", &pnt);
@@ -213,6 +240,8 @@ static void aux_timer_callback(indigo_device *device) {
 			AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
 			AUX_CLOUD_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
+		indigo_update_property(device, X_AUX_URANUS_HEALTH_PROPERTY, NULL);
+		indigo_update_property(device, X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY, NULL);
 		indigo_update_property(device, AUX_WEATHER_PROPERTY, NULL);
 		indigo_update_property(device, AUX_CLOUD_PROPERTY, NULL);
 	}
@@ -233,6 +262,9 @@ static void aux_connection_handler(indigo_device *device) {
 
 			PRIVATE_DATA->device_count++;
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+			indigo_define_property(device, X_AUX_URANUS_HEALTH_PROPERTY, NULL);
+			indigo_define_property(device, X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY, NULL);
+			indigo_define_property(device, X_AUX_URANUS_RESET_PROPERTY, NULL);
 			indigo_define_property(device, AUX_WEATHER_PROPERTY, NULL);
 			indigo_define_property(device, AUX_CLOUD_PROPERTY, NULL);
 
@@ -268,12 +300,33 @@ static void aux_connection_handler(indigo_device *device) {
 		PRIVATE_DATA->device_count--;
 		if (PRIVATE_DATA->device_count == 0)
 			uranus_close(device);
+		indigo_delete_property(device, X_AUX_URANUS_HEALTH_PROPERTY, NULL);
+		indigo_delete_property(device, X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY, NULL);
+		indigo_delete_property(device, X_AUX_URANUS_RESET_PROPERTY, NULL);
 		indigo_delete_property(device, AUX_WEATHER_PROPERTY, NULL);
 		indigo_delete_property(device, AUX_CLOUD_PROPERTY, NULL);
 		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 	}
 	indigo_aux_change_property(device, NULL, CONNECTION_PROPERTY);
 	indigo_unlock_master_device(device);
+}
+
+static void aux_uranus_reset_handler(indigo_device *device) {
+	if (!IS_CONNECTED) {
+		return;
+	}
+	char response[RESPONSE_LENGTH] = { 0 };
+
+	if (uranus_command(device, "MQ:", NULL, 0)) {
+		X_AUX_URANUS_RESET_PROPERTY->state = INDIGO_OK_STATE;
+	} else {
+		X_AUX_URANUS_RESET_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	X_AUX_URANUS_RESET_ITEM->sw.value = false;
+	indigo_update_property(device, X_AUX_URANUS_RESET_PROPERTY, NULL);
+	// Device reboots, we need to disconnect
+	indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
+	aux_connection_handler(device);
 }
 
 // -------------------------------------------------------------------------------- INDIGO aux device implementation
@@ -284,6 +337,19 @@ static indigo_result aux_attach(indigo_device *device) {
 	assert(device != NULL);
 	assert(PRIVATE_DATA != NULL);
 	if (indigo_aux_attach(device, DRIVER_NAME, DRIVER_VERSION, INDIGO_INTERFACE_AUX_SQM|INDIGO_INTERFACE_AUX_WEATHER) == INDIGO_OK) {
+		// -------------------------------------------------------------------------------- HEALTH
+		X_AUX_URANUS_HEALTH_PROPERTY = indigo_init_text_property(NULL, device->name, X_AUX_URANUS_HEALTH_PROPERTY_NAME, AUX_ADVANCED_GROUP, "Health status", INDIGO_OK_STATE, INDIGO_RO_PERM, 1);
+		if (X_AUX_URANUS_HEALTH_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_text_item(X_AUX_URANUS_HEALTH_ITEM, X_AUX_URANUS_HEALTH_ITEM_NAME, "Health status", "---");
+		// -------------------------------------------------------------------------------- VOLTAGE
+		X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY = indigo_init_number_property(NULL, device->name, X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY_NAME, AUX_ADVANCED_GROUP, "Battery voltage", INDIGO_OK_STATE, INDIGO_RO_PERM, 1);
+		if (X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_number_item(X_AUX_URANUS_BATTERY_VOLTAGE_ITEM, X_AUX_URANUS_BATTERY_VOLTAGE_ITEM_NAME, "Voltage [V]", 0, 10, 0, 0);
+		// -------------------------------------------------------------------------------- RESET
+		X_AUX_URANUS_RESET_PROPERTY = indigo_init_switch_property(NULL, device->name, X_AUX_URANUS_RESET_PROPERTY_NAME, AUX_ADVANCED_GROUP, "Reset", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 1);
+		indigo_init_switch_item(X_AUX_URANUS_RESET_ITEM, X_AUX_URANUS_RESET_ITEM_NAME, "Reset Uranus", false);
 		// -------------------------------------------------------------------------------- WEATHER
 		AUX_WEATHER_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_WEATHER_PROPERTY_NAME, AUX_WEATHER_GROUP, "Weather conditions", INDIGO_OK_STATE, INDIGO_RO_PERM, 8);
 		if (AUX_WEATHER_PROPERTY == NULL)
@@ -345,6 +411,9 @@ static indigo_result aux_attach(indigo_device *device) {
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
+		indigo_define_matching_property(X_AUX_URANUS_HEALTH_PROPERTY);
+		indigo_define_matching_property(X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY);
+		indigo_define_matching_property(X_AUX_URANUS_RESET_PROPERTY);
 		indigo_define_matching_property(AUX_WEATHER_PROPERTY);
 		indigo_define_matching_property(AUX_CLOUD_PROPERTY);
 	}
@@ -364,6 +433,13 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 		CONNECTION_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
 		indigo_set_timer(device, 0, aux_connection_handler, NULL);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(X_AUX_URANUS_RESET_PROPERTY, property)) {
+	// -------------------------------------------------------------------------------- RESET
+		indigo_property_copy_values(X_AUX_URANUS_RESET_PROPERTY, property, false);
+		X_AUX_URANUS_RESET_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, X_AUX_URANUS_RESET_PROPERTY, NULL);
+		indigo_set_timer(device, 0, aux_uranus_reset_handler, NULL);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(AUX_CLOUD_THRESHOLDS_PROPERTY, property)) {
 	// -------------------------------------------------------------------------------- AUX_CLOUD_THRESHOLDS
@@ -387,6 +463,9 @@ static indigo_result aux_detach(indigo_device *device) {
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		aux_connection_handler(device);
 	}
+	indigo_release_property(X_AUX_URANUS_HEALTH_PROPERTY);
+	indigo_release_property(X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY);
+	indigo_release_property(X_AUX_URANUS_RESET_PROPERTY);
 	indigo_release_property(AUX_WEATHER_PROPERTY);
 	indigo_release_property(AUX_CLOUD_PROPERTY);
 	indigo_delete_property(device, AUX_CLOUD_THRESHOLDS_PROPERTY, NULL);

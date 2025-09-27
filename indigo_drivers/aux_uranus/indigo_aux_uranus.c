@@ -45,6 +45,7 @@
 
 #define PRIVATE_DATA                                    ((uranus_private_data *)device->private_data)
 
+#define X_AUX_SETTINGS_GROUP                     "Settings"
 #define AUX_WEATHER_GROUP                        "Weather"
 
 #define AUX_WEATHER_PROPERTY                     (PRIVATE_DATA->weather_property)
@@ -61,11 +62,24 @@
 #define AUX_CLOUD_THRESHOLDS_PROPERTY            (PRIVATE_DATA->cloud_condition_thresholds_property)
 #define AUX_CLOUD_CLEAR_THRESHOLD_ITEM      	    (AUX_CLOUD_THRESHOLDS_PROPERTY->items + 0)
 #define AUX_CLOUD_CLOUDY_THRESHOLD_ITEM     	    (AUX_CLOUD_THRESHOLDS_PROPERTY->items + 1)
+#define X_AUX_URANUS_UNITS_PROPERTY              (PRIVATE_DATA->units_property)
+#define X_AUX_URANUS_METRIC_UNITS_ITEM           (X_AUX_URANUS_UNITS_PROPERTY->items + 0)
+#define X_AUX_URANUS_IMPERIAL_UNITS_ITEM         (X_AUX_URANUS_UNITS_PROPERTY->items + 1)
+#define X_AUX_URANUS_NMEA_OUTPUT_PROPERTY        (PRIVATE_DATA->nmea_output_property)
+#define X_AUX_URANUS_DISABLE_NMEA_OUTPUT_ITEM    (X_AUX_URANUS_NMEA_OUTPUT_PROPERTY->items + 0)
+#define X_AUX_URANUS_ENABLE_NMEA_OUTPUT_ITEM     (X_AUX_URANUS_NMEA_OUTPUT_PROPERTY->items + 1)
+#define X_AUX_URANUS_OLED_LIGHT_PROPERTY         (PRIVATE_DATA->oled_light_property)
+#define X_AUX_URANUS_OLED_LIGHT_OFF_ITEM         (X_AUX_URANUS_OLED_LIGHT_PROPERTY->items + 0)
+#define X_AUX_URANUS_OLED_LIGHT_ON_ITEM          (X_AUX_URANUS_OLED_LIGHT_PROPERTY->items + 1)
+#define X_AUX_URANUS_NUM_SETTINGS_PROPERTY       (PRIVATE_DATA->num_settings_property)
+#define X_AUX_URANUS_SLEEP_TIMEOUT_ITEM          (X_AUX_URANUS_NUM_SETTINGS_PROPERTY->items + 0)
+#define X_AUX_URANUS_SQM_CAL_OFFSET_ITEM         (X_AUX_URANUS_NUM_SETTINGS_PROPERTY->items + 1)
+#define X_AUX_URANUS_TZONE_OFFSET_ITEM           (X_AUX_URANUS_NUM_SETTINGS_PROPERTY->items + 2)
 
-#define AUX_CLOUD_PROPERTY                  	    (PRIVATE_DATA->cloud_condition_property)
-#define AUX_CLOUD_CLEAR_ITEM                	    (AUX_CLOUD_PROPERTY->items + 0)
-#define AUX_CLOUD_CLOUDY_ITEM               	    (AUX_CLOUD_PROPERTY->items + 1)
-#define AUX_CLOUD_OVERCAST_ITEM             	    (AUX_CLOUD_PROPERTY->items + 2)
+#define AUX_CLOUD_PROPERTY                       (PRIVATE_DATA->cloud_condition_property)
+#define AUX_CLOUD_CLEAR_ITEM                     (AUX_CLOUD_PROPERTY->items + 0)
+#define AUX_CLOUD_CLOUDY_ITEM                    (AUX_CLOUD_PROPERTY->items + 1)
+#define AUX_CLOUD_OVERCAST_ITEM                  (AUX_CLOUD_PROPERTY->items + 2)
 
 #define X_AUX_URANUS_HEALTH_PROPERTY             (PRIVATE_DATA->health_property)
 #define X_AUX_URANUS_HEALTH_ITEM                 (X_AUX_URANUS_HEALTH_PROPERTY->items + 0)
@@ -91,6 +105,19 @@
 #define X_AUX_VISUAL_RAW_VALUE_ITEM_NAME         "VISUAL_RAW_VALUE"
 #define X_AUX_URANUS_RESET_PROPERTY_NAME         "X_AUX_URANUS_RESET"
 #define X_AUX_URANUS_RESET_ITEM_NAME             "RESET"
+#define X_AUX_URANUS_UNITS_PROPERTY_NAME        "X_AUX_URANUS_UNITS"
+#define X_AUX_URANUS_METRIC_UNITS_ITEM_NAME     "METRIC_UNITS"
+#define X_AUX_URANUS_IMPERIAL_UNITS_ITEM_NAME   "IMPERIAL_UNITS"
+#define X_AUX_URANUS_NMEA_OUTPUT_PROPERTY_NAME  "X_AUX_URANUS_NMEA_OUTPUT"
+#define X_AUX_URANUS_DISABLE_NMEA_OUTPUT_ITEM_NAME "DISABLE_NMEA_OUTPUT"
+#define X_AUX_URANUS_ENABLE_NMEA_OUTPUT_ITEM_NAME  "ENABLE_NMEA_OUTPUT"
+#define X_AUX_URANUS_OLED_LIGHT_PROPERTY_NAME   "X_AUX_URANUS_OLED_LIGHT"
+#define X_AUX_URANUS_OLED_LIGHT_OFF_ITEM_NAME   "OLED_LIGHT_OFF"
+#define X_AUX_URANUS_OLED_LIGHT_ON_ITEM_NAME    "OLED_LIGHT_ON"
+#define X_AUX_URANUS_NUM_SETTINGS_PROPERTY_NAME "X_AUX_URANUS_NUM_SETTINGS"
+#define X_AUX_URANUS_SLEEP_TIMEOUT_ITEM_NAME    "SLEEP_TIMEOUT"
+#define X_AUX_URANUS_SQM_CAL_OFFSET_ITEM_NAME   "SQM_CAL_OFFSET"
+#define X_AUX_URANUS_TZONE_OFFSET_ITEM_NAME     "TIMEZONE_OFFSET"
 
 #define RESPONSE_LENGTH 120
 
@@ -104,6 +131,10 @@ typedef struct {
 	indigo_property *weather_property;
 	indigo_property *cloud_condition_thresholds_property;
 	indigo_property *cloud_condition_property;
+	indigo_property *units_property;
+	indigo_property *nmea_output_property;
+	indigo_property *oled_light_property;
+	indigo_property *num_settings_property;
 	indigo_timer *aux_timer_callback;
 	indigo_timer *gps_timer_callback;
 	bool start_measure;
@@ -262,7 +293,6 @@ static void aux_timer_callback(indigo_device *device) {
 			AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
 			AUX_CLOUD_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
-		indigo_update_property(device, X_AUX_URANUS_HEALTH_PROPERTY, NULL);
 		indigo_update_property(device, X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY, NULL);
 		indigo_update_property(device, X_AUX_SENSOR_READINGS_PROPERTY, NULL);
 		indigo_update_property(device, AUX_WEATHER_PROPERTY, NULL);
@@ -270,6 +300,55 @@ static void aux_timer_callback(indigo_device *device) {
 	}
 
 	indigo_reschedule_timer(device, 5, &PRIVATE_DATA->aux_timer_callback);
+}
+
+static void uranus_settings_callback(indigo_device *device) {
+	if (!IS_CONNECTED) {
+		return;
+	}
+	char response[RESPONSE_LENGTH] = { 0 }, *pnt;
+
+	if (uranus_command(device, "CF", response, RESPONSE_LENGTH)) {
+		char *tok = strtok_r(response, ":", &pnt);
+		if (tok != NULL && strncmp(tok, "CF", RESPONSE_LENGTH) == 0) {
+			const int unit = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+			indigo_set_switch(X_AUX_URANUS_UNITS_PROPERTY, unit == 0 ? X_AUX_URANUS_METRIC_UNITS_ITEM : X_AUX_URANUS_IMPERIAL_UNITS_ITEM, true);
+			const int isNmeaEnabled = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+			indigo_set_switch(X_AUX_URANUS_NMEA_OUTPUT_PROPERTY, isNmeaEnabled ? X_AUX_URANUS_ENABLE_NMEA_OUTPUT_ITEM : X_AUX_URANUS_DISABLE_NMEA_OUTPUT_ITEM, true);
+			const int keepOledOn = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+			indigo_set_switch(X_AUX_URANUS_OLED_LIGHT_PROPERTY, keepOledOn ? X_AUX_URANUS_OLED_LIGHT_ON_ITEM : X_AUX_URANUS_OLED_LIGHT_OFF_ITEM, true);
+			strtok_r(NULL, ":", &pnt); // Reserved
+			X_AUX_URANUS_SLEEP_TIMEOUT_ITEM->number.value = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+			X_AUX_URANUS_SLEEP_TIMEOUT_ITEM->number.target = X_AUX_URANUS_SLEEP_TIMEOUT_ITEM->number.value;
+			X_AUX_URANUS_SQM_CAL_OFFSET_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt)) / 50.0;
+			X_AUX_URANUS_SQM_CAL_OFFSET_ITEM->number.target = X_AUX_URANUS_SQM_CAL_OFFSET_ITEM->number.value;
+			X_AUX_URANUS_TZONE_OFFSET_ITEM->number.value = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+			X_AUX_URANUS_TZONE_OFFSET_ITEM->number.target = X_AUX_URANUS_TZONE_OFFSET_ITEM->number.value;
+			AUX_CLOUD_CLEAR_THRESHOLD_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
+			AUX_CLOUD_CLEAR_THRESHOLD_ITEM->number.target = AUX_CLOUD_CLEAR_THRESHOLD_ITEM->number.value;
+
+			X_AUX_URANUS_UNITS_PROPERTY->state = INDIGO_OK_STATE;
+			X_AUX_URANUS_NMEA_OUTPUT_PROPERTY->state = INDIGO_OK_STATE;
+			X_AUX_URANUS_OLED_LIGHT_PROPERTY->state = INDIGO_OK_STATE;
+			X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_OK_STATE;
+		} else {
+			X_AUX_URANUS_UNITS_PROPERTY->state = INDIGO_ALERT_STATE;
+			X_AUX_URANUS_NMEA_OUTPUT_PROPERTY->state = INDIGO_ALERT_STATE;
+			X_AUX_URANUS_OLED_LIGHT_PROPERTY->state = INDIGO_ALERT_STATE;
+			X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+	} else {
+		X_AUX_URANUS_UNITS_PROPERTY->state = INDIGO_ALERT_STATE;
+		X_AUX_URANUS_NMEA_OUTPUT_PROPERTY->state = INDIGO_ALERT_STATE;
+		X_AUX_URANUS_OLED_LIGHT_PROPERTY->state = INDIGO_ALERT_STATE;
+		X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+
+	indigo_update_property(device, AUX_CLOUD_THRESHOLDS_PROPERTY, NULL);
+	indigo_update_property(device, X_AUX_URANUS_UNITS_PROPERTY, NULL);
+	indigo_update_property(device, X_AUX_URANUS_NMEA_OUTPUT_PROPERTY, NULL);
+	indigo_update_property(device, X_AUX_URANUS_OLED_LIGHT_PROPERTY, NULL);
+	indigo_update_property(device, X_AUX_URANUS_NUM_SETTINGS_PROPERTY, NULL);
 }
 
 static void aux_connection_handler(indigo_device *device) {
@@ -290,7 +369,12 @@ static void aux_connection_handler(indigo_device *device) {
 			indigo_define_property(device, X_AUX_SENSOR_READINGS_PROPERTY, NULL);
 			indigo_define_property(device, X_AUX_URANUS_RESET_PROPERTY, NULL);
 			indigo_define_property(device, AUX_WEATHER_PROPERTY, NULL);
+			indigo_define_property(device, AUX_CLOUD_THRESHOLDS_PROPERTY, NULL);
 			indigo_define_property(device, AUX_CLOUD_PROPERTY, NULL);
+			indigo_define_property(device, X_AUX_URANUS_UNITS_PROPERTY, NULL);
+			indigo_define_property(device, X_AUX_URANUS_NMEA_OUTPUT_PROPERTY, NULL);
+			indigo_define_property(device, X_AUX_URANUS_OLED_LIGHT_PROPERTY, NULL);
+			indigo_define_property(device, X_AUX_URANUS_NUM_SETTINGS_PROPERTY, NULL);
 
 			if (uranus_command(device, "MV", response, RESPONSE_LENGTH)) {
 				char *tok = strtok_r(response, ":", &pnt);
@@ -313,6 +397,10 @@ static void aux_connection_handler(indigo_device *device) {
 				strncpy(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
 			}
 			indigo_update_property(device, INFO_PROPERTY, NULL);
+
+			uranus_settings_callback(device);
+
+			// Start periodic data acquisition
 			PRIVATE_DATA->start_measure = true;
 			indigo_set_timer(device, 0, aux_timer_callback, &PRIVATE_DATA->aux_timer_callback);
 		} else {
@@ -329,7 +417,13 @@ static void aux_connection_handler(indigo_device *device) {
 		indigo_delete_property(device, X_AUX_SENSOR_READINGS_PROPERTY, NULL);
 		indigo_delete_property(device, X_AUX_URANUS_RESET_PROPERTY, NULL);
 		indigo_delete_property(device, AUX_WEATHER_PROPERTY, NULL);
+		indigo_delete_property(device, AUX_CLOUD_THRESHOLDS_PROPERTY, NULL);
 		indigo_delete_property(device, AUX_CLOUD_PROPERTY, NULL);
+		indigo_delete_property(device, X_AUX_URANUS_UNITS_PROPERTY, NULL);
+		indigo_delete_property(device, X_AUX_URANUS_NMEA_OUTPUT_PROPERTY, NULL);
+		indigo_delete_property(device, X_AUX_URANUS_OLED_LIGHT_PROPERTY, NULL);
+		indigo_delete_property(device, X_AUX_URANUS_NUM_SETTINGS_PROPERTY, NULL);
+
 		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 	}
 	indigo_aux_change_property(device, NULL, CONNECTION_PROPERTY);
@@ -352,6 +446,154 @@ static void aux_uranus_reset_handler(indigo_device *device) {
 	// Device reboots, we need to disconnect
 	indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 	aux_connection_handler(device);
+}
+
+static void aux_uranus_units_callback(indigo_device *device) {
+	if (!IS_CONNECTED) {
+		return;
+	}
+	char response[RESPONSE_LENGTH] = { 0 };
+	int unit = X_AUX_URANUS_METRIC_UNITS_ITEM->sw.value ? 0 : 1;
+
+	char command[] = "C1:x";
+	command[3] = unit + '0';
+	if (uranus_command(device, command, response, RESPONSE_LENGTH)) {
+		if (strncmp(response, command, sizeof(command)) == 0) {
+			X_AUX_URANUS_UNITS_PROPERTY->state = INDIGO_OK_STATE;
+		} else {
+			X_AUX_URANUS_UNITS_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+	} else {
+		X_AUX_URANUS_UNITS_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	indigo_update_property(device, X_AUX_URANUS_UNITS_PROPERTY, NULL);
+}
+
+static void aux_uranus_nmea_output_callback(indigo_device *device) {
+	if (!IS_CONNECTED) {
+		return;
+	}
+	char response[RESPONSE_LENGTH] = { 0 };
+	int nmeaState = X_AUX_URANUS_ENABLE_NMEA_OUTPUT_ITEM->sw.value ? 1 : 0;
+
+	char command[] = "GO:x";
+	command[3] = nmeaState + '0';
+	if (uranus_command(device, command, response, RESPONSE_LENGTH)) {
+		if (strncmp(response, command, sizeof(command)) == 0) {
+			X_AUX_URANUS_NMEA_OUTPUT_PROPERTY->state = INDIGO_OK_STATE;
+		} else {
+			X_AUX_URANUS_NMEA_OUTPUT_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+	} else {
+		X_AUX_URANUS_NMEA_OUTPUT_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	indigo_update_property(device, X_AUX_URANUS_NMEA_OUTPUT_PROPERTY, NULL);
+}
+
+static void aux_uranus_oled_light_callback(indigo_device *device) {
+	if (!IS_CONNECTED) {
+		return;
+	}
+	char response[RESPONSE_LENGTH] = { 0 };
+	int keepOled = X_AUX_URANUS_OLED_LIGHT_ON_ITEM->sw.value ? 1 : 0;
+
+	char command[] = "C6:x";
+	command[3] = keepOled + '0';
+	if (uranus_command(device, command, response, RESPONSE_LENGTH)) {
+		if (strncmp(response, command, sizeof(command)) == 0) {
+			X_AUX_URANUS_OLED_LIGHT_PROPERTY->state = INDIGO_OK_STATE;
+		} else {
+			X_AUX_URANUS_OLED_LIGHT_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+	} else {
+		X_AUX_URANUS_OLED_LIGHT_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	indigo_update_property(device, X_AUX_URANUS_OLED_LIGHT_PROPERTY, NULL);
+}
+
+static void aux_uranus_num_settings_callback(indigo_device *device) {
+	if (!IS_CONNECTED) {
+		return;
+	}
+	char response[RESPONSE_LENGTH] = { 0 }, *pnt;
+
+	int sleepTimeout = (int)(X_AUX_URANUS_SLEEP_TIMEOUT_ITEM->number.value + 0.5);
+	int sqmCalOffset = (int)(X_AUX_URANUS_SQM_CAL_OFFSET_ITEM->number.value * 50.0 + 0.5);
+	int tzOffset = (int)(X_AUX_URANUS_TZONE_OFFSET_ITEM->number.value + 0.5);
+	if (sqmCalOffset < -128) {
+		sqmCalOffset = -128;
+		X_AUX_URANUS_SQM_CAL_OFFSET_ITEM->number.value = -2.56;
+	} else if (sqmCalOffset > 127) {
+		sqmCalOffset = 127;
+		X_AUX_URANUS_SQM_CAL_OFFSET_ITEM->number.value = 2.54;
+	}
+
+	if (uranus_command(device, "CF", response, RESPONSE_LENGTH)) {
+		char *tok = strtok_r(response, ":", &pnt);
+		if (tok != NULL && strncmp(tok, "CF", RESPONSE_LENGTH) == 0) {
+			strtok_r(NULL, ":", &pnt); // Units
+			strtok_r(NULL, ":", &pnt); // NMEA
+			strtok_r(NULL, ":", &pnt); // OLED
+			strtok_r(NULL, ":", &pnt); // Reserved
+			int currentSleepTimeout = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+			int currentSqmCalOffset = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+			int currentTzOffset = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
+
+			char command[80];
+			X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_OK_STATE;
+			if (sleepTimeout != currentSleepTimeout) {
+				snprintf(command, sizeof(command), "C2:%d", sleepTimeout);
+				if (!uranus_command(device, command, response, RESPONSE_LENGTH)
+				    || strncmp(response, command, sizeof(command)) != 0) {
+					X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_ALERT_STATE;
+				}
+			}
+			if (tzOffset != currentTzOffset) {
+				snprintf(command, sizeof(command), "C3:%d", tzOffset);
+				if (!uranus_command(device, command, response, RESPONSE_LENGTH)
+				    || strncmp(response, command, sizeof(command)) != 0) {
+					X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_ALERT_STATE;
+				}
+			}
+			if (sqmCalOffset != currentSqmCalOffset) {
+				snprintf(command, sizeof(command), "C4:%d", sqmCalOffset);
+				if (!uranus_command(device, command, response, RESPONSE_LENGTH)
+				    || strncmp(response, command, sizeof(command)) != 0) {
+					X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_ALERT_STATE;
+				}
+			}
+		} else {
+			X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+	} else {
+		X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	indigo_update_property(device, X_AUX_URANUS_NUM_SETTINGS_PROPERTY, NULL);
+}
+
+static void aux_cloud_thresholds_callback(indigo_device *device) {
+	if (!IS_CONNECTED) {
+		return;
+	}
+
+	char command[20], response[RESPONSE_LENGTH] = { 0 }, *pnt;
+	int clearThreshold = (int)(AUX_CLOUD_CLEAR_THRESHOLD_ITEM->number.value + 0.5);
+	snprintf(command, sizeof(command), "C7:%d", clearThreshold);
+	if (uranus_command(device, command, response, RESPONSE_LENGTH)) {
+		char *tok = strtok_r(response, ":", &pnt);
+		if (tok != NULL && strncmp(tok, "C7", RESPONSE_LENGTH) == 0) {
+			if ((int)(indigo_atod(strtok_r(NULL, ":", &pnt)) + 0.5) == clearThreshold) {
+				AUX_CLOUD_THRESHOLDS_PROPERTY->state = INDIGO_OK_STATE;
+			} else {
+				AUX_CLOUD_THRESHOLDS_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
+		} else {
+			AUX_CLOUD_THRESHOLDS_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+	} else {
+		AUX_CLOUD_THRESHOLDS_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	indigo_update_property(device, AUX_CLOUD_THRESHOLDS_PROPERTY, NULL);
 }
 
 // -------------------------------------------------------------------------------- INDIGO aux device implementation
@@ -397,11 +639,37 @@ static indigo_result aux_attach(indigo_device *device) {
 		indigo_init_number_item(AUX_WEATHER_SKY_BORTLE_CLASS_ITEM, AUX_WEATHER_SKY_BORTLE_CLASS_ITEM_NAME, "Sky Bortle class", 1, 9, 0, 0);
 		indigo_init_number_item(X_AUX_WEATHER_NELM_ITEM, X_AUX_WEATHER_NELM_ITEM_NAME, "Naked eye limiting magnitude", 0, 10, 0, 0);
 		// -------------------------------------------------------------------------------- AUX_CLOUD_THRESHOLDS
-		AUX_CLOUD_THRESHOLDS_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_CLOUD_THRESHOLDS_PROPERTY_NAME, "Settings", "Cloud thresholds [%]", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
+		AUX_CLOUD_THRESHOLDS_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_CLOUD_THRESHOLDS_PROPERTY_NAME, X_AUX_SETTINGS_GROUP, "Cloud thresholds [%]", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
 		if (AUX_CLOUD_THRESHOLDS_PROPERTY == NULL)
 			return INDIGO_FAILED;
 		indigo_init_number_item(AUX_CLOUD_CLEAR_THRESHOLD_ITEM, AUX_CLOUD_CLEAR_ITEM_NAME, "Clear (less than)", 0, 100, 0, 10);
 		indigo_init_number_item(AUX_CLOUD_CLOUDY_THRESHOLD_ITEM, AUX_CLOUD_CLOUDY_ITEM_NAME, "Cloudy (less than)", 0, 100, 0, 80);
+		// -------------------------------------------------------------------------------- AUX_UNITS
+		X_AUX_URANUS_UNITS_PROPERTY = indigo_init_switch_property(NULL, device->name, X_AUX_URANUS_UNITS_PROPERTY_NAME, X_AUX_SETTINGS_GROUP, "Units", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
+		if (X_AUX_URANUS_UNITS_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_switch_item(X_AUX_URANUS_METRIC_UNITS_ITEM, X_AUX_URANUS_METRIC_UNITS_ITEM_NAME, "Metric", true);
+		indigo_init_switch_item(X_AUX_URANUS_IMPERIAL_UNITS_ITEM, X_AUX_URANUS_IMPERIAL_UNITS_ITEM_NAME, "Imperial", false);
+		// -------------------------------------------------------------------------------- AUX_NMEA_OUTPUT
+		X_AUX_URANUS_NMEA_OUTPUT_PROPERTY = indigo_init_switch_property(NULL, device->name, X_AUX_URANUS_NMEA_OUTPUT_PROPERTY_NAME, X_AUX_SETTINGS_GROUP, "NMEA output", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
+		if (X_AUX_URANUS_NMEA_OUTPUT_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_switch_item(X_AUX_URANUS_DISABLE_NMEA_OUTPUT_ITEM, X_AUX_URANUS_DISABLE_NMEA_OUTPUT_ITEM_NAME, "Disable", true);
+		indigo_init_switch_item(X_AUX_URANUS_ENABLE_NMEA_OUTPUT_ITEM, X_AUX_URANUS_ENABLE_NMEA_OUTPUT_ITEM_NAME, "Enable", false);
+		// -------------------------------------------------------------------------------- AUX_OLED_LIGHT
+		X_AUX_URANUS_OLED_LIGHT_PROPERTY = indigo_init_switch_property(NULL, device->name, X_AUX_URANUS_OLED_LIGHT_PROPERTY_NAME, X_AUX_SETTINGS_GROUP, "OLED Light during polling", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
+		if (X_AUX_URANUS_OLED_LIGHT_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_switch_item(X_AUX_URANUS_OLED_LIGHT_OFF_ITEM, X_AUX_URANUS_OLED_LIGHT_OFF_ITEM_NAME, "Off", true);
+		indigo_init_switch_item(X_AUX_URANUS_OLED_LIGHT_ON_ITEM, X_AUX_URANUS_OLED_LIGHT_ON_ITEM_NAME, "On", false);
+		// -------------------------------------------------------------------------------- AUX_NUM_SETTINGS
+		X_AUX_URANUS_NUM_SETTINGS_PROPERTY = indigo_init_number_property(NULL, device->name, X_AUX_URANUS_NUM_SETTINGS_PROPERTY_NAME, X_AUX_SETTINGS_GROUP, "Miscelaneous Settings", INDIGO_OK_STATE, INDIGO_RW_PERM, 3);
+		if (X_AUX_URANUS_NUM_SETTINGS_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		indigo_init_number_item(X_AUX_URANUS_SLEEP_TIMEOUT_ITEM, X_AUX_URANUS_SLEEP_TIMEOUT_ITEM_NAME, "Sleep timeout [s]", 0, 30, 1, 2);
+		indigo_init_number_item(X_AUX_URANUS_SQM_CAL_OFFSET_ITEM, X_AUX_URANUS_SQM_CAL_OFFSET_ITEM_NAME, "SQM calibration offset [mag/arcsec\u00B2]", -2.56, 2.54, 0.02, 0);
+		strncpy(X_AUX_URANUS_SQM_CAL_OFFSET_ITEM->number.format, "%.2f", INDIGO_VALUE_SIZE);
+		indigo_init_number_item(X_AUX_URANUS_TZONE_OFFSET_ITEM, X_AUX_URANUS_TZONE_OFFSET_ITEM_NAME, "Timezone offset [h]", -12, 14, 1, 0);
 		// -------------------------------------------------------------------------------- AUX_CLOUD
 		AUX_CLOUD_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_CLOUD_PROPERTY_NAME, AUX_WEATHER_GROUP, "Cloud conditions", INDIGO_OK_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
 		if (AUX_CLOUD_PROPERTY == NULL)
@@ -450,9 +718,13 @@ static indigo_result aux_enumerate_properties(indigo_device *device, indigo_clie
 		indigo_define_matching_property(X_AUX_SENSOR_READINGS_PROPERTY);
 		indigo_define_matching_property(X_AUX_URANUS_RESET_PROPERTY);
 		indigo_define_matching_property(AUX_WEATHER_PROPERTY);
+		indigo_define_matching_property(AUX_CLOUD_THRESHOLDS_PROPERTY);
 		indigo_define_matching_property(AUX_CLOUD_PROPERTY);
+		indigo_define_matching_property(X_AUX_URANUS_UNITS_PROPERTY);
+		indigo_define_matching_property(X_AUX_URANUS_NMEA_OUTPUT_PROPERTY);
+		indigo_define_matching_property(X_AUX_URANUS_OLED_LIGHT_PROPERTY);
+		indigo_define_matching_property(X_AUX_URANUS_NUM_SETTINGS_PROPERTY);
 	}
-	indigo_define_matching_property(AUX_CLOUD_THRESHOLDS_PROPERTY);
 	return indigo_aux_enumerate_properties(device, NULL, NULL);
 }
 
@@ -479,8 +751,37 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 	} else if (indigo_property_match_changeable(AUX_CLOUD_THRESHOLDS_PROPERTY, property)) {
 	// -------------------------------------------------------------------------------- AUX_CLOUD_THRESHOLDS
 		indigo_property_copy_values(AUX_CLOUD_THRESHOLDS_PROPERTY, property, false);
-		AUX_CLOUD_THRESHOLDS_PROPERTY->state = INDIGO_OK_STATE;
+		AUX_CLOUD_THRESHOLDS_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, AUX_CLOUD_THRESHOLDS_PROPERTY, NULL);
+		indigo_set_timer(device, 0, aux_cloud_thresholds_callback, NULL);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(X_AUX_URANUS_UNITS_PROPERTY, property)) {
+	// -------------------------------------------------------------------------------- AUX_UNITS
+		indigo_property_copy_values(X_AUX_URANUS_UNITS_PROPERTY, property, false);
+		X_AUX_URANUS_UNITS_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, X_AUX_URANUS_UNITS_PROPERTY, NULL);
+		indigo_set_timer(device, 0, aux_uranus_units_callback, NULL);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(X_AUX_URANUS_NMEA_OUTPUT_PROPERTY, property)) {
+	// -------------------------------------------------------------------------------- AUX_NMEA_OUTPUT
+		indigo_property_copy_values(X_AUX_URANUS_NMEA_OUTPUT_PROPERTY, property, false);
+		X_AUX_URANUS_NMEA_OUTPUT_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, X_AUX_URANUS_NMEA_OUTPUT_PROPERTY, NULL);
+		indigo_set_timer(device, 0, aux_uranus_nmea_output_callback, NULL);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(X_AUX_URANUS_OLED_LIGHT_PROPERTY, property)) {
+	// -------------------------------------------------------------------------------- AUX_OLED_LIGHT
+		indigo_property_copy_values(X_AUX_URANUS_OLED_LIGHT_PROPERTY, property, false);
+		X_AUX_URANUS_OLED_LIGHT_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, X_AUX_URANUS_OLED_LIGHT_PROPERTY, NULL);
+		indigo_set_timer(device, 0, aux_uranus_oled_light_callback, NULL);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(X_AUX_URANUS_NUM_SETTINGS_PROPERTY, property)) {
+	// -------------------------------------------------------------------------------- AUX_NUM_SETTINGS
+		indigo_property_copy_values(X_AUX_URANUS_NUM_SETTINGS_PROPERTY, property, false);
+		X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, X_AUX_URANUS_NUM_SETTINGS_PROPERTY, NULL);
+		indigo_set_timer(device, 0, aux_uranus_num_settings_callback, NULL);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG

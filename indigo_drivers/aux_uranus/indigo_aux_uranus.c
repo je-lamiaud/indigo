@@ -787,6 +787,10 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, AUX_CLOUD_THRESHOLDS_PROPERTY);
+			indigo_save_property(device, NULL, X_AUX_URANUS_UNITS_PROPERTY);
+			indigo_save_property(device, NULL, X_AUX_URANUS_NMEA_OUTPUT_PROPERTY);
+			indigo_save_property(device, NULL, X_AUX_URANUS_OLED_LIGHT_PROPERTY);
+			indigo_save_property(device, NULL, X_AUX_URANUS_NUM_SETTINGS_PROPERTY);
 		}
 	// --------------------------------------------------------------------------------
 	}

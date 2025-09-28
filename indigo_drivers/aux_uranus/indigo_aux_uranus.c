@@ -189,9 +189,9 @@ static bool uranus_connect(indigo_device *device) {
 		return false;
 
 	char response[16] = { 0 };
-	if (uranus_command(device, "M#", response, 16) && strncmp(response, "MS_", 3) == 0) {
+	if (uranus_command(device, "M#", response, sizeof(response)) && strncmp(response, "MS_", 3) == 0) {
 		strncpy(X_AUX_URANUS_HEALTH_ITEM->text.value, &response[3], INDIGO_VALUE_SIZE);
-		X_AUX_URANUS_HEALTH_PROPERTY->state = strncmp(X_AUX_URANUS_HEALTH_ITEM->text.value, "OK", sizeof(response)) == 0 ? INDIGO_OK_STATE : INDIGO_ALERT_STATE;
+		X_AUX_URANUS_HEALTH_PROPERTY->state = strncmp(X_AUX_URANUS_HEALTH_ITEM->text.value, "OK", 3) == 0 ? INDIGO_OK_STATE : INDIGO_ALERT_STATE;
 		indigo_update_property(device, X_AUX_URANUS_HEALTH_PROPERTY, NULL);
 		return true;
 	}
@@ -212,7 +212,7 @@ static void aux_timer_callback(indigo_device *device) {
 	if (PRIVATE_DATA->start_measure) {
 		// Start a sky brightness measurement
 		if (uranus_command(device, "SQ:1", response, RESPONSE_LENGTH)) {
-			if (strncmp(response, "SQ:MSR", 6) == 0) {
+			if (strncmp(response, "SQ:MSR", 7) == 0) {
 				AUX_WEATHER_PROPERTY->state = INDIGO_OK_STATE;
 				PRIVATE_DATA->start_measure = false;
 			} else {
@@ -225,7 +225,7 @@ static void aux_timer_callback(indigo_device *device) {
 		// Retrieve sky brightness measure
 		if (uranus_command(device, "SQ", response, RESPONSE_LENGTH)) {
 			char *tok = strtok_r(response, ":", &pnt);
-			if (tok == NULL || strncmp(tok, "SQ", 2) != 0) {
+			if (tok == NULL || strncmp(tok, "SQ", 3) != 0) {
 				AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
 				X_AUX_SENSOR_READINGS_PROPERTY->state = INDIGO_ALERT_STATE;
 			} else {
@@ -247,7 +247,7 @@ static void aux_timer_callback(indigo_device *device) {
 		PRIVATE_DATA->altitude_available = false;
 		if (uranus_command(device, "MA", response, RESPONSE_LENGTH)) {
 			char *tok = strtok_r(response, ":", &pnt);
-			if (tok == NULL || strncmp(tok, "MS_OK", 5) != 0) {
+			if (tok == NULL || strncmp(tok, "MS_OK", 6) != 0) {
 				AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
 				X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY->state = INDIGO_ALERT_STATE;
 				X_AUX_SENSOR_READINGS_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -272,7 +272,7 @@ static void aux_timer_callback(indigo_device *device) {
 		}
 		if (uranus_command(device, "CI", response, RESPONSE_LENGTH)) {
 			char *tok = strtok_r(response, ":", &pnt);
-			if (tok == NULL || strncmp(tok, "CI", 2) != 0) {
+			if (tok == NULL || strncmp(tok, "CI", 3) != 0) {
 				AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
 				AUX_CLOUD_PROPERTY->state = INDIGO_ALERT_STATE;
 			} else {
@@ -310,7 +310,7 @@ static void uranus_settings_callback(indigo_device *device) {
 
 	if (uranus_command(device, "CF", response, RESPONSE_LENGTH)) {
 		char *tok = strtok_r(response, ":", &pnt);
-		if (tok != NULL && strncmp(tok, "CF", RESPONSE_LENGTH) == 0) {
+		if (tok != NULL && strncmp(tok, "CF", 3) == 0) {
 			const int unit = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
 			indigo_set_switch(X_AUX_URANUS_UNITS_PROPERTY, unit == 0 ? X_AUX_URANUS_METRIC_UNITS_ITEM : X_AUX_URANUS_IMPERIAL_UNITS_ITEM, true);
 			const int isNmeaEnabled = strtol(strtok_r(NULL, ":", &pnt), NULL, 10);
@@ -378,7 +378,7 @@ static void aux_connection_handler(indigo_device *device) {
 
 			if (uranus_command(device, "MV", response, RESPONSE_LENGTH)) {
 				char *tok = strtok_r(response, ":", &pnt);
-				if (tok != NULL && strncmp(tok, "MV", 2) == 0) {
+				if (tok != NULL && strncmp(tok, "MV", 3) == 0) {
 					strncpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, strtok_r(NULL, ":", &pnt), INDIGO_VALUE_SIZE);
 				} else {
 					strncpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
@@ -388,7 +388,7 @@ static void aux_connection_handler(indigo_device *device) {
 			}
 			if (uranus_command(device, "SR", response, RESPONSE_LENGTH)) {
 				char *tok = strtok_r(response, ":", &pnt);
-				if (tok != NULL && strncmp(tok, "SR", 2) == 0) {
+				if (tok != NULL && strncmp(tok, "SR", 3) == 0) {
 					strncpy(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, strtok_r(NULL, ":", &pnt), INDIGO_VALUE_SIZE);
 				} else {
 					strncpy(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, "---", INDIGO_VALUE_SIZE);
@@ -530,7 +530,7 @@ static void aux_uranus_num_settings_callback(indigo_device *device) {
 
 	if (uranus_command(device, "CF", response, RESPONSE_LENGTH)) {
 		char *tok = strtok_r(response, ":", &pnt);
-		if (tok != NULL && strncmp(tok, "CF", RESPONSE_LENGTH) == 0) {
+		if (tok != NULL && strncmp(tok, "CF", 3) == 0) {
 			strtok_r(NULL, ":", &pnt); // Units
 			strtok_r(NULL, ":", &pnt); // NMEA
 			strtok_r(NULL, ":", &pnt); // OLED
@@ -581,7 +581,7 @@ static void aux_cloud_thresholds_callback(indigo_device *device) {
 	snprintf(command, sizeof(command), "C7:%d", clearThreshold);
 	if (uranus_command(device, command, response, RESPONSE_LENGTH)) {
 		char *tok = strtok_r(response, ":", &pnt);
-		if (tok != NULL && strncmp(tok, "C7", RESPONSE_LENGTH) == 0) {
+		if (tok != NULL && strncmp(tok, "C7", 3) == 0) {
 			if ((int)(indigo_atod(strtok_r(NULL, ":", &pnt)) + 0.5) == clearThreshold) {
 				AUX_CLOUD_THRESHOLDS_PROPERTY->state = INDIGO_OK_STATE;
 			} else {
@@ -832,7 +832,7 @@ static void gps_timer_callback(indigo_device *device) {
 		// Get time and location
 		if (uranus_command(device, "GP", response, RESPONSE_LENGTH)) {
 			char *tok = strtok_r(response, ":", &pnt);
-			if (tok == NULL || strncmp(tok, "GP", 2) != 0) {
+			if (tok == NULL || strncmp(tok, "GP", 3) != 0) {
 				GPS_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
 				GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
 				GPS_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -840,7 +840,7 @@ static void gps_timer_callback(indigo_device *device) {
 				indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
 			} else {
 				const char *fix = strtok_r(NULL, ":", &pnt);
-				if (!strncmp(fix, "0", 1)) {
+				if (!strncmp(fix, "0", 2)) {
 					if (GPS_STATUS_PROPERTY->state != INDIGO_OK_STATE
 						|| GPS_STATUS_NO_FIX_ITEM->light.value != INDIGO_ALERT_STATE) {
 						GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_ALERT_STATE;
@@ -853,7 +853,7 @@ static void gps_timer_callback(indigo_device *device) {
 						GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
 					if (GPS_UTC_TIME_PROPERTY->state != INDIGO_BUSY_STATE)
 						GPS_UTC_TIME_PROPERTY->state = INDIGO_BUSY_STATE;
-				} else if (!strncmp(fix, "2", 1)) {
+				} else if (!strncmp(fix, "1", 2) || !strncmp(fix, "2", 2)) {
 					if (GPS_STATUS_PROPERTY->state != INDIGO_OK_STATE
 						|| GPS_STATUS_2D_FIX_ITEM->light.value != INDIGO_BUSY_STATE) {
 						GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
@@ -866,7 +866,7 @@ static void gps_timer_callback(indigo_device *device) {
 						GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
 					if (GPS_UTC_TIME_PROPERTY->state != INDIGO_BUSY_STATE)
 						GPS_UTC_TIME_PROPERTY->state = INDIGO_BUSY_STATE;
-				} else if (!strncmp(fix, "3", 1)) {
+				} else if (!strncmp(fix, "3", 2)) {
 					if (GPS_STATUS_PROPERTY->state != INDIGO_OK_STATE
 						|| GPS_STATUS_3D_FIX_ITEM->light.value != INDIGO_OK_STATE) {
 						GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_IDLE_STATE;
@@ -916,7 +916,7 @@ static void gps_timer_callback(indigo_device *device) {
 			// Interrogate altitude
 			if (uranus_command(device, "MA", response, RESPONSE_LENGTH)) {
 				char *tok = strtok_r(response, ":", &pnt);
-				if (tok == NULL || strncmp(tok, "MS_OK", 5) != 0) {
+				if (tok == NULL || strncmp(tok, "MS_OK", 6) != 0) {
 					GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
 				} else {
 					strtok_r(NULL, ":", &pnt);

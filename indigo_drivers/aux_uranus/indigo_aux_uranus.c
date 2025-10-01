@@ -75,6 +75,7 @@
 #define X_AUX_URANUS_SLEEP_TIMEOUT_ITEM          (X_AUX_URANUS_NUM_SETTINGS_PROPERTY->items + 0)
 #define X_AUX_URANUS_SQM_CAL_OFFSET_ITEM         (X_AUX_URANUS_NUM_SETTINGS_PROPERTY->items + 1)
 #define X_AUX_URANUS_TZONE_OFFSET_ITEM           (X_AUX_URANUS_NUM_SETTINGS_PROPERTY->items + 2)
+#define X_AUX_SQM_SMOOTHING_DURATION_ITEM        (X_AUX_URANUS_NUM_SETTINGS_PROPERTY->items + 3)
 
 #define AUX_CLOUD_PROPERTY                       (PRIVATE_DATA->cloud_condition_property)
 #define AUX_CLOUD_CLEAR_ITEM                     (AUX_CLOUD_PROPERTY->items + 0)
@@ -118,6 +119,7 @@
 #define X_AUX_URANUS_SLEEP_TIMEOUT_ITEM_NAME    "SLEEP_TIMEOUT"
 #define X_AUX_URANUS_SQM_CAL_OFFSET_ITEM_NAME   "SQM_CAL_OFFSET"
 #define X_AUX_URANUS_TZONE_OFFSET_ITEM_NAME     "TIMEZONE_OFFSET"
+#define X_AUX_SQM_SMOOTHING_DURATION_ITEM_NAME  "SQM_SMOOTHING_DURATION"
 
 #define RESPONSE_LENGTH 120
 
@@ -138,6 +140,8 @@ typedef struct {
 	indigo_timer *aux_timer_callback;
 	indigo_timer *gps_timer_callback;
 	bool start_measure;
+	int sqmSamplesNb, sqmSamplesIndex, sqmSampleMax;
+	double sqmSamples[30];
 	int altitude;            // Altitude is provided by the MA command which is used by the weather driver
 	bool altitude_available; // The GPS driver reuses it if available, otherwise it uses the MA command
 	time_t gps_time;
@@ -229,7 +233,20 @@ static void aux_timer_callback(indigo_device *device) {
 				AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
 				X_AUX_SENSOR_READINGS_PROPERTY->state = INDIGO_ALERT_STATE;
 			} else {
-				AUX_WEATHER_SKY_BRIGHTNESS_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
+				PRIVATE_DATA->sqmSamples[PRIVATE_DATA->sqmSamplesIndex] = indigo_atod(strtok_r(NULL, ":", &pnt));
+				if (PRIVATE_DATA->sqmSamplesNb < PRIVATE_DATA->sqmSampleMax
+					 && PRIVATE_DATA->sqmSamplesNb <= PRIVATE_DATA->sqmSamplesIndex)
+					PRIVATE_DATA->sqmSamplesNb++;
+				if (PRIVATE_DATA->sqmSamplesIndex < (PRIVATE_DATA->sqmSampleMax - 1))
+					PRIVATE_DATA->sqmSamplesIndex++;
+				else
+					PRIVATE_DATA->sqmSamplesIndex = 0;
+				double sum = 0;
+				for (int i = 0; i < PRIVATE_DATA->sqmSamplesNb; i++) {
+					sum += PRIVATE_DATA->sqmSamples[i];
+				}
+				AUX_WEATHER_SKY_BRIGHTNESS_ITEM->number.value = sum / (double)PRIVATE_DATA->sqmSamplesNb;
+
 				X_AUX_WEATHER_NELM_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
 				X_AUX_FULL_SPETRUM_RAW_VALUE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
 				X_AUX_VISUAL_RAW_VALUE_ITEM->number.value = indigo_atod(strtok_r(NULL, ":", &pnt));
@@ -375,6 +392,11 @@ static void aux_connection_handler(indigo_device *device) {
 			indigo_define_property(device, X_AUX_URANUS_NMEA_OUTPUT_PROPERTY, NULL);
 			indigo_define_property(device, X_AUX_URANUS_OLED_LIGHT_PROPERTY, NULL);
 			indigo_define_property(device, X_AUX_URANUS_NUM_SETTINGS_PROPERTY, NULL);
+			PRIVATE_DATA->sqmSampleMax = (int)(X_AUX_SQM_SMOOTHING_DURATION_ITEM->number.value / 10.0 + 0.5);
+			if (PRIVATE_DATA->sqmSampleMax < 1)
+				PRIVATE_DATA->sqmSampleMax = 1;
+			PRIVATE_DATA->sqmSamplesNb = 0;
+			PRIVATE_DATA->sqmSamplesIndex = 0;
 
 			if (uranus_command(device, "MV", response, RESPONSE_LENGTH)) {
 				char *tok = strtok_r(response, ":", &pnt);
@@ -635,6 +657,7 @@ static indigo_result aux_attach(indigo_device *device) {
 		indigo_init_number_item(AUX_WEATHER_PRESSURE_ITEM, AUX_WEATHER_PRESSURE_ITEM_NAME, "Atmospheric pressure (hPa)", 300, 1250, 0, 0);
 		indigo_init_number_item(AUX_WEATHER_CLOUD_COVER_ITEM, "X_AUX_WEATHER_COULD_COVER", "Cloud cover [%]", 0, 100, 0, 0);
 		indigo_init_number_item(AUX_WEATHER_SKY_BRIGHTNESS_ITEM, AUX_WEATHER_SKY_BRIGHTNESS_ITEM_NAME, "Sky brightness [m/arcsec\u00B2]", 0, 30, 0, 0);
+		strncpy(AUX_WEATHER_SKY_BRIGHTNESS_ITEM->number.format, "%.2f", INDIGO_VALUE_SIZE);
 		indigo_init_number_item(AUX_WEATHER_SKY_TEMPERATURE_ITEM, AUX_WEATHER_SKY_TEMPERATURE_ITEM_NAME, "Sky temperature [\u00B0C]", -100, 100, 0, 0);
 		indigo_init_number_item(AUX_WEATHER_SKY_BORTLE_CLASS_ITEM, AUX_WEATHER_SKY_BORTLE_CLASS_ITEM_NAME, "Sky Bortle class", 1, 9, 0, 0);
 		indigo_init_number_item(X_AUX_WEATHER_NELM_ITEM, X_AUX_WEATHER_NELM_ITEM_NAME, "Naked eye limiting magnitude", 0, 10, 0, 0);
@@ -663,13 +686,14 @@ static indigo_result aux_attach(indigo_device *device) {
 		indigo_init_switch_item(X_AUX_URANUS_OLED_LIGHT_OFF_ITEM, X_AUX_URANUS_OLED_LIGHT_OFF_ITEM_NAME, "Off", true);
 		indigo_init_switch_item(X_AUX_URANUS_OLED_LIGHT_ON_ITEM, X_AUX_URANUS_OLED_LIGHT_ON_ITEM_NAME, "On", false);
 		// -------------------------------------------------------------------------------- AUX_NUM_SETTINGS
-		X_AUX_URANUS_NUM_SETTINGS_PROPERTY = indigo_init_number_property(NULL, device->name, X_AUX_URANUS_NUM_SETTINGS_PROPERTY_NAME, X_AUX_SETTINGS_GROUP, "Miscelaneous Settings", INDIGO_OK_STATE, INDIGO_RW_PERM, 3);
+		X_AUX_URANUS_NUM_SETTINGS_PROPERTY = indigo_init_number_property(NULL, device->name, X_AUX_URANUS_NUM_SETTINGS_PROPERTY_NAME, X_AUX_SETTINGS_GROUP, "Miscelaneous Settings", INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
 		if (X_AUX_URANUS_NUM_SETTINGS_PROPERTY == NULL)
 			return INDIGO_FAILED;
 		indigo_init_number_item(X_AUX_URANUS_SLEEP_TIMEOUT_ITEM, X_AUX_URANUS_SLEEP_TIMEOUT_ITEM_NAME, "Sleep timeout [s]", 0, 30, 1, 2);
 		indigo_init_number_item(X_AUX_URANUS_SQM_CAL_OFFSET_ITEM, X_AUX_URANUS_SQM_CAL_OFFSET_ITEM_NAME, "SQM calibration offset [mag/arcsec\u00B2]", -2.56, 2.54, 0.02, 0);
 		strncpy(X_AUX_URANUS_SQM_CAL_OFFSET_ITEM->number.format, "%.2f", INDIGO_VALUE_SIZE);
 		indigo_init_number_item(X_AUX_URANUS_TZONE_OFFSET_ITEM, X_AUX_URANUS_TZONE_OFFSET_ITEM_NAME, "Timezone offset [h]", -12, 14, 1, 0);
+		indigo_init_number_item(X_AUX_SQM_SMOOTHING_DURATION_ITEM, X_AUX_SQM_SMOOTHING_DURATION_ITEM_NAME, "SQM smoothing duration [s]", 10, sizeof(PRIVATE_DATA->sqmSamples)/sizeof(double)*10, 10, 120);
 		// -------------------------------------------------------------------------------- AUX_CLOUD
 		AUX_CLOUD_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_CLOUD_PROPERTY_NAME, AUX_WEATHER_GROUP, "Cloud conditions", INDIGO_OK_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
 		if (AUX_CLOUD_PROPERTY == NULL)
@@ -781,6 +805,16 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 		indigo_property_copy_values(X_AUX_URANUS_NUM_SETTINGS_PROPERTY, property, false);
 		X_AUX_URANUS_NUM_SETTINGS_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, X_AUX_URANUS_NUM_SETTINGS_PROPERTY, NULL);
+		int samplesMax = (int)(X_AUX_SQM_SMOOTHING_DURATION_ITEM->number.value/10.0 + 0.5);
+		if (samplesMax < 1)
+			samplesMax = 1;
+		if (PRIVATE_DATA->sqmSampleMax != samplesMax) {
+			PRIVATE_DATA->sqmSampleMax = samplesMax;
+			if (PRIVATE_DATA->sqmSamplesIndex >= samplesMax) // We would loose recent samples, restart from scratch
+				PRIVATE_DATA->sqmSamplesIndex = 0;
+			if (PRIVATE_DATA->sqmSamplesNb > samplesMax) // Disregard samples older than those removed by the change 
+				PRIVATE_DATA->sqmSamplesNb = PRIVATE_DATA->sqmSamplesIndex;
+		}
 		indigo_set_timer(device, 0, aux_uranus_num_settings_callback, NULL);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {

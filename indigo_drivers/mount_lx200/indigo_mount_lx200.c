@@ -51,6 +51,7 @@
 #include <indigo/indigo_io.h>
 #include <indigo/indigo_align.h>
 #include <indigo/indigo_base64.h>
+#include <indigo/indigo_md5.h>
 
 #include "indigo_mount_lx200.h"
 
@@ -83,11 +84,12 @@
 #define MOUNT_TYPE_AP_ITEM							(MOUNT_TYPE_PROPERTY->items+7)
 #define MOUNT_TYPE_ON_STEP_ITEM					(MOUNT_TYPE_PROPERTY->items+8)
 #define MOUNT_TYPE_AGOTINO_ITEM					(MOUNT_TYPE_PROPERTY->items+9)
-#define MOUNT_TYPE_ZWO_ITEM				 			(MOUNT_TYPE_PROPERTY->items+10)
-#define MOUNT_TYPE_NYX_ITEM				 			(MOUNT_TYPE_PROPERTY->items+11)
-#define MOUNT_TYPE_OAT_ITEM				 			(MOUNT_TYPE_PROPERTY->items+12)
-#define MOUNT_TYPE_TEEN_ASTRO_ITEM				 	(MOUNT_TYPE_PROPERTY->items+13)
-#define MOUNT_TYPE_GENERIC_ITEM         (MOUNT_TYPE_PROPERTY->items+14)
+#define MOUNT_TYPE_ZWO_ITEM				 		(MOUNT_TYPE_PROPERTY->items+10)
+#define MOUNT_TYPE_NYX_ITEM				 		(MOUNT_TYPE_PROPERTY->items+11)
+#define MOUNT_TYPE_OAT_ITEM				 		(MOUNT_TYPE_PROPERTY->items+12)
+#define MOUNT_TYPE_TEEN_ASTRO_ITEM				(MOUNT_TYPE_PROPERTY->items+13)
+#define MOUNT_TYPE_EQTRACK_ITEM				 	(MOUNT_TYPE_PROPERTY->items+14)
+#define MOUNT_TYPE_GENERIC_ITEM         (MOUNT_TYPE_PROPERTY->items+15)
 
 
 #define MOUNT_TYPE_PROPERTY_NAME				"X_MOUNT_TYPE"
@@ -105,6 +107,7 @@
 #define MOUNT_TYPE_NYX_ITEM_NAME				"NYX"
 #define MOUNT_TYPE_OAT_ITEM_NAME				"OAT"
 #define MOUNT_TYPE_TEEN_ASTRO_ITEM_NAME	    "TEEN_ASTRO"
+#define MOUNT_TYPE_EQTRACK_ITEM_NAME		"EQTRACK"
 #define MOUNT_TYPE_GENERIC_ITEM_NAME		"GENERIC"
 
 #define ZWO_BUZZER_PROPERTY				(PRIVATE_DATA->zwo_buzzer_property)
@@ -137,6 +140,10 @@
 #define NYX_MERIDIAN_FLIP_ENABLED_ITEM	(NYX_MERIDIAN_FLIP_PROPERTY->items+0)
 #define NYX_MERIDIAN_FLIP_DISABLED_ITEM	(NYX_MERIDIAN_FLIP_PROPERTY->items+1)
 
+#define EQTRACK_AUTHENTICATION_PROPERTY	(PRIVATE_DATA->eqtrack_authentication_property)
+#define EQTRACK_AUTHENTICATION_USER_ITEM			(EQTRACK_AUTHENTICATION_PROPERTY->items+0)
+#define EQTRACK_AUTHENTICATION_PASSWORD_ITEM	(EQTRACK_AUTHENTICATION_PROPERTY->items+1)
+
 #define NYX_WIFI_AP_PROPERTY_NAME		"X_NYX_WIFI_AP"
 #define NYX_WIFI_AP_SSID_ITEM_NAME		"AP_SSID"
 #define NYX_WIFI_AP_PASSWORD_ITEM_NAME	"AP_PASSWORD"
@@ -156,6 +163,10 @@
 #define NYX_MERIDIAN_FLIP_PROPERTY_NAME	"X_NYX_MERIDIAN_FLIP"
 #define NYX_MERIDIAN_FLIP_ENABLED_ITEM_NAME	"ENABLED"
 #define NYX_MERIDIAN_FLIP_DISABLED_ITEM_NAME	"DISABLED"
+
+#define EQTRACK_AUTHENTICATION_PROPERTY_NAME	"X_EQTRACK_AUTHENTICATION"
+#define EQTRACK_AUTHENTICATION_USER_ITEM_NAME		"USER"
+#define EQTRACK_AUTHENTICATION_PASSWORD_ITEM_NAME	"PASSWORD"
 
 #define AUX_WEATHER_PROPERTY            (PRIVATE_DATA->weather_property)
 #define AUX_WEATHER_TEMPERATURE_ITEM    (AUX_WEATHER_PROPERTY->items + 0)
@@ -205,6 +216,7 @@ typedef struct {
 	indigo_property *nyx_wifi_reset_property;
 	indigo_property *nyx_leveler_property;
 	indigo_property *nyx_meridian_flip_property;
+	indigo_property *eqtrack_authentication_property;
 	indigo_property *weather_property;
 	indigo_property *info_property;
 	indigo_property *power_outlet_property;
@@ -1419,7 +1431,9 @@ static bool meade_detect_mount(indigo_device *device) {
 		INDIGO_DRIVER_LOG(DRIVER_NAME, "Product: '%s'", response);
 		strncpy(PRIVATE_DATA->product, response, 64);
 		MOUNT_TYPE_PROPERTY->state = INDIGO_OK_STATE;
-		if (!strncmp(PRIVATE_DATA->product, "LX", 2) || !strncmp(PRIVATE_DATA->product, "Autostar", 8)) {
+		if (!strcmp(PRIVATE_DATA->product, "LX200 EQTrack")) {
+			indigo_set_switch(MOUNT_TYPE_PROPERTY, MOUNT_TYPE_EQTRACK_ITEM, true);
+		} else if (!strncmp(PRIVATE_DATA->product, "LX", 2) || !strncmp(PRIVATE_DATA->product, "Autostar", 8)) {
 			indigo_set_switch(MOUNT_TYPE_PROPERTY, MOUNT_TYPE_MEADE_ITEM, true);
 		} else if (!strcmp(PRIVATE_DATA->product, "EQMac")) {
 			indigo_set_switch(MOUNT_TYPE_PROPERTY, MOUNT_TYPE_EQMAC_ITEM, true);
@@ -1887,6 +1901,15 @@ static void meade_init_teenastro_mount(indigo_device *device) {
 	meade_update_mount_state(device);
 }
 
+static void meade_init_eqtrack_mount(indigo_device *device) {
+	meade_init_meade_mount(device);
+
+	strcpy(MOUNT_INFO_VENDOR_ITEM->text.value, "EQTrack");
+
+	EQTRACK_AUTHENTICATION_PROPERTY->hidden = false;
+	indigo_define_property(device, EQTRACK_AUTHENTICATION_PROPERTY, NULL);
+}
+
 static void meade_init_generic_mount(indigo_device *device) {
 	// A list of commands can be found in the classic LX200 Instruction Manual.
 	// It is assumed that some of the compatible mounts (very old) are created
@@ -1915,6 +1938,7 @@ static void meade_init_mount(indigo_device *device) {
 	NYX_WIFI_RESET_PROPERTY->hidden = true;
 	NYX_LEVELER_PROPERTY->hidden = true;
 	NYX_MERIDIAN_FLIP_PROPERTY->hidden = true;
+	EQTRACK_AUTHENTICATION_PROPERTY->hidden = true;
 	memset(PRIVATE_DATA->prev_state, 0, sizeof(PRIVATE_DATA->prev_state));
 	if (MOUNT_TYPE_MEADE_ITEM->sw.value) {
 		meade_init_meade_mount(device);
@@ -1954,6 +1978,9 @@ static void meade_init_mount(indigo_device *device) {
 	}
 	else if (MOUNT_TYPE_TEEN_ASTRO_ITEM->sw.value) {
 		meade_init_teenastro_mount(device);
+	}
+	else if (MOUNT_TYPE_EQTRACK_ITEM->sw.value) {
+		meade_init_eqtrack_mount(device);
 	}
 	else
 		meade_init_generic_mount(device);
@@ -2677,6 +2704,8 @@ static void meade_update_mount_state(indigo_device *device) {
 			meade_update_oat_state(device);
 		} else if (MOUNT_TYPE_TEEN_ASTRO_ITEM->sw.value) {
 			meade_update_teenastro_state(device);
+		} else if (MOUNT_TYPE_EQTRACK_ITEM->sw.value) {
+			meade_update_meade_state(device);
 		} else {
 			meade_update_generic_state(device);
 		}
@@ -2764,6 +2793,7 @@ static void mount_connect_callback(indigo_device *device) {
 		indigo_delete_property(device, NYX_WIFI_RESET_PROPERTY, NULL);
 		indigo_delete_property(device, NYX_LEVELER_PROPERTY, NULL);
 		indigo_delete_property(device, NYX_MERIDIAN_FLIP_PROPERTY, NULL);
+		indigo_delete_property(device, EQTRACK_AUTHENTICATION_PROPERTY, NULL);
 		MOUNT_TYPE_PROPERTY->perm = INDIGO_RW_PERM;
 		indigo_delete_property(device, MOUNT_TYPE_PROPERTY, NULL);
 		indigo_define_property(device, MOUNT_TYPE_PROPERTY, NULL);
@@ -3090,6 +3120,35 @@ static void nyx_reset_callback(indigo_device *device) {
 	indigo_update_property(device, NYX_WIFI_RESET_PROPERTY, NULL);
 }
 
+static void eqtrack_authentication_callback(indigo_device *device) {
+	char response[128] = {0};
+	// Request authentication
+	if (meade_command(device, ":LA#", response, sizeof(response), 0)) {
+		const int userLen = strlen(EQTRACK_AUTHENTICATION_USER_ITEM->text.value);
+		const int challengeLen = strlen(response);
+		char authData[128] = {0}, cmd[37] = {':', 'L', 'P', 0};
+		strncpy(authData, EQTRACK_AUTHENTICATION_USER_ITEM->text.value, sizeof(authData) - 1);
+		authData[userLen] = ':';
+		strncpy(&authData[userLen + 1], response, sizeof(authData) - userLen - 2);
+		authData[userLen + 1 + challengeLen] = ':';
+		strncpy(&authData[userLen + 1 + challengeLen + 1], EQTRACK_AUTHENTICATION_PASSWORD_ITEM->text.value,
+		        sizeof(authData) - userLen - challengeLen - 3);
+		// Calculate MD5 digest
+		indigo_md5(&cmd[3], authData, strlen(authData));
+		cmd[35] = '#';
+		// Send response
+		if (meade_command(device, cmd, response, sizeof(response), 0) && strcmp(response, "1") == 0) {
+			indigo_send_message(device, "EQTrack authentication successful");
+			EQTRACK_AUTHENTICATION_PROPERTY->state = INDIGO_OK_STATE;
+		}
+		else {
+			indigo_send_message(device, "EQTrack authentication failed");
+			EQTRACK_AUTHENTICATION_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+	}
+	indigo_update_property(device, EQTRACK_AUTHENTICATION_PROPERTY, NULL);
+}
+
 static indigo_result mount_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
 
 static indigo_result mount_attach(indigo_device *device) {
@@ -3134,6 +3193,7 @@ static indigo_result mount_attach(indigo_device *device) {
 		indigo_init_switch_item(MOUNT_TYPE_NYX_ITEM, MOUNT_TYPE_NYX_ITEM_NAME, "Pegasus NYX", false);
 		indigo_init_switch_item(MOUNT_TYPE_OAT_ITEM, MOUNT_TYPE_OAT_ITEM_NAME, "OpenAstroTech", false);
 		indigo_init_switch_item(MOUNT_TYPE_TEEN_ASTRO_ITEM, MOUNT_TYPE_TEEN_ASTRO_ITEM_NAME, "Teen Astro", false);
+		indigo_init_switch_item(MOUNT_TYPE_EQTRACK_ITEM, MOUNT_TYPE_EQTRACK_ITEM_NAME, "EQTrack", false);
 		indigo_init_switch_item(MOUNT_TYPE_GENERIC_ITEM, MOUNT_TYPE_GENERIC_ITEM_NAME, "Generic", false);
 		// ---------------------------------------------------------------------------- ZWO_BUZZER
 		ZWO_BUZZER_PROPERTY = indigo_init_switch_property(NULL, device->name, ZWO_BUZZER_PROPERTY_NAME, MOUNT_ADVANCED_GROUP, "Buzzer volume", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 3);
@@ -3178,6 +3238,13 @@ static indigo_result mount_attach(indigo_device *device) {
 		indigo_init_switch_item(NYX_MERIDIAN_FLIP_ENABLED_ITEM, NYX_MERIDIAN_FLIP_ENABLED_ITEM_NAME, "Enabled", true);
 		indigo_init_switch_item(NYX_MERIDIAN_FLIP_DISABLED_ITEM, NYX_MERIDIAN_FLIP_DISABLED_ITEM_NAME, "Disabled", false);
 		NYX_MERIDIAN_FLIP_PROPERTY->hidden = true;
+		// ---------------------------------------------------------------------------- MERIDIAN_FLIP
+		EQTRACK_AUTHENTICATION_PROPERTY = indigo_init_text_property(NULL, device->name, EQTRACK_AUTHENTICATION_PROPERTY_NAME, MOUNT_ADVANCED_GROUP, "Authentication", INDIGO_OK_STATE, INDIGO_WO_PERM, 2);
+		if (EQTRACK_AUTHENTICATION_PROPERTY == NULL)
+			return INDIGO_FAILED;
+		EQTRACK_AUTHENTICATION_PROPERTY->hidden = true;
+		indigo_init_text_item(EQTRACK_AUTHENTICATION_USER_ITEM, EQTRACK_AUTHENTICATION_USER_ITEM_NAME, "User", "");
+		indigo_init_text_item(EQTRACK_AUTHENTICATION_PASSWORD_ITEM, EQTRACK_AUTHENTICATION_PASSWORD_ITEM_NAME, "Password", "");
 		// --------------------------------------------------------------------------------
 		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->port_mutex, NULL);
@@ -3201,6 +3268,7 @@ static indigo_result mount_enumerate_properties(indigo_device *device, indigo_cl
 		if (indigo_property_match(NYX_MERIDIAN_FLIP_PROPERTY, property)) {
 			indigo_define_property(device, NYX_MERIDIAN_FLIP_PROPERTY, NULL);
 		}
+		indigo_define_matching_property(EQTRACK_AUTHENTICATION_PROPERTY);
 	}
 	return indigo_mount_enumerate_properties(device, NULL, NULL);
 }
@@ -3433,6 +3501,13 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		indigo_property_copy_values(NYX_MERIDIAN_FLIP_PROPERTY, property, false);
 		indigo_update_property(device, NYX_MERIDIAN_FLIP_PROPERTY, NULL);
 		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(EQTRACK_AUTHENTICATION_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- EQTRACK_AUTHENTICATION
+		indigo_property_copy_values(EQTRACK_AUTHENTICATION_PROPERTY, property, false);
+		EQTRACK_AUTHENTICATION_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, EQTRACK_AUTHENTICATION_PROPERTY, NULL);
+		indigo_set_timer(device, 0, eqtrack_authentication_callback, NULL);
+		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
@@ -3440,6 +3515,9 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 			indigo_save_property(device, NULL, MOUNT_TYPE_PROPERTY);
 			if (MOUNT_TYPE_NYX_ITEM->sw.value) {
 				indigo_save_property(device, NULL, NYX_MERIDIAN_FLIP_PROPERTY);
+			}
+			if (MOUNT_TYPE_EQTRACK_ITEM->sw.value) {
+				indigo_save_property(device, NULL, EQTRACK_AUTHENTICATION_PROPERTY);
 			}
 		}
 		// --------------------------------------------------------------------------------
@@ -3461,6 +3539,7 @@ static indigo_result mount_detach(indigo_device *device) {
 	indigo_release_property(NYX_WIFI_RESET_PROPERTY);
 	indigo_release_property(NYX_LEVELER_PROPERTY);
 	indigo_release_property(NYX_MERIDIAN_FLIP_PROPERTY);
+	indigo_release_property(EQTRACK_AUTHENTICATION_PROPERTY);
 	indigo_release_property(MOUNT_TYPE_PROPERTY);
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_mount_detach(device);

@@ -1901,6 +1901,8 @@ static void meade_init_teenastro_mount(indigo_device *device) {
 	meade_update_mount_state(device);
 }
 
+static void eqtrack_authentication_callback(indigo_device *device);
+
 static void meade_init_eqtrack_mount(indigo_device *device) {
 	meade_init_meade_mount(device);
 
@@ -1908,6 +1910,12 @@ static void meade_init_eqtrack_mount(indigo_device *device) {
 
 	EQTRACK_AUTHENTICATION_PROPERTY->hidden = false;
 	indigo_define_property(device, EQTRACK_AUTHENTICATION_PROPERTY, NULL);
+
+	if (EQTRACK_AUTHENTICATION_USER_ITEM->text.value[0] != 0) {
+		EQTRACK_AUTHENTICATION_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, EQTRACK_AUTHENTICATION_PROPERTY, NULL);
+		indigo_set_timer(device, 0, eqtrack_authentication_callback, NULL);
+	}
 }
 
 static void meade_init_generic_mount(indigo_device *device) {

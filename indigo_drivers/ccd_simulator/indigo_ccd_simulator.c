@@ -565,8 +565,13 @@ static void create_frame(indigo_device *device) {
 						}
 						double xx = (center_x - x) * horizontal_bin;
 						double eclipse_xx = (eclipse_x - x) * horizontal_bin;
-						double value = 500000 * exp(-((xx * xx + yy * yy) / 20000.0));
-						if (GUIDER_MODE_ECLIPSE_ITEM->sw.value && eclipse_xx*eclipse_xx+eclipse_yy*eclipse_yy < 50000)
+						double r = sqrt(xx * xx + yy * yy);
+						double value;
+						if (r < 250.0)
+							value = 50000.0;
+						else
+							value = 50000.0 * exp(-((r - 250.0)*(r - 250.0)) / 100.0);
+						if (GUIDER_MODE_ECLIPSE_ITEM->sw.value && eclipse_xx*eclipse_xx+eclipse_yy*eclipse_yy < 250.0*250.0)
 							value = 0;
 						if (value < 65535)
 							raw[yw + x] += (unsigned short)value;

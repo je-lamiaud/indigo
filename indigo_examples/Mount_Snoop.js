@@ -16,9 +16,9 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-var theMount = null;
-var theJoystick = null;
-var theGPS = null;
+var theMount = {devName: null, rules: []};
+var theJoystick = {devName: null, rules: []};
+var theGPS = {devName: null, rules: []};
 
 const log_prefix = "Mount snoop: ";
 const Mount_Mask    = 0x00001;
@@ -28,30 +28,46 @@ const Agent_Mask    = 0x04000;
 
 indigo_log(log_prefix + "Starting automatic mount snoop handling");
 
-function setSnoop(item, device)
+function addSnoop(device)
 {
-   var dev_name;
-   if (device == null)
-      dev_name = "";
-   else
-      dev_name = device;
-
-   if (theMount != null)
+   if (device.devName != null && theMount.devName != null)
    {
-      var snoopProp = indigo_devices[theMount].SNOOP_DEVICES;
-      var snoopItem = snoopProp.items[item];
-      if (snoopItem != undefined && snoopItem != dev_name)
+      var snoop = indigo_devices["Snoop Agent"];
+      var mount = indigo_devices[theMount.devName];
+      // Connect properties with identical names
+      for (var devProp in indigo_devices[device.devName])
       {
-         var items = {};
-         items[item] = dev_name;
-         indigo_devices[theMount].SNOOP_DEVICES.change(items);
+         if ((devProp.startsWith("MOUNT") || devProp.startsWith("GEOGRAPHIC") || devProp.startsWith("UTC"))
+             && mount[devProp])
+         {
+            rule = {SOURCE_DEVICE: device.devName, SOURCE_PROPERTY: devProp,
+                    TARGET_DEVICE: theMount.devName, TARGET_PROPERTY: devProp};
+            indigo_log(log_prefix + "Connecting "
+                                    + rule.SOURCE_DEVICE + "." + rule.SOURCE_PROPERTY
+                                    + " to " + rule.TARGET_DEVICE + "." + rule.TARGET_PROPERTY);
+            snoop.SNOOP_ADD_RULE.change(rule);
+            device.rules.push(rule);
+         }
       }
+   }
+}
+
+function delSnoop(device)
+{
+   var snoop = indigo_devices["Snoop Agent"];
+   while (device.rules.length != 0)
+   {
+      var r = device.rules.pop();
+      indigo_log(log_prefix + "Disconnecting "
+                             + r.SOURCE_DEVICE + "." + r.SOURCE_PROPERTY
+                             + " from " + r.TARGET_DEVICE + "." + r.TARGET_PROPERTY);
+      snoop.SNOOP_REMOVE_RULE.change(r);
    }
 }
 
 function loadConfig(device)
 {
-   indigo_devices[device].CONFIG.change({LOAD: true});
+   indigo_devices[device.devName].CONFIG.change({LOAD: true});
 }
 
 indigo_event_handlers.Mount_snoop_handler = {
@@ -64,22 +80,24 @@ indigo_event_handlers.Mount_snoop_handler = {
          // indigo_log(log_prefix + property.name + " update on " + dev_name);
          if (property.items.DISCONNECTED)
          {
-            if (theMount == dev_name)
+            if (theMount.devName == dev_name)
             {
                indigo_log(log_prefix + "Mount " + dev_name + " removed, disconnected");
-               theMount = null;
+               delSnoop(theJoystick);
+               delSnoop(theGPS);
+               theMount.devName = null;
             }
-            else if (theJoystick == dev_name)
+            else if (theJoystick.devName == dev_name)
             {
                indigo_log(log_prefix + "Joystick " + dev_name + " removed, disconnected");
-               theJoystick = null;
-               setSnoop("JOYSTICK", theJoystick);
+               delSnoop(theJoystick);
+               theJoystick.devName = null;
             }
-            else if (theGPS == dev_name)
+            else if (theGPS.devName == dev_name)
             {
                indigo_log(log_prefix + "GPS " + dev_name + " removed, disconnected");
-               theGPS = null;
-               setSnoop("GPS", theGPS);
+               delSnoop(theGPS);
+               theGPS.devName = null;
             }
          }
          else if (property.items.CONNECTED)
@@ -88,29 +106,29 @@ indigo_event_handlers.Mount_snoop_handler = {
             if (itf != undefined)
             {
                if ((itf & (Mount_Mask | Agent_Mask)) == Mount_Mask
-                   && theMount == null)
+                   && theMount.devName == null)
                {
-                  indigo_log(log_prefix + "Mount set to" + dev_name);
-                  theMount = dev_name;
+                  indigo_log(log_prefix + "Mount set to " + dev_name);
+                  theMount.devName = dev_name;
                   loadConfig(theMount);
-                  setSnoop("JOYSTICK", theJoystick)
-                  setSnoop("GPS", theGPS)
+                  addSnoop(theJoystick)
+                  addSnoop(theGPS)
                }
                else if ((itf & (Joystick_Mask | Agent_Mask)) == Joystick_Mask
-                        && theJoystick == null)
+                        && theJoystick.devName == null)
                {
-                  indigo_log(log_prefix + "Joystick set to" + dev_name);
-                  theJoystick = dev_name;
+                  indigo_log(log_prefix + "Joystick set to " + dev_name);
+                  theJoystick.devName = dev_name;
                   loadConfig(theJoystick);
-                  setSnoop("JOYSTICK", theJoystick)
+                  addSnoop(theJoystick)
                }
                else if ((itf & (GPS_Mask | Agent_Mask)) == GPS_Mask
-                        && theGPS == null)
+                        && theGPS.devName == null)
                {
-                  indigo_log(log_prefix + "GPS set to" + dev_name);
-                  theGPS = dev_name;
+                  indigo_log(log_prefix + "GPS set to " + dev_name);
+                  theGPS.devName = dev_name;
                   loadConfig(theGPS);
-                  setSnoop("GPS", theGPS)
+                  addSnoop(theGPS)
                }
             }
          }
@@ -121,22 +139,24 @@ indigo_event_handlers.Mount_snoop_handler = {
       {
          var dev_name = property.device;
          // indigo_log(log_prefix + property.name + " delete on " + dev_name);
-         if (theMount == dev_name)
+         if (theMount.devName == dev_name)
          {
             indigo_log(log_prefix + "Mount " + dev_name + " removed, deleted");
-            theMount = null;
+            delSnoop(theJoystick);
+            delSnoop(theGPS);
+            theMount.devName = null;
          }
-         if (theJoystick == dev_name)
+         if (theJoystick.devName == dev_name)
          {
             indigo_log(log_prefix + "Joystick " + dev_name + " removed, deleted");
-            theJoystick = null;
-            setSnoop("JOYSTICK", theJoystick)
+            delSnoop(theJoystick)
+            theJoystick.devName = null;
          }
-         if (theGPS == dev_name)
+         if (theGPS.devName != null && theGPS == dev_name)
          {
             indigo_log(log_prefix + "GPS " + dev_name + " removed, deleted");
-            theGPS = null;
-            setSnoop("GPS", theGPS)
+            delSnoop(theGPS)
+            theGPS.devName = null;
          }
       }
    }

@@ -1,4 +1,5 @@
-// Created by Rumen Bogdanovski, 2022
+// Copyright (c) 2022-2025 Rumen G. Bogdanovski
+// All rights reserved.
 //
 // THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
 // OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -12,7 +13,7 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
-//	Created by Rumen Bogdanovski, based on Liam Girdwood's code.
+//	Created by Rumen G. Bogdanovski, based on Liam Girdwood's code.
 
 #include <math.h>
 
@@ -20,6 +21,10 @@
 #include <indigo/indigocat/indigocat_vsop87.h>
 #include <indigo/indigocat/indigocat_transform.h>
 #include <indigo/indigocat/indigocat_nutation.h>
+
+#if defined(INDIGO_WINDOWS)
+#pragma warning(disable:4305)
+#endif
 
 void indigocat_sun_geometric_coords(double JD, heliocentric_coords_s * position) {
 	indigocat_earth_heliocentric_coords(JD, position);

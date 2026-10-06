@@ -1,6 +1,6 @@
 #---------------------------------------------------------------------
 #
-# Copyright (c) 2023 Rumen G.Bogdanovski
+# Copyright (c) 2023-2025 Rumen G. Bogdanovski
 # All rights reserved.
 #
 # You can use this software under the terms of 'INDIGO Astronomy
@@ -23,25 +23,28 @@
 LIB_NAME        = libindigo_client
 OBJ_DIR         = ./obj
 OUTPUT_DIR      = ./build
-MDNS_DIR        = ../externals/bonjour-sdk/
+MDNS_DIR        = ../../indigo_libs/externals/bonjour-sdk/
 INDIGO_BASE     = ../../
 INDIGO_DIR      = $(INDIGO_BASE)/indigo_libs/
 
 CC              = gcc
 MDNS_DEFINES    = -DUNICODE -D_UNICODE -DWIN32 -DMINGW_HAS_SECURE_API=1 -DWIN32 -DNDEBUG -D_WINDOWS -D_USRDLL -DMDNS_DEBUGMSGS=0 -DWIN32_LEAN_AND_MEAN -DUSE_TCP_LOOPBACK -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1 -DNOT_HAVE_SA_LEN -DQT_BUILD_ZEROCONF_LIB -DQT_NETWORK_LIB -DQT_CORE_LIB
 MDNS_CFLAGS     = -fno-keep-inline-dllexport -g -Wall -Wextra $(MDNS_DEFINES)
-INDIGO_DEFINES  = -DINDIGO_WINDOWS
-INDIGO_CFLAGS   = -O3 -fno-keep-inline-dllexport -g -Wall -Wextra $(INDIGO_DEFINES)
+INDIGO_DEFINES_DLL  = -DINDIGO_WINDOWS -DINDIGO_WINDOWS_DLL -DINDIGO_CLIENT -D_WIN32_WINNT=0x0600 -DWINVER=0x0600
+INDIGO_DEFINES_EXE  = -DINDIGO_WINDOWS -DINDIGO_CLIENT -D_WIN32_WINNT=0x0600 -DWINVER=0x0600
+INDIGO_CFLAGS   = -O3 -fno-keep-inline-dllexport -g -Wall -Wextra $(INDIGO_DEFINES_DLL)
+INDIGO_CFLAGS_EXE   = -O3 -fno-keep-inline-dllexport -g -Wall -Wextra $(INDIGO_DEFINES_EXE)
 INCPATH         = -I$(INDIGO_DIR) -I$(MDNS_DIR)
 LINKER          = gcc
 LFLAGS          = -shared -Wl,-subsystem,windows -mthreads -Wl,--out-implib,$(OUTPUT_DIR)/$(LIB_NAME).lib -Wl,--output-def,$(OUTPUT_DIR)/$(LIB_NAME).def -static-libgcc -static-libstdc++
-LIBS            = -lws2_32 -lwsock32
+LIBS            = -lws2_32 -lwsock32 -liphlpapi -lz
 
 MDNS_OBJECTS = $(OBJ_DIR)/dnssd_clientlib.o \
           $(OBJ_DIR)/dnssd_clientstub.o \
           $(OBJ_DIR)/dnssd_ipc.o
 
 INDIGO_OBJECTS = $(OBJ_DIR)/indigo_base64.o \
+          $(OBJ_DIR)/indigo_uni_io.o\
           $(OBJ_DIR)/indigo_bus.o \
           $(OBJ_DIR)/indigo_client.o \
           $(OBJ_DIR)/indigo_client_xml.o \
@@ -82,6 +85,9 @@ $(OBJ_DIR)/indigo_client_xml.o: $(INDIGO_DIR)/indigo_client_xml.c directories
 $(OBJ_DIR)/indigo_io.o: $(INDIGO_DIR)/indigo_io.c directories
 	$(CC) -c $(INDIGO_CFLAGS) $(INCPATH) -o $@ $<
 
+$(OBJ_DIR)/indigo_uni_io.o: $(INDIGO_DIR)/indigo_uni_io.c directories
+	$(CC) -c $(INDIGO_CFLAGS) $(INCPATH) -o $@ $<
+
 $(OBJ_DIR)/indigo_service_discovery.o: $(INDIGO_DIR)/indigo_service_discovery.c directories
 	$(CC) -c $(INDIGO_CFLAGS) $(INCPATH) -o $@ $<
 
@@ -101,7 +107,7 @@ $(OBJ_DIR)/indigo_version.o: $(INDIGO_DIR)/indigo_version.c directories
 	$(CC) -c $(INDIGO_CFLAGS) $(INCPATH) -o $@ $<
 
 $(OUTPUT_DIR)/indigo_prop_tool.exe: $(INDIGO_BASE)/indigo_tools/indigo_prop_tool.c
-	$(CC) $(INDIGO_CFLAGS) $(INCPATH) -o $@ $< $(OUTPUT_DIR)/$(LIB_NAME).lib
+	$(CC) $(INDIGO_CFLAGS_EXE) $(INCPATH) -o $@ $< $(OUTPUT_DIR)/$(LIB_NAME).lib
 
 BUNDLE_DIR = indigo_client_sdk_${VERSION}_${ARCH}
 PTHREAD_PATH = $(shell dirname `which $(CC)`)
@@ -121,6 +127,7 @@ bundle: all
 	cp $(INDIGO_BASE)/indigo_libs/indigo/indigo_token.h $(BUNDLE_DIR)/include/indigo/
 	cp $(INDIGO_BASE)/indigo_libs/indigo/indigo_md5.h $(BUNDLE_DIR)/include/indigo/
 	cp $(INDIGO_BASE)/indigo_libs/indigo/indigo_io.h $(BUNDLE_DIR)/include/indigo/
+	cp $(INDIGO_BASE)/indigo_libs/indigo/indigo_uni_io.h $(BUNDLE_DIR)/include/indigo/
 	cp $(INDIGO_BASE)/indigo_libs/indigo/indigo_fits.h $(BUNDLE_DIR)/include/indigo/
 	cp $(OUTPUT_DIR)/$(LIB_NAME).lib $(BUNDLE_DIR)/lib/
 	cp $(OUTPUT_DIR)/$(LIB_NAME).dll $(BUNDLE_DIR)/lib/

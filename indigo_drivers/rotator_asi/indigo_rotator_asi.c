@@ -17,32 +17,26 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** INDIGO ASI rotator driver
  \file indigo_rotator_asi.c
  */
 
-#define DRIVER_VERSION 0x0003
+#define DRIVER_VERSION 0x03000004
 #define DRIVER_NAME "indigo_rotator_asi"
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <pthread.h>
 #include <stdbool.h>
-#include <sys/time.h>
 
 #include <indigo/indigo_driver_xml.h>
-#include "indigo_rotator_asi.h"
+#include <indigo/indigo_usb_utils.h>
 
-#if defined(INDIGO_FREEBSD)
-#include <libusb.h>
-#else
-#include <libusb-1.0/libusb.h>
-#endif
+#include "indigo_rotator_asi.h"
 
 #include <CAA_API.h>
 
@@ -79,6 +73,7 @@ typedef struct {
 } asi_private_data;
 
 static int find_index_by_device_id(int id);
+static pthread_mutex_t indigo_device_enumeration_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // -------------------------------------------------------------------------------- INDIGO rotator device implementation
 static void rotator_timer_callback(indigo_device *device) {
@@ -124,10 +119,10 @@ static void temperature_timer_callback(indigo_device *device) {
 
 static indigo_result caa_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(CAA_BEEP_PROPERTY);
-		indigo_define_matching_property(CAA_CUSTOM_SUFFIX_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(CAA_BEEP_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(CAA_CUSTOM_SUFFIX_PROPERTY);
 	}
-	return indigo_rotator_enumerate_properties(device, NULL, NULL);
+	return indigo_rotator_enumerate_properties(device, client, property);
 }
 
 
@@ -138,10 +133,10 @@ static indigo_result rotator_attach(indigo_device *device) {
 		pthread_mutex_init(&PRIVATE_DATA->usb_mutex, NULL);
 
 		INFO_PROPERTY->count = 6;
-		indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->model);
-		char *sdk_version = CAAGetSDKVersion();
-		indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, sdk_version);
-		indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->label, "SDK version");
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->model);
+		const char *sdk_version = CAAGetSDKVersion();
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, sdk_version);
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->label, "SDK version");
 
 
 		ROTATOR_LIMITS_PROPERTY->hidden = false;
@@ -170,15 +165,17 @@ static indigo_result rotator_attach(indigo_device *device) {
 		ROTATOR_DIRECTION_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------- BEEP_PROPERTY
 		CAA_BEEP_PROPERTY = indigo_init_switch_property(NULL, device->name, CAA_BEEP_PROPERTY_NAME, ROTATOR_ADVANCED_GROUP, "Beep on move", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (CAA_BEEP_PROPERTY == NULL)
+		if (CAA_BEEP_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 
 		indigo_init_switch_item(CAA_BEEP_ON_ITEM, CAA_BEEP_ON_ITEM_NAME, "On", false);
 		indigo_init_switch_item(CAA_BEEP_OFF_ITEM, CAA_BEEP_OFF_ITEM_NAME, "Off", true);
 		// --------------------------------------------------------------------------------- CAA_CUSTOM_SUFFIX
 		CAA_CUSTOM_SUFFIX_PROPERTY = indigo_init_text_property(NULL, device->name, "CAA_CUSTOM_SUFFIX", ROTATOR_ADVANCED_GROUP, "Device name custom suffix", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (CAA_CUSTOM_SUFFIX_PROPERTY == NULL)
+		if (CAA_CUSTOM_SUFFIX_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_text_item(CAA_CUSTOM_SUFFIX_ITEM, CAA_CUSTOM_SUFFIX_NAME, "Suffix", PRIVATE_DATA->custom_suffix);
 		// --------------------------------------------------------------------------
 		return caa_enumerate_properties(device, NULL, NULL);
@@ -188,14 +185,19 @@ static indigo_result rotator_attach(indigo_device *device) {
 
 static void rotator_connect_callback(indigo_device *device) {
 	int index;
+	bool enumeration_locked = false;
 	CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
-		index = find_index_by_device_id(PRIVATE_DATA->dev_id);
-		if (index >= 0) {
-			if (!device->is_connected) {
+		if (!device->is_connected) {
+			pthread_mutex_lock(&indigo_device_enumeration_mutex);
+			enumeration_locked = true;
+			index = find_index_by_device_id(PRIVATE_DATA->dev_id);
+			if (index >= 0) {
 				pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 				if (indigo_try_global_lock(device) != INDIGO_OK) {
 					pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+					pthread_mutex_unlock(&indigo_device_enumeration_mutex);
+					enumeration_locked = false;
 					INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
 					CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 					indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
@@ -241,6 +243,8 @@ static void rotator_connect_callback(indigo_device *device) {
 						}
 						CAA_BEEP_OFF_ITEM->sw.value = !CAA_BEEP_ON_ITEM->sw.value;
 						pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+						pthread_mutex_unlock(&indigo_device_enumeration_mutex);
+						enumeration_locked = false;
 
 						CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 
@@ -252,11 +256,15 @@ static void rotator_connect_callback(indigo_device *device) {
 						indigo_set_timer(device, 0.1, temperature_timer_callback, &PRIVATE_DATA->temperature_timer);
 					} else {
 						INDIGO_DRIVER_ERROR(DRIVER_NAME, "CAAOpen(%d) = %d", index, res);
+						indigo_global_unlock(device);
 						CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 						indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 						indigo_update_property(device, CONNECTION_PROPERTY, NULL);
 					}
 				}
+			}
+			if (enumeration_locked) {
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			}
 		}
 	} else {
@@ -265,6 +273,7 @@ static void rotator_connect_callback(indigo_device *device) {
 			indigo_cancel_timer_sync(device, &PRIVATE_DATA->temperature_timer);
 			indigo_delete_property(device, CAA_BEEP_PROPERTY, NULL);
 			indigo_delete_property(device, CAA_CUSTOM_SUFFIX_PROPERTY, NULL);
+			pthread_mutex_lock(&indigo_device_enumeration_mutex);
 			pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 			int res = CAAStop(PRIVATE_DATA->dev_id);
 			res = CAAClose(PRIVATE_DATA->dev_id);
@@ -275,6 +284,7 @@ static void rotator_connect_callback(indigo_device *device) {
 			}
 			indigo_global_unlock(device);
 			pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			device->is_connected = false;
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 		}
@@ -322,7 +332,7 @@ static indigo_result rotator_change_property(indigo_device *device, indigo_clien
 		} else {
 			ROTATOR_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
 			ROTATOR_RELATIVE_MOVE_PROPERTY->state = INDIGO_BUSY_STATE;
-			PRIVATE_DATA->target_position = ROTATOR_POSITION_ITEM->number.target;
+			PRIVATE_DATA->target_position = (float)ROTATOR_POSITION_ITEM->number.target;
 			ROTATOR_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
 			indigo_update_property(device, ROTATOR_RELATIVE_MOVE_PROPERTY, NULL);
 			indigo_update_property(device, ROTATOR_POSITION_PROPERTY, NULL);
@@ -397,7 +407,7 @@ static indigo_result rotator_change_property(indigo_device *device, indigo_clien
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "CAAGetDegree(%d) = %d", PRIVATE_DATA->dev_id, res);
 			}
 
-			PRIVATE_DATA->target_position = PRIVATE_DATA->current_position + ROTATOR_RELATIVE_MOVE_ITEM->number.target;
+			PRIVATE_DATA->target_position = PRIVATE_DATA->current_position + (float)ROTATOR_RELATIVE_MOVE_ITEM->number.target;
 
 			ROTATOR_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
 			res = CAAMoveTo(PRIVATE_DATA->dev_id, PRIVATE_DATA->target_position);
@@ -411,6 +421,8 @@ static indigo_result rotator_change_property(indigo_device *device, indigo_clien
 	} else if (indigo_property_match_changeable(ROTATOR_ABORT_MOTION_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- ROTATOR_ABORT_MOTION
 		indigo_property_copy_values(ROTATOR_ABORT_MOTION_PROPERTY, property, false);
+		ROTATOR_ABORT_MOTION_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, ROTATOR_ABORT_MOTION_PROPERTY, NULL);
 		ROTATOR_RELATIVE_MOVE_PROPERTY->state = INDIGO_OK_STATE;
 		ROTATOR_POSITION_PROPERTY->state = INDIGO_OK_STATE;
 		ROTATOR_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
@@ -475,7 +487,7 @@ static indigo_result rotator_change_property(indigo_device *device, indigo_clien
 			}
 		}
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, CAA_BEEP_PROPERTY);
@@ -569,8 +581,9 @@ static int find_unplugged_device_id() {
 	for (int index = 0; index < count; index++) {
 		int res = CAAGetID(index, &id);
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "CAAGetID(%d, -> %d) = %d", index, id, res);
-		if (res == CAA_SUCCESS)
+		if (res == CAA_SUCCESS) {
 			dev_tmp[id] = true;
+		}
 	}
 	id = -1;
 	for (int index = 0; index < CAA_ID_MAX; index++) {
@@ -606,7 +619,6 @@ static void split_device_name(const char *fill_device_name, char *device_name, c
 	strncpy(device_name, name_buf, 64);
 	strncpy(suffix, suffix_start, 9);
 }
-
 
 static void process_plug_event(indigo_device *unused) {
 	CAA_INFO info;
@@ -651,7 +663,7 @@ static void process_plug_event(indigo_device *unused) {
 			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			return;
 		}
-		  indigo_usleep(ONE_SECOND_DELAY);
+		  indigo_sleep(1);
 	}
 	indigo_device *device = indigo_safe_malloc_copy(sizeof(indigo_device), &rotator_template);
 	char name[64] = {0};
@@ -690,10 +702,13 @@ static void process_unplug_event(indigo_device *unused) {
 			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			return;
 		}
-		indigo_detach_device(*device);
-		free((*device)->private_data);
-		free(*device);
+		indigo_device *device_to_detach = *device;
 		*device = NULL;
+		pthread_mutex_unlock(&indigo_device_enumeration_mutex);
+		indigo_detach_device(device_to_detach);
+		free(device_to_detach->private_data);
+		free(device_to_detach);
+		pthread_mutex_lock(&indigo_device_enumeration_mutex);
 		removed = true;
 	}
 	if (!removed) {
@@ -729,15 +744,17 @@ static int hotplug_callback(libusb_context *ctx, libusb_device *dev, libusb_hotp
 static void remove_all_devices() {
 	for (int index = 0; index < MAX_DEVICES; index++) {
 		indigo_device **device = &devices[index];
-		if (*device == NULL)
+		if (*device == NULL) {
 			continue;
+		}
 		indigo_detach_device(*device);
 		free((*device)->private_data);
 		free(*device);
 		*device = NULL;
 	}
-	for (int index = 0; index < CAA_ID_MAX; index++)
+	for (int index = 0; index < CAA_ID_MAX; index++) {
 		connected_ids[index] = false;
+	}
 }
 
 
@@ -748,38 +765,41 @@ indigo_result indigo_rotator_asi(indigo_driver_action action, indigo_driver_info
 
 	SET_DRIVER_INFO(info, "ZWO CAA Rotator", __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		last_action = action;
+		case INDIGO_DRIVER_INIT:
+			last_action = action;
 
-		const char *sdk_version = CAAGetSDKVersion();
-		INDIGO_DRIVER_LOG(DRIVER_NAME, "CAA SDK v. %s ", sdk_version);
+			const char *sdk_version = CAAGetSDKVersion();
+			INDIGO_DRIVER_LOG(DRIVER_NAME, "CAA SDK v. %s ", sdk_version);
 
-		for(int index = 0; index < CAA_ID_MAX; index++)
-			connected_ids[index] = false;
-		caa_id_count = CAAGetProductIDs(caa_products);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "CAAGetProductIDs(-> [ %d, %d, ... ]) = %d", caa_products[0], caa_products[1], caa_id_count);
-		//caa_products[0] = CAA_PRODUCT_ID;
-		//caa_id_count = 1;
-		indigo_start_usb_event_handler();
-		int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, ASI_VENDOR_ID, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
-		return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
+			for (int index = 0; index < CAA_ID_MAX; index++) {
+				connected_ids[index] = false;
+			}
+			caa_id_count = CAAGetProductIDs(caa_products);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "CAAGetProductIDs(-> [ %d, %d, ... ]) = %d", caa_products[0], caa_products[1], caa_id_count);
+			//caa_products[0] = CAA_PRODUCT_ID;
+			//caa_id_count = 1;
+			indigo_start_usb_event_handler();
+			int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, ASI_VENDOR_ID, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
+			return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
 
-	case INDIGO_DRIVER_SHUTDOWN:
-		for (int i = 0; i < MAX_DEVICES; i++)
-			VERIFY_NOT_CONNECTED(devices[i]);
-		last_action = action;
-		libusb_hotplug_deregister_callback(NULL, callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
-		remove_all_devices();
-		break;
+		case INDIGO_DRIVER_SHUTDOWN:
+			for (int i = 0; i < MAX_DEVICES; i++) {
+				VERIFY_NOT_CONNECTED(devices[i]);
+			}
+			last_action = action;
+			libusb_hotplug_deregister_callback(NULL, callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
+			remove_all_devices();
+			break;
 
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Rumen G.Bogdanovski
+// Copyright (c) 2021-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G.Bogdanovski <rumenastro@gmail.com>
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 // The mathematics for the three point polar alignment were derived independently, based on the common principles of the spherical geometry.
 // The algorythm and the source code were developed based on the math we derived.
@@ -39,13 +39,23 @@
 #include <string.h>
 #include <stdbool.h>
 
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern const double TWO_PI;
-extern const double DEG2RAD;
-extern const double RAD2DEG;
+INDIGO_EXTERN const double TWO_PI;
+INDIGO_EXTERN const double DEG2RAD;
+INDIGO_EXTERN const double RAD2DEG;
 
 #define PA_MAX_ERROR           10.0
 #define PA_MAX_INITIAL_ERROR   3.5
@@ -87,7 +97,7 @@ typedef struct {
  eq0 - Old Equinox (year+fraction)
  eq1 - New Equinox (year+fraction)
  */
-extern indigo_spherical_point_t indigo_precess(const indigo_spherical_point_t *c0, const double eq0, const double eq1);
+INDIGO_EXTERN indigo_spherical_point_t indigo_precess(const indigo_spherical_point_t *c0, const double eq0, const double eq1);
 
 /**
  Apply, remove ot get nutation corrections for given coordinates
@@ -104,7 +114,12 @@ extern indigo_spherical_point_t indigo_nutate(const indigo_spherical_point_t *co
 	*ra - Right Ascension (hours)
 	*dec - Declination (degrees)
  */
-extern void indigo_jnow_to_j2k(double *ra, double *dec);
+
+INDIGO_EXTERN double indigo_eq_of_date(double jd);
+
+INDIGO_EXTERN double indigo_jnow(void);
+
+INDIGO_EXTERN void indigo_jnow_to_j2k(double *ra, double *dec);
 
 /** Convenience wrapper for indigo_precess(...)
 
@@ -112,14 +127,14 @@ extern void indigo_jnow_to_j2k(double *ra, double *dec);
 	*ra - Right Ascension (hours)
 	*dec - Declination (degrees)
  */
-extern void indigo_eq_to_j2k(const double eq, double *ra, double *dec);
+INDIGO_EXTERN void indigo_eq_to_j2k(const double eq, double *ra, double *dec);
 
 /** Convenience wrapper for indigo_precess(...)
 
 	*ra - Right Ascension (hours)
 	*dec - Declination (degrees)
  */
-extern void indigo_j2k_to_jnow(double *ra, double *dec);
+INDIGO_EXTERN void indigo_j2k_to_jnow(double *ra, double *dec);
 
 /** Convenience wrapper for indigo_precess(...)
 
@@ -127,7 +142,7 @@ extern void indigo_j2k_to_jnow(double *ra, double *dec);
 	*ra - Right Ascension (hours)
 	*dec - Declination (degrees)
  */
-extern void indigo_j2k_to_eq(const double eq, double *ra, double *dec);
+INDIGO_EXTERN void indigo_j2k_to_eq(const double eq, double *ra, double *dec);
 
 /** Apply nutation correction: mean-of-date -> apparent (true-of-date) coordinates
  *
@@ -172,7 +187,7 @@ extern void indigo_apparent_to_eq(const double eq, double *ra, double *dec, doub
 
 	returns time to the next or closest transit in decimal hours depending on allow_negative_time
  */
-extern double indigo_time_to_transit(const double ra, const double lmst, const bool allow_negative_time);
+INDIGO_EXTERN  double indigo_time_to_transit(const double ra, const double lmst, const bool allow_negative_time);
 
 /** Calculate raise transit and set times for the nearest transit
 
@@ -185,20 +200,11 @@ extern double indigo_time_to_transit(const double ra, const double lmst, const b
 	*transit_time - transit time (decinal hours)
 	*set_time - set time (decinal hours)
  */
-void indigo_raise_set(
-	const double jd,
-	const double latitude,
-	const double longitude,
-	const double ra,
-	const double dec,
-	double *raise_time,
-	double *transit_time,
-	double *set_time
-);
+INDIGO_EXTERN void indigo_raise_set(const double jd, const double latitude, const double longitude, const double ra, const double dec, double *raise_time, double *transit_time, double *set_time);
 
 /** Calculate the airmass for a given altitude
  */
-extern double indigo_airmass(double altitude);
+INDIGO_EXTERN double indigo_airmass(double altitude);
 
 /**
  * @brief Calculate the derotation rate for an alt-azimuth mounted telescope.
@@ -207,12 +213,15 @@ extern double indigo_airmass(double altitude);
  * for an alt-azimuth mounted telescope based on the altitude and azimuth of the object
  * and the latitude of the observer. The derotation rate is returned in arcseconds per second.
  *
+ * It equals the rate of change of the parallactic angle, so a derotator kept at the
+ * parallactic angle turns at this rate. The rate is unbounded near the zenith.
+ *
  * @param alt The altitude of the object, in degrees.
- * @param az The azimuth of the object, in degrees.
+ * @param az The azimuth of the object, in degrees, measured from North as everywhere in INDIGO.
  * @param latitude The latitude of the observer, in degrees.
  * @return The derotation rate in arcseconds per second.
  */
-extern double indigo_derotation_rate(double alt, double az, double latitude);
+INDIGO_EXTERN double indigo_derotation_rate(double alt, double az, double latitude);
 
 /**
  * @brief Calculate the parallactic angle for a celestial object.
@@ -227,15 +236,15 @@ extern double indigo_derotation_rate(double alt, double az, double latitude);
  * @param latitude The latitude of the observer, in degrees.
  * @return The parallactic angle in degrees.
  */
-extern double indigo_parallactic_angle(double ha, double dec, double latitude);
+INDIGO_EXTERN double indigo_parallactic_angle(double ha, double dec, double latitude);
 
 /** Greenwitch mean sidereal time (in degrees)
  */
-extern double indigo_mean_gst(const time_t *utc);
+INDIGO_EXTERN double indigo_mean_gst(const time_t *utc);
 
 /** Local mean sidereal time (in decimal hours)
  */
-extern double indigo_lst(const time_t *utc, const double longitude);
+INDIGO_EXTERN double indigo_lst(const time_t *utc, const double longitude);
 
 /** Convert Julian Date to Greenwich Mean Sidereal Time
  *
@@ -246,25 +255,25 @@ extern double indigo_jd_to_mean_gst(double jd);
 
 /** ra/dec to alt/az (in degrees)
  */
-extern void indigo_radec_to_altaz(const double ra, const double dec, const time_t *utc, const double latitude, const double longitude, const double elevation, double *alt, double *az);
+INDIGO_EXTERN void indigo_radec_to_altaz(const double ra, const double dec, const time_t *utc, const double latitude, const double longitude, const double elevation, double *alt, double *az);
 
 /** convert ha dec to az alt in radians
  */
-extern void indigo_equatorial_to_hotizontal(const indigo_spherical_point_t *eq_point, const double latitude, indigo_spherical_point_t *h_point);
+INDIGO_EXTERN void indigo_equatorial_to_hotizontal(const indigo_spherical_point_t *eq_point, const double latitude, indigo_spherical_point_t *h_point);
 
 /** convert spherical to cartesian coordinates
  */
-extern indigo_cartesian_point_t indigo_spherical_to_cartesian(const indigo_spherical_point_t *spoint);
+INDIGO_EXTERN indigo_cartesian_point_t indigo_spherical_to_cartesian(const indigo_spherical_point_t *spoint);
 
 /** convert spherical (in radians) to cartesian coordinates
  */
-extern indigo_spherical_point_t indigo_cartesian_to_spherical(const indigo_cartesian_point_t *cpoint);
+INDIGO_EXTERN indigo_spherical_point_t indigo_cartesian_to_spherical(const indigo_cartesian_point_t *cpoint);
 
 /** rotate cartesian coordinates around axes (angles in radians)
  */
-extern indigo_cartesian_point_t indigo_cartesian_rotate_x(const indigo_cartesian_point_t *point, double angle);
-extern indigo_cartesian_point_t indigo_cartesian_rotate_y(const indigo_cartesian_point_t *point, double angle);
-extern indigo_cartesian_point_t indigo_cartesian_rotate_z(const indigo_cartesian_point_t *point, double angle);
+INDIGO_EXTERN indigo_cartesian_point_t indigo_cartesian_rotate_x(const indigo_cartesian_point_t *point, double angle);
+INDIGO_EXTERN indigo_cartesian_point_t indigo_cartesian_rotate_y(const indigo_cartesian_point_t *point, double angle);
+INDIGO_EXTERN indigo_cartesian_point_t indigo_cartesian_rotate_z(const indigo_cartesian_point_t *point, double angle);
 
 /** rotate coordinates using polar errors
  * possition->a = Hour angle in radians
@@ -273,7 +282,7 @@ extern indigo_cartesian_point_t indigo_cartesian_rotate_z(const indigo_cartesian
  * u = angle in radians, Altitude error.
  * v = angle in radians, Azimuth error.
  */
-extern indigo_spherical_point_t indigo_apply_polar_error(const indigo_spherical_point_t *position, double u, double v);
+INDIGO_EXTERN indigo_spherical_point_t indigo_apply_polar_error(const indigo_spherical_point_t *position, double u, double v);
 
 /** derotate coordinates using polar errors
  * possition->a = Hour angle in radians
@@ -282,36 +291,36 @@ extern indigo_spherical_point_t indigo_apply_polar_error(const indigo_spherical_
  * u = angle in radians, Altitude error.
  * v = angle in radians, Azimuth error.
  */
-extern indigo_spherical_point_t indigo_correct_polar_error(const indigo_spherical_point_t *position, double u, double v);
+INDIGO_EXTERN indigo_spherical_point_t indigo_correct_polar_error(const indigo_spherical_point_t *position, double u, double v);
 
 
 /** convert spherical point in radians to ha/ra dec in hours and degrees
  */
-extern void indigo_point_to_ra_dec(const indigo_spherical_point_t *spoint, const double lst, double *ra, double *dec);
+INDIGO_EXTERN void indigo_point_to_ra_dec(const indigo_spherical_point_t *spoint, const double lst, double *ra, double *dec);
 
 /** convert ha/ra dec in hours and degrees to spherical point in radians
  */
-extern void indigo_ra_dec_to_point(const double ra, const double dec, const double lst, indigo_spherical_point_t *spoint);
+INDIGO_EXTERN void indigo_ra_dec_to_point(const double ra, const double dec, const double lst, indigo_spherical_point_t *spoint);
 
 /** great circle distances of sphericaal coordinate poits
  */
-extern double indigo_gc_distance_spherical(const indigo_spherical_point_t *sp1, const indigo_spherical_point_t *sp2);
+INDIGO_EXTERN double indigo_gc_distance_spherical(const indigo_spherical_point_t *sp1, const indigo_spherical_point_t *sp2);
 
 /** great circle distance of ra/ha dec in degrees
  */
-extern double indigo_gc_distance(double ra1, double dec1, double ra2, double dec2);
+INDIGO_EXTERN double indigo_gc_distance(double ra1, double dec1, double ra2, double dec2);
 
 /** great circle distance of points in cartesian coordinates
  */
-extern double indigo_gc_distance_cartesian(const indigo_cartesian_point_t *cp1, const indigo_cartesian_point_t *cp2);
+INDIGO_EXTERN double indigo_gc_distance_cartesian(const indigo_cartesian_point_t *cp1, const indigo_cartesian_point_t *cp2);
 
 /** calculate refraction error from zenith distance
  */
-extern double indigo_calculate_refraction(const double z);
+INDIGO_EXTERN double indigo_calculate_refraction(const double z);
 
 /** compensate atmospheric refraction
  */
-extern bool indigo_compensate_refraction(
+INDIGO_EXTERN bool indigo_compensate_refraction(
 	const indigo_spherical_point_t *st,
 	const double latitude,
 	indigo_spherical_point_t *st_corrected
@@ -319,7 +328,7 @@ extern bool indigo_compensate_refraction(
 
 /** compensate atmospheric refraction
  */
-extern bool indigo_compensate_refraction2(
+INDIGO_EXTERN bool indigo_compensate_refraction2(
 	const indigo_spherical_point_t *st,
 	const double latitude,
 	const double refraction,
@@ -328,7 +337,7 @@ extern bool indigo_compensate_refraction2(
 
 /** calculate polar alignment error and Declination drifts
  */
-extern bool indigo_polar_alignment_error_3p(
+INDIGO_EXTERN bool indigo_polar_alignment_error_3p(
 	const indigo_spherical_point_t *p1,
 	const indigo_spherical_point_t *p2,
 	const indigo_spherical_point_t *p3,
@@ -340,7 +349,7 @@ extern bool indigo_polar_alignment_error_3p(
 
 /** recalculates polar error for a given target position (if thelescope is aligned) and current position
  */
-extern bool indigo_reestimate_polar_error(
+INDIGO_EXTERN bool indigo_reestimate_polar_error(
 	const indigo_spherical_point_t *position,
 	const indigo_spherical_point_t *target_position,
 	double *u,

@@ -1,4 +1,4 @@
-// Copyright (c) 2024 CloudMakers, s. r. o.
+// Copyright (c) 2024-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // Code is based on OpenPENTAX library
@@ -26,7 +26,7 @@
  \file indigo_ccd_pentax.c
  */
 
-#define DRIVER_VERSION 0x0000
+#define DRIVER_VERSION 0x02000000
 #define DRIVER_NAME "indigo_ccd_pentax"
 
 #include <stdlib.h>
@@ -857,10 +857,10 @@ static bool pentax_open(indigo_device *device) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "libusb_claim_interface: %s (%d)", libusb_strerror((enum libusb_error)rc), rc);
 		libusb_close(handle);
 		PRIVATE_DATA->handle = 0;
-		indigo_send_message(device, "Failed to claim device - this driver requires to run the application with root permission!");
+		indigo_send_message(device, ALERT_PROPERTY, "Failed to claim device - this driver requires to run the application with root permission!");
 		return false;
 	}
-	rc = libusb_control_transfer(handle, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE, BOMS_GET_MAX_LUN, 0, 0, &PRIVATE_DATA->lun, 1, TIMEOUT);
+	rc = libusb_control_transfer(handle, (unsigned)LIBUSB_ENDPOINT_IN | (unsigned)LIBUSB_REQUEST_TYPE_CLASS | (unsigned)LIBUSB_RECIPIENT_INTERFACE, BOMS_GET_MAX_LUN, 0, 0, &PRIVATE_DATA->lun, 1, TIMEOUT);
 	if (rc == LIBUSB_ERROR_PIPE) {
 		PRIVATE_DATA->lun = 0;
 	} else if (rc < 0) {
@@ -1011,10 +1011,10 @@ static indigo_result ccd_attach(indigo_device *device) {
 
 static indigo_result ccd_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(DSLR_PROGRAM_PROPERTY);
-		indigo_define_matching_property(DSLR_APERTURE_PROPERTY);
-		indigo_define_matching_property(DSLR_SHUTTER_PROPERTY);
-		indigo_define_matching_property(DSLR_ISO_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(DSLR_PROGRAM_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(DSLR_APERTURE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(DSLR_SHUTTER_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(DSLR_ISO_PROPERTY);
 	}
 	return indigo_ccd_enumerate_properties(device, client, property);
 }
@@ -1180,36 +1180,38 @@ indigo_result indigo_ccd_pentax(indigo_driver_action action, indigo_driver_info 
 
 	SET_DRIVER_INFO(info, "PENTAX Camera", __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		last_action = action;
-		for (int i = 0; i < MAX_DEVICES; i++) {
-			devices[i] = 0;
-		}
-		indigo_start_usb_event_handler();
-		int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
-		return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
-
-	case INDIGO_DRIVER_SHUTDOWN:
-		for (int i = 0; i < MAX_DEVICES; i++)
-			VERIFY_NOT_CONNECTED(devices[i]);
-		last_action = action;
-		libusb_hotplug_deregister_callback(NULL, callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
-		for (int j = 0; j < MAX_DEVICES; j++) {
-			if (devices[j] != NULL) {
-				indigo_device *device = devices[j];
-				hotplug_callback(NULL, PRIVATE_DATA->dev, LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, NULL);
+		case INDIGO_DRIVER_INIT:
+			last_action = action;
+			for (int i = 0; i < MAX_DEVICES; i++) {
+				devices[i] = 0;
 			}
-		}
-		break;
+			indigo_start_usb_event_handler();
+			int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
+			return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
 
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_SHUTDOWN:
+			for (int i = 0; i < MAX_DEVICES; i++) {
+				VERIFY_NOT_CONNECTED(devices[i]);
+			}
+			last_action = action;
+			libusb_hotplug_deregister_callback(NULL, callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
+			for (int j = 0; j < MAX_DEVICES; j++) {
+				if (devices[j] != NULL) {
+					indigo_device *device = devices[j];
+					hotplug_callback(NULL, PRIVATE_DATA->dev, LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, NULL);
+				}
+			}
+			break;
+
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

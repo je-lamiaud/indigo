@@ -1,4 +1,4 @@
-// Copyright (c) 2024 CloudMakers, s. r. o.
+// Copyright (c) 2024-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_focuser_optecfl.c
  */
 
-#define DRIVER_VERSION 0x0001
+#define DRIVER_VERSION 0x02000001
 #define DRIVER_NAME "indigo_focuser_optecfl"
 
 #include <stdlib.h>
@@ -127,10 +127,11 @@ static void focuser_timer_callback(indigo_device *device) {
 			}
 		}
 	}
-	if (target == 1)
+	if (target == 1) {
 		indigo_reschedule_timer(device, 1, &PRIVATE_DATA->timer_1);
-	else
+	} else {
 		indigo_reschedule_timer(device, 1, &PRIVATE_DATA->timer_2);
+	}
 	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 }
 
@@ -216,10 +217,11 @@ static void focuser_connection_handler(indigo_device *device) {
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
 		if (optecfl_open(device)) {
 			indigo_define_property(device, X_FOCUSER_TYPE_PROPERTY, NULL);
-			if (target == 1)
+			if (target == 1) {
 				indigo_set_timer(device, 0, focuser_timer_callback, &PRIVATE_DATA->timer_1);
-			else
+			} else {
 				indigo_set_timer(device, 0, focuser_timer_callback, &PRIVATE_DATA->timer_2);
+			}
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
 			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -227,10 +229,11 @@ static void focuser_connection_handler(indigo_device *device) {
 		}
 	} else {
 		indigo_delete_property(device, X_FOCUSER_TYPE_PROPERTY, NULL);
-		if (target == 1)
+		if (target == 1) {
 			indigo_cancel_timer_sync(device, &PRIVATE_DATA->timer_1);
-		else
+		} else {
 			indigo_cancel_timer_sync(device, &PRIVATE_DATA->timer_2);
+		}
 		INDIGO_DRIVER_LOG(DRIVER_NAME, "Disconnected");
 		optecfl_close(device);
 		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
@@ -358,10 +361,11 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -429,9 +433,9 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_FOCUSER_TYPE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_TYPE_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static indigo_result focuser_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
@@ -501,8 +505,8 @@ static indigo_result focuser_detach(indigo_device *device) {
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		focuser_connection_handler(device);
 	}
-	pthread_mutex_destroy(&PRIVATE_DATA->mutex);
 	indigo_release_property(X_FOCUSER_TYPE_PROPERTY);
+	pthread_mutex_destroy(&PRIVATE_DATA->mutex);
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_focuser_detach(device);
 }
@@ -526,8 +530,9 @@ indigo_result indigo_focuser_optecfl(indigo_driver_action action, indigo_driver_
 
 	SET_DRIVER_INFO(info, "Optec FocusLynx Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

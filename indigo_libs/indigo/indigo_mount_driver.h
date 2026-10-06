@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -28,6 +28,16 @@
 
 #include <indigo/indigo_bus.h>
 #include <indigo/indigo_driver.h>
+
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -193,6 +203,13 @@ extern "C" {
 */
 #define MOUNT_HOME_ITEM												        (MOUNT_HOME_PROPERTY->items+0)
 
+/** MOUNT_HOME.AWAY property item pointer.
+*/
+#define MOUNT_AWAY_ITEM												        (MOUNT_HOME_PROPERTY->items+1)
+
+/** MOUNT_HOME.SEARCH property item pointer.
+*/
+#define MOUNT_HOME_SEARCH_ITEM												(MOUNT_HOME_PROPERTY->items+2)
 
 //----------------------------------------------
 /** MOUNT_ON_COORDINATES_SET property pointer, property is mandatory, property change request is handled by indigo_mount_change_property.
@@ -344,28 +361,6 @@ extern "C" {
  */
 #define MOUNT_HORIZONTAL_COORDINATES_ALT_ITEM					(MOUNT_HORIZONTAL_COORDINATES_PROPERTY->items+1)
 
-
-//-----------------------------------------------
-/** MOUNT_TARGET_INFO property pointer, property is optional, read-only and should be fully controlled by device driver.
- */
-#define MOUNT_TARGET_INFO_PROPERTY								(MOUNT_CONTEXT->mount_target_info_property)
-
-/**  MOUNT_TARGET_INFO.RISE_TIME property item pointer.
- */
-#define MOUNT_TARGET_INFO_RISE_TIME_ITEM							(MOUNT_TARGET_INFO_PROPERTY->items+0)
-
-/**  MOUNT_TARGET_INFO.TRANSIT_TIME property item pointer.
- */
-#define MOUNT_TARGET_INFO_TRANSIT_TIME_ITEM							(MOUNT_TARGET_INFO_PROPERTY->items+1)
-
-/**  MOUNT_TARGET_INFO.SET_TIME property item pointer.
- */
-#define MOUNT_TARGET_INFO_SET_TIME_ITEM							(MOUNT_TARGET_INFO_PROPERTY->items+2)
-
-/**  MOUNT_TARGET_INFO.TIME_TO_TRANSIT property item pointer.
- */
-#define MOUNT_TARGET_INFO_TIME_TO_TRANSIT_ITEM							(MOUNT_TARGET_INFO_PROPERTY->items+3)
-
 //------------------------------------------------
 /** MOUNT_ABORT_MOTION property pointer, property is mandatory, property change request should be fully handled by focuser driver
  */
@@ -451,20 +446,6 @@ extern "C" {
 #define MOUNT_SIDE_OF_PIER_WEST_ITEM									(MOUNT_SIDE_OF_PIER_PROPERTY->items+1)
 
 //------------------------------------------------
-/** MOUNT_SNOOP_DEVICES property pointer, property is optional.
-*/
-#define MOUNT_SNOOP_DEVICES_PROPERTY									(MOUNT_CONTEXT->mount_snoop_devices_property)
-
-/** MOUNT_SNOOP_DEVICES_PROPERTY.JOYSTICK property item pointer.
-*/
-#define MOUNT_SNOOP_JOYSTICK_ITEM											(MOUNT_SNOOP_DEVICES_PROPERTY->items+0)
-
-/** MOUNT_SNOOP_DEVICES_PROPERTY.GPS property item pointer.
- */
-#define MOUNT_SNOOP_GPS_ITEM													(MOUNT_SNOOP_DEVICES_PROPERTY->items+1)
-
-
-//------------------------------------------------
 /** MOUNT_PEC property pointer, property is optional.
  */
 #define MOUNT_PEC_PROPERTY														(MOUNT_CONTEXT->mount_pec_property)
@@ -477,7 +458,17 @@ extern "C" {
 #define MOUNT_PEC_TRAINING_PROPERTY										(MOUNT_CONTEXT->mount_pec_training_property)
 #define MOUNT_PEC_TRAINIG_STARTED_ITEM           			(MOUNT_PEC_TRAINING_PROPERTY->items+0)
 #define MOUNT_PEC_TRAINIG_STOPPED_ITEM           			(MOUNT_PEC_TRAINING_PROPERTY->items+1)
-	
+
+
+//------------------------------------------------
+/** MOUNT_STATE property pointer, property is optional.
+ */
+#define MOUNT_STATE_PROPERTY													(MOUNT_CONTEXT->mount_state_property)
+#define MOUNT_STATE_SLEW_ITEM													(MOUNT_STATE_PROPERTY->items+0)
+#define MOUNT_STATE_PARK_ITEM													(MOUNT_STATE_PROPERTY->items+1)
+#define MOUNT_STATE_HOME_ITEM													(MOUNT_STATE_PROPERTY->items+2)
+#define MOUNT_STATE_TRACKING_ITEM											(MOUNT_STATE_PROPERTY->items+3)
+
 
 //------------------------------------------------
 /** Max number of alignment points.
@@ -529,7 +520,6 @@ typedef struct {
 	indigo_property *mount_guide_rate_property;							///< MOUNT_GUIDE_RATE property pointer
 	indigo_property *mount_equatorial_coordinates_property;	///< MOUNT_EQUATORIAL_COORDINATES property pointer
 	indigo_property *mount_horizontal_coordinates_property;	///< MOUNT_HORIZONTAL_COORDINATES property pointer
-	indigo_property *mount_target_info_property;	        ///< MOUNT_TARGET_INFO property pointer
 	indigo_property *mount_abort_motion_property;						///< MOUNT_ABORT_MOTION property pointer
 	indigo_property *mount_motion_dec_property;							///< MOUNT_MOTION_NS property pointer
 	indigo_property *mount_motion_ra_property;							///< MOUNT_MOTION_WE property pointer
@@ -539,70 +529,60 @@ typedef struct {
 	indigo_property *mount_alignment_delete_points_property;///< MOUNT_ALIGNMENT_DELETE_POINTS property pointer
 	indigo_property *mount_epoch_property;									///< MOUNT_EPOCH property pointer
 	indigo_property *mount_side_of_pier_property;						///< MOUNT_SIDE_OF_PIER property pointer
-	indigo_property *mount_snoop_devices_property;					///< MOUNT_SNOOP_DEVICES property pointer
 	indigo_property *mount_pec_property;										///< MOUNT_PEC property pointer
 	indigo_property *mount_pec_training_property;						///< MOUNT_PEC_TRAINING property pointer
-	indigo_property *mount_alignment_reset_property;					///< MOUNT_ALIGNMENT_RESET property pointer
+	indigo_property *mount_alignment_reset_property;				///< MOUNT_ALIGNMENT_RESET property pointer
+	indigo_property *mount_state_property;									///< MOUNT_STATE property pointer
 } indigo_mount_context;
 
 /** Attach callback function.
  */
-extern indigo_result indigo_mount_attach(indigo_device *device, const char* driver_name, unsigned version);
+INDIGO_EXTERN indigo_result indigo_mount_attach(indigo_device *device, const char* driver_name, unsigned version);
 /** Enumerate properties callback function.
  */
-extern indigo_result indigo_mount_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
+INDIGO_EXTERN indigo_result indigo_mount_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
 /** Change property callback function.
  */
-extern indigo_result indigo_mount_change_property(indigo_device *device, indigo_client *client, indigo_property *property);
+INDIGO_EXTERN indigo_result indigo_mount_change_property(indigo_device *device, indigo_client *client, indigo_property *property);
 /** Detach callback function.
  */
-extern indigo_result indigo_mount_detach(indigo_device *device);
+INDIGO_EXTERN indigo_result indigo_mount_detach(indigo_device *device);
 
 /** Translate coordinates to native.
  */
 
-extern indigo_result indigo_translated_to_raw(indigo_device *device, double ra, double dec, double *raw_ra, double *raw_dec);
-extern indigo_result indigo_translated_to_raw_with_lst(indigo_device *device, double lst, double ra, double dec, int side_of_pier, double *raw_ra, double *raw_dec);
+INDIGO_EXTERN indigo_result indigo_translated_to_raw(indigo_device *device, double ra, double dec, double *raw_ra, double *raw_dec);
+INDIGO_EXTERN indigo_result indigo_translated_to_raw_with_lst(indigo_device *device, double lst, double ra, double dec, int side_of_pier, double *raw_ra, double *raw_dec);
 
 /** Translate coordinates from native.
  */
 
-extern indigo_result indigo_raw_to_translated(indigo_device *device, double raw_ra, double raw_dec, double *ra, double *dec);
-extern indigo_result indigo_raw_to_translated_with_lst(indigo_device *device, double lst, double raw_ra, double raw_dec, int side_of_pier, double *ra, double *dec);
+INDIGO_EXTERN indigo_result indigo_raw_to_translated(indigo_device *device, double raw_ra, double raw_dec, double *ra, double *dec);
+INDIGO_EXTERN indigo_result indigo_raw_to_translated_with_lst(indigo_device *device, double lst, double raw_ra, double raw_dec, int side_of_pier, double *ra, double *dec);
 
 /** Get mount UTC if available otherwise return host UTC.
  */
-time_t indigo_get_mount_utc(indigo_device *device);
+INDIGO_EXTERN time_t indigo_get_mount_utc(indigo_device *device);
 
 /** Translate coordinates from native.
  */
 
-extern void indigo_update_coordinates(indigo_device *device, const char *message);
+INDIGO_EXTERN void indigo_update_coordinates(indigo_device *device, const char *message);
 
 /** Load alignment points.
  */
 
-extern void indigo_mount_load_alignment_points(indigo_device *device);
+INDIGO_EXTERN void indigo_mount_load_alignment_points(indigo_device *device);
 
 /** Save alignment points.
  */
 
-extern void indigo_mount_save_alignment_points(indigo_device *device);
+INDIGO_EXTERN void indigo_mount_save_alignment_points(indigo_device *device);
 
 /** Update alignment points.
  */
 
-extern void indigo_mount_update_alignment_points(indigo_device *device);
-
-/** Get host UTC offset
- */
-
-extern int indigo_get_utc_offset(void);
-
-/** Get host DST state
- */
-
-extern int indigo_get_dst_state(void);
+INDIGO_EXTERN void indigo_mount_update_alignment_points(indigo_device *device);
 
 #ifdef __cplusplus
 }

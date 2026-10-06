@@ -38,7 +38,7 @@
 #include <sys/ioctl.h>
 
 #include <indigo/indigo_driver_xml.h>
-#include <indigo/indigo_io.h>
+#include <indigo/indigo_uni_io.h>
 #include <indigo/indigo_gps_driver.h>
 
 #include "indigo_aux_uranus.h"
@@ -124,7 +124,7 @@
 #define RESPONSE_LENGTH 120
 
 typedef struct {
-	int handle;
+	indigo_uni_handle *handle;
 	int device_count;
 	indigo_property *health_property;
 	indigo_property *battery_voltage_property;
@@ -153,8 +153,8 @@ typedef struct {
 // -------------------------------------------------------------------------------- serial interface
 
 static bool uranus_open(indigo_device *device) {
-	PRIVATE_DATA->handle = indigo_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 115200);
-	if (PRIVATE_DATA->handle < 0) {
+	PRIVATE_DATA->handle = indigo_uni_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 115200, INDIGO_LOG_DEBUG);
+	if (PRIVATE_DATA->handle == NULL) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to connect to %s", DEVICE_PORT_ITEM->text.value);
 		return false;
 	}
@@ -165,12 +165,12 @@ static bool uranus_open(indigo_device *device) {
 static bool uranus_command(indigo_device *device, const char *command, char *response, int max) {
 	bool result = false;
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	tcflush(PRIVATE_DATA->handle, TCIOFLUSH);
-	result = indigo_write(PRIVATE_DATA->handle, command, strlen(command));
+	indigo_uni_discard(PRIVATE_DATA->handle);
+	result = indigo_uni_write(PRIVATE_DATA->handle, command, strlen(command));
 	if (result)
-		result = indigo_write(PRIVATE_DATA->handle, "\n", 1);
+		result = indigo_uni_write(PRIVATE_DATA->handle, "\n", 1);
 	if (result && response != NULL) {
-		if (indigo_read_line(PRIVATE_DATA->handle, response, max) == -1) {
+		if (indigo_uni_read_line(PRIVATE_DATA->handle, response, max) == -1) {
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command %s -> no response", command);
 			result = false;
 		}
@@ -181,9 +181,8 @@ static bool uranus_command(indigo_device *device, const char *command, char *res
 }
 
 static void uranus_close(indigo_device *device) {
-	if (PRIVATE_DATA->handle >= 0) {
-		close(PRIVATE_DATA->handle);
-		PRIVATE_DATA->handle = -1;
+	if (PRIVATE_DATA->handle != NULL) {
+		indigo_uni_close(&PRIVATE_DATA->handle);
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Disconnected");
 	}
 }
@@ -713,7 +712,7 @@ static indigo_result aux_attach(indigo_device *device) {
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -721,13 +720,13 @@ static indigo_result aux_attach(indigo_device *device) {
 #ifdef INDIGO_LINUX
 		if (DEVICE_PORTS_PROPERTY->count > 1) {
 			/* 0 is refresh button */
-			indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[1].name);
+			INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[1].name);
 		} else {
 			strcpy(DEVICE_PORT_ITEM->text.value, "/dev/ttyUSB0");
 		}
 #endif
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return aux_enumerate_properties(device, NULL, NULL);
@@ -737,17 +736,17 @@ static indigo_result aux_attach(indigo_device *device) {
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_AUX_URANUS_HEALTH_PROPERTY);
-		indigo_define_matching_property(X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY);
-		indigo_define_matching_property(X_AUX_SENSOR_READINGS_PROPERTY);
-		indigo_define_matching_property(X_AUX_URANUS_RESET_PROPERTY);
-		indigo_define_matching_property(AUX_WEATHER_PROPERTY);
-		indigo_define_matching_property(AUX_CLOUD_THRESHOLDS_PROPERTY);
-		indigo_define_matching_property(AUX_CLOUD_PROPERTY);
-		indigo_define_matching_property(X_AUX_URANUS_UNITS_PROPERTY);
-		indigo_define_matching_property(X_AUX_URANUS_NMEA_OUTPUT_PROPERTY);
-		indigo_define_matching_property(X_AUX_URANUS_OLED_LIGHT_PROPERTY);
-		indigo_define_matching_property(X_AUX_URANUS_NUM_SETTINGS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_AUX_URANUS_HEALTH_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_AUX_URANUS_BATTERY_VOLTAGE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_AUX_SENSOR_READINGS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_AUX_URANUS_RESET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_WEATHER_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_CLOUD_THRESHOLDS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_CLOUD_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_AUX_URANUS_UNITS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_AUX_URANUS_NMEA_OUTPUT_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_AUX_URANUS_OLED_LIGHT_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_AUX_URANUS_NUM_SETTINGS_PROPERTY);
 	}
 	return indigo_aux_enumerate_properties(device, NULL, NULL);
 }

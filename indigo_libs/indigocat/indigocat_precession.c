@@ -1,4 +1,5 @@
-// Created by Rumen Bogdanovski, 2022
+// Copyright (c) 2022-2025 Rumen G. Bogdanovski
+// All rights reserved.
 //
 // THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
 // OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -17,6 +18,10 @@
 
 #include <indigo/indigocat/indigocat_precession.h>
 #include <indigo/indigocat/indigocat_dynamical_time.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 equatorial_coords_s indigocat_precess(const equatorial_coords_s *c0, const double eq0, const double eq1) {
 	double rot[3][3];

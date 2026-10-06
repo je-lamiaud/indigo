@@ -1,4 +1,4 @@
-// Copyright (c) 2021 Rumen G. Bogdanovski
+// Copyright (c) 2021-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen Bogdanovski <rumenastro@gmail.com>
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 #include <stdlib.h>
 #include <math.h>
@@ -205,7 +205,7 @@ indigo_result indigo_raw_to_fits(char *image, int in_size, char **fits, int *fit
 			uint16_t *out_ch2 = (uint16_t *)p + 2 * pixel_count;
 			// 16 bit RGB - average and swap endianness
 			uint16_t *in = (uint16_t *)image;
-			for (int i = 0; i < pixel_count * 3; i++) {
+			for (int i = 0; i < pixel_count; i++) {
 				int value =  *in++ - 32768;
 				*out_ch0++ = (value & 0xff) << 8 | (value & 0xff00) >> 8;
 				value =  *in++ - 32768;

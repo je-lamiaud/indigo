@@ -17,34 +17,29 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 /** INDIGO Astroasis filter wheel driver
  \file indigo_wheel_astroasis.c
  */
 
-#define DRIVER_VERSION 0x0002
+#define DRIVER_VERSION 0x03000003
 #define DRIVER_NAME "indigo_wheel_astroasis"
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <pthread.h>
 #include <stdbool.h>
-#include <sys/time.h>
 
 #include <indigo/indigo_driver_xml.h>
+#include <indigo/indigo_usb_utils.h>
+
 #include "indigo_wheel_astroasis.h"
 
 #if !defined(__i386__)
-
-#if defined(INDIGO_FREEBSD)
-#include <libusb.h>
-#else
-#include <libusb-1.0/libusb.h>
-#endif
 
 #include <OasisFilterWheel.h>
 
@@ -155,7 +150,7 @@ static void calibrate_callback(indigo_device *device) {
 
 		OFWStatus status = { 0 };
 		do {
-			indigo_usleep(ONE_SECOND_DELAY);
+			indigo_sleep(1);
 			int res = OFWGetStatus(PRIVATE_DATA->dev_id, &status);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "OFWGetStatus(%d, -> .filterPosition = %d .filterStatus = %d) = %d", PRIVATE_DATA->dev_id, status.filterPosition, status.filterStatus, res);
 		} while (status.filterStatus != STATUS_IDLE);
@@ -190,38 +185,43 @@ static indigo_result wheel_attach(indigo_device *device) {
 		INFO_PROPERTY->count = 6;
 		char sdk_version[OFW_VERSION_LEN + 1];
 		OFWGetSDKVersion(sdk_version);
-		indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, sdk_version);
-		indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->model);
-		indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->label, "SDK version");
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, sdk_version);
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->model);
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->label, "SDK version");
 
 		// --------------------------------------------------------------------------------- X_CALIBRATE
 		X_CALIBRATE_PROPERTY = indigo_init_switch_property(NULL, device->name, X_CALIBRATE_PROPERTY_NAME, ADVANCED_GROUP, "Calibrate filter wheel", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 1);
-		if (X_CALIBRATE_PROPERTY == NULL)
+		if (X_CALIBRATE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_CALIBRATE_START_ITEM, X_CALIBRATE_START_ITEM_NAME, "Start", false);
 		// --------------------------------------------------------------------------------- X_CUSTOM_SUFFIX
 		X_CUSTOM_SUFFIX_PROPERTY = indigo_init_text_property(NULL, device->name, "X_CUSTOM_SUFFIX", WHEEL_ADVANCED_GROUP, "Device name custom suffix", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (X_CUSTOM_SUFFIX_PROPERTY == NULL)
+		if (X_CUSTOM_SUFFIX_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_text_item(X_CUSTOM_SUFFIX_ITEM, X_CUSTOM_SUFFIX_NAME, "Suffix", PRIVATE_DATA->custom_suffix);
 		// --------------------------------------------------------------------------------- BLUETOOTH
 		X_BLUETOOTH_PROPERTY = indigo_init_switch_property(NULL, device->name, X_BLUETOOTH_PROPERTY_NAME, "Advanced", "Bluetooth", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (X_BLUETOOTH_PROPERTY == NULL)
+		if (X_BLUETOOTH_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 
 		indigo_init_switch_item(X_BLUETOOTH_ON_ITEM, X_BLUETOOTH_ON_ITEM_NAME, "Enabled", false);
 		indigo_init_switch_item(X_BLUETOOTH_OFF_ITEM, X_BLUETOOTH_OFF_ITEM_NAME, "Disabled", true);
 		X_BLUETOOTH_PROPERTY->hidden = true;  // not suppred by firmware yet
 		// ---------------------------------------------------------------------------------- X_BLUETOOTH_NAME
 		X_BLUETOOTH_NAME_PROPERTY = indigo_init_text_property(NULL, device->name, X_BLUETOOTH_NAME_PROPERTY_NAME, "Advanced", "Bluetooth name", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (X_BLUETOOTH_NAME_PROPERTY == NULL)
+		if (X_BLUETOOTH_NAME_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_text_item(X_BLUETOOTH_NAME_ITEM, X_BLUETOOTH_NAME_NAME, "Bluetooth name", PRIVATE_DATA->bluetooth_name);
 		X_BLUETOOTH_NAME_PROPERTY->hidden = true; // not supported by firmware yet
 		// ---------------------------------------------------------------------------------- X_FACTORY_RESET
 		X_FACTORY_RESET_PROPERTY = indigo_init_switch_property(NULL, device->name, X_FACTORY_RESET_PROPERTY_NAME, "Advanced", "Factory reset", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 1);
-		if (X_FACTORY_RESET_PROPERTY == NULL)
+		if (X_FACTORY_RESET_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_FACTORY_RESET_ITEM, X_FACTORY_RESET_ITEM_NAME, "Reset", false);
 		sprintf(X_FACTORY_RESET_ITEM->hints, "warn_on_set:\"Confirm filter wheel factory reset?\";");
 		// --------------------------------------------------------------------------
@@ -234,11 +234,11 @@ static indigo_result wheel_attach(indigo_device *device) {
 static indigo_result wheel_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	assert(device != NULL);
 	if (device->is_connected) {
-		indigo_define_matching_property(X_CALIBRATE_PROPERTY);
-		indigo_define_matching_property(X_CUSTOM_SUFFIX_PROPERTY);
-		indigo_define_matching_property(X_BLUETOOTH_PROPERTY);
-		indigo_define_matching_property(X_BLUETOOTH_NAME_PROPERTY);
-		indigo_define_matching_property(X_FACTORY_RESET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_CALIBRATE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_CUSTOM_SUFFIX_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_BLUETOOTH_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_BLUETOOTH_NAME_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FACTORY_RESET_PROPERTY);
 	}
 	return indigo_wheel_enumerate_properties(device, client, property);
 }
@@ -335,7 +335,7 @@ static indigo_result wheel_change_property(indigo_device *device, indigo_client 
 			WHEEL_SLOT_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
 			WHEEL_SLOT_PROPERTY->state = INDIGO_BUSY_STATE;
-			PRIVATE_DATA->target_slot = WHEEL_SLOT_ITEM->number.value;
+			PRIVATE_DATA->target_slot = (int)WHEEL_SLOT_ITEM->number.value;
 			WHEEL_SLOT_ITEM->number.value = PRIVATE_DATA->current_slot;
 			int res = OFWSetPosition(PRIVATE_DATA->dev_id, PRIVATE_DATA->target_slot);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "OFWSetPosition(%d, %d) = %d", PRIVATE_DATA->dev_id, PRIVATE_DATA->target_slot, res);
@@ -385,10 +385,11 @@ static indigo_result wheel_change_property(indigo_device *device, indigo_client 
 		// -------------------------------------------------------------------------------- X_BLUETOOTH
 	} else if (indigo_property_match_changeable(X_BLUETOOTH_PROPERTY, property)) {
 		indigo_property_copy_values(X_BLUETOOTH_PROPERTY, property, false);
-		if (wheel_config(device, MASK_BLUETOOTH, X_BLUETOOTH_ON_ITEM->sw.value))
+		if (wheel_config(device, MASK_BLUETOOTH, X_BLUETOOTH_ON_ITEM->sw.value)) {
 			X_BLUETOOTH_PROPERTY->state = INDIGO_OK_STATE;
-		else
+		} else {
 			X_BLUETOOTH_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
 		indigo_update_property(device, X_BLUETOOTH_PROPERTY, NULL);
 		return INDIGO_OK;
 		// -------------------------------------------------------------------------------- X_BLUETOOTH_NAME
@@ -534,10 +535,11 @@ static indigo_device *wheel_create(int id) {
 	strcpy(private_data->custom_suffix, custom_suffix);
 	strcpy(private_data->bluetooth_name, bluetooth_name);
 
-	if (strlen(private_data->custom_suffix) > 0)
+	if (strlen(private_data->custom_suffix) > 0) {
 		sprintf(device->name, "%s #%s", "Oasis Filter Wheel", private_data->custom_suffix);
-	else
+	} else {
 		sprintf(device->name, "%s", "Oasis Filter Wheel");
+	}
 
 	memcpy(&private_data->config, &config, sizeof(OFWConfig));
 
@@ -554,6 +556,8 @@ out:
 
 	return device;
 }
+
+static pthread_mutex_t indigo_device_enumeration_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void wheel_refresh(void) {
 	WHEEL_LIST wheels = { {}, 0 };
@@ -644,40 +648,42 @@ indigo_result indigo_wheel_astroasis(indigo_driver_action action, indigo_driver_
 
 	SET_DRIVER_INFO(info, "Astroasis Oasis Wheel", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		last_action = action;
+		case INDIGO_DRIVER_INIT:
+			last_action = action;
 
-		char sdk_version[OFW_VERSION_LEN];
+			char sdk_version[OFW_VERSION_LEN];
 
-		OFWGetSDKVersion(sdk_version);
-		INDIGO_DRIVER_LOG(DRIVER_NAME, "Oasis Focuser SDK version: %s", sdk_version);
+			OFWGetSDKVersion(sdk_version);
+			INDIGO_DRIVER_LOG(DRIVER_NAME, "Oasis Focuser SDK version: %s", sdk_version);
 
-		if (indigo_get_log_level() >= INDIGO_LOG_DEBUG) {
-			OFWSetLogLevel(AO_LOG_LEVEL_DEBUG);
-		} else {
-			OFWSetLogLevel(AO_LOG_LEVEL_QUIET);
-		}
+			if (indigo_get_log_level() >= INDIGO_LOG_DEBUG) {
+				OFWSetLogLevel(AO_LOG_LEVEL_DEBUG);
+			} else {
+				OFWSetLogLevel(AO_LOG_LEVEL_QUIET);
+			}
 
-		indigo_start_usb_event_handler();
-		int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, ASTROASIS_VENDOR_ID, ASTROASIS_PRODUCT_WHEEL_ID, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
-		return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
+			indigo_start_usb_event_handler();
+			int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, ASTROASIS_VENDOR_ID, ASTROASIS_PRODUCT_WHEEL_ID, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
+			return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
 
-	case INDIGO_DRIVER_SHUTDOWN:
-		for (int i = 0; i < gWheels.count; i++)
-			VERIFY_NOT_CONNECTED(gWheels.device[i]);
-		last_action = action;
-		libusb_hotplug_deregister_callback(NULL, callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
-		remove_all_devices();
-		break;
+		case INDIGO_DRIVER_SHUTDOWN:
+			for (int i = 0; i < gWheels.count; i++) {
+				VERIFY_NOT_CONNECTED(gWheels.device[i]);
+			}
+			last_action = action;
+			libusb_hotplug_deregister_callback(NULL, callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
+			remove_all_devices();
+			break;
 
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

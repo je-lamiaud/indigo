@@ -1,0 +1,1063 @@
+// Copyright (C) 2026 Rumen G. Bogdanovski
+// All rights reserved.
+//
+// You can use this software under the terms of 'INDIGO Astronomy
+// open-source license' (see LICENSE.md).
+//
+// THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
+// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+// GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+// NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// version history
+// 2.0 by Rumen G. Bogdanovski
+
+/** Askar-WAF USB CDC focuser driver
+ \file indigo_focuser_askar.c
+ */
+
+#define DRIVER_VERSION 0x03000003
+#define DRIVER_NAME "indigo_focuser_askar"
+
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <assert.h>
+#include <errno.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <fcntl.h>
+
+#include <indigo/indigo_driver_xml.h>
+
+#include <indigo/indigo_uni_io.h>
+
+#include "indigo_focuser_askar.h"
+
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <ifaddrs.h>
+#elif defined(INDIGO_WINDOWS)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
+
+// USB CDC ignores the baud rate, but DEVICE_PORT_PROPERTY exposes one.
+#define SERIAL_BAUDRATE            "115200"
+
+#define RESPONSE_TIMEOUT_MS        500
+
+#define ASKAR_CMD_LEN              64
+
+// Logical step range allowed by the protocol's set-max-travel command.
+#define ASKAR_MAX_TRAVEL_MIN       100
+#define ASKAR_MAX_TRAVEL_MAX       1000000
+
+#define ASKAR_BACKLASH_MAX         10000
+
+// WAF WiFi autodiscovery: a "WAF:discover" datagram is broadcast on UDP
+// ASKAR_DISCOVERY_PORT and the focuser answers "WAF:<ip>:<port>". The driver
+// then connects to that address over TCP.
+#define ASKAR_DISCOVERY_PORT       7676
+#define ASKAR_DISCOVERY_REQUEST    "WAF:discover"
+#define ASKAR_DISCOVERY_TIMEOUT    1
+#define ASKAR_DISCOVERY_RETRIES    3
+#define ASKAR_DISCOVERY_MAX_IFACES 32
+#define ASKAR_DISCOVERY_MAX_DEVICES 20
+
+#define PRIVATE_DATA               ((askar_private_data *)device->private_data)
+
+// gp_bits is used as boolean
+#define is_connected               gp_bits
+
+// -------------------------------------------------------------------------------- X_FOCUSER_MOTOR_MODE (device specific)
+#define X_FOCUSER_MOTOR_MODE_PROPERTY                   (PRIVATE_DATA->x_focuser_motor_mode_property)
+#define X_FOCUSER_MOTOR_MODE_HIGH_PERFORMANCE_ITEM      (X_FOCUSER_MOTOR_MODE_PROPERTY->items + 0)
+#define X_FOCUSER_MOTOR_MODE_BALANCED_ITEM              (X_FOCUSER_MOTOR_MODE_PROPERTY->items + 1)
+
+#define X_FOCUSER_MOTOR_MODE_PROPERTY_NAME              "X_FOCUSER_MOTOR_MODE"
+#define X_FOCUSER_MOTOR_MODE_HIGH_PERFORMANCE_ITEM_NAME "HIGH_PERFORMANCE"
+#define X_FOCUSER_MOTOR_MODE_BALANCED_ITEM_NAME         "BALANCED"
+
+typedef struct {
+	indigo_uni_handle *handle;
+	int32_t current_position, target_position, max_position;
+	pthread_mutex_t port_mutex;
+	indigo_property *x_focuser_motor_mode_property;
+} askar_private_data;
+
+// -------------------------------------------------------------------------------- Low level protocol
+
+static void focuser_connect_callback(indigo_device *device);
+
+static void network_disconnection(indigo_device *device) {
+	if (CONNECTION_CONNECTED_ITEM->sw.value) {
+		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
+		focuser_connect_callback(device);
+		CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;  // The alert state signals the unexpected disconnection
+		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
+		// Sending message as this update will not pass through the agent
+		indigo_send_message(device, ALERT_PROPERTY, "Device disconnected unexpectedly", device->name);
+	}
+}
+
+// Send command, read reply (terminated by '#'). CR/LF in the stream are
+// ignored - the protocol replies end with "#\r\n" and the next request's
+// flush takes care of the trailing CR/LF. Returns the response with the
+// '#' included so callers can sscanf() the payload directly.
+static bool askar_command(indigo_device *device, const char *command, char *response, int max) {
+	pthread_mutex_lock(&PRIVATE_DATA->port_mutex);
+	if (indigo_uni_discard(PRIVATE_DATA->handle) >= 0) {
+		if (indigo_uni_write(PRIVATE_DATA->handle, command, (long)strlen(command)) > 0) {
+			if (response != NULL) {
+				if (indigo_uni_read_section(PRIVATE_DATA->handle, response, max, "#", "\r\n", INDIGO_DELAY(RESPONSE_TIMEOUT_MS / 1000.0)) > 0) {
+					pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
+					return true;
+				}
+			} else {
+				pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
+				return true;
+			}
+		}
+	}
+	if (PRIVATE_DATA->handle && PRIVATE_DATA->handle->type == INDIGO_TCP_HANDLE) {
+		indigo_execute_handler(device, network_disconnection);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Unexpected disconnection from %s", DEVICE_PORT_ITEM->text.value);
+	}
+	pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
+	return false;
+}
+
+static void askar_close(indigo_device *device) {
+	if (PRIVATE_DATA->handle != NULL) {
+		indigo_uni_close(&PRIVATE_DATA->handle);
+		INDIGO_DRIVER_LOG(DRIVER_NAME, "Disconnected from %s", DEVICE_PORT_ITEM->text.value);
+	}
+}
+
+// A Wi-Fi focuser discovered on the network.
+typedef struct {
+	char url[64];    // "askar://<ip>:<port>", ready for indigo_uni_open_url
+	char label[64];  // "<ip>:<port>", used to build the human-readable list label
+} askar_wifi_device;
+
+// Parse a "WAF:<ip>:<port>" reply into `dev` (url "askar://<ip>:<port>" and label
+// "<ip>:<port>"). Returns true on a well-formed reply.
+static bool askar_parse_reply(const char *reply, askar_wifi_device *dev) {
+	char ip[64];
+	int port;
+	if (sscanf(reply, "WAF:%63[^:]:%d", ip, &port) == 2) {
+		snprintf(dev->url, sizeof(dev->url), "askar://%s:%d", ip, port);
+		snprintf(dev->label, sizeof(dev->label), "%s:%d", ip, port);
+		return true;
+	}
+	return false;
+}
+
+static bool askar_wifi_list_contains(const askar_wifi_device *list, int count, const char *url) {
+	for (int i = 0; i < count; i++) {
+		if (strncmp(list[i].url, url, sizeof(list[i].url)) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// WAF WiFi autodiscovery. Broadcasts "WAF:discover" on UDP ASKAR_DISCOVERY_PORT
+// and collects every focuser that answers "WAF:<ip>:<port>" within the timeout.
+// Fills `list` with up to `max` unique devices and returns the count.
+static int askar_discover_all(askar_wifi_device *list, int max) {
+	int found = 0;
+	struct in_addr targets[ASKAR_DISCOVERY_MAX_IFACES];
+	int target_count = 0;
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+	int sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock < 0) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "WAF discovery: socket() failed (%s)", strerror(errno));
+		return 0;
+	}
+	int broadcast = 1;
+	struct timeval tv;
+	tv.tv_sec = ASKAR_DISCOVERY_TIMEOUT;
+	tv.tv_usec = 0;
+	setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	struct ifaddrs *ifaddr = NULL;
+	if (getifaddrs(&ifaddr) == 0) {
+		for (struct ifaddrs *ifa = ifaddr; ifa != NULL && target_count < ASKAR_DISCOVERY_MAX_IFACES; ifa = ifa->ifa_next) {
+			if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET) continue;
+			if (!(ifa->ifa_flags & IFF_UP) || !(ifa->ifa_flags & IFF_BROADCAST) || (ifa->ifa_flags & IFF_LOOPBACK)) continue;
+			if (ifa->ifa_broadaddr == NULL) continue;
+			targets[target_count++] = ((struct sockaddr_in *)ifa->ifa_broadaddr)->sin_addr;
+		}
+		freeifaddrs(ifaddr);
+	}
+	if (target_count == 0) {
+		targets[target_count++].s_addr = htonl(INADDR_BROADCAST);
+	}
+	struct sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(ASKAR_DISCOVERY_PORT);
+	for (int i = 0; i < ASKAR_DISCOVERY_RETRIES && found < max; i++) {
+		for (int t = 0; t < target_count; t++) {
+			addr.sin_addr = targets[t];
+			if (sendto(sock, ASKAR_DISCOVERY_REQUEST, strlen(ASKAR_DISCOVERY_REQUEST), 0, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "WAF discovery: sendto(%s) failed (%s)", inet_ntoa(targets[t]), strerror(errno));
+			}
+		}
+		// Collect every distinct reply that arrives within the receive timeout.
+		while (found < max) {
+			struct sockaddr_in from;
+			socklen_t from_len = sizeof(from);
+			char reply[64] = {0};
+			long n = recvfrom(sock, reply, sizeof(reply) - 1, 0, (struct sockaddr *)&from, &from_len);
+			if (n <= 0) break;
+			reply[n] = 0;
+			askar_wifi_device dev;
+			if (askar_parse_reply(reply, &dev) && !askar_wifi_list_contains(list, found, dev.url)) {
+				list[found++] = dev;
+				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "WAF discovery: focuser detected at %s", dev.label);
+			}
+		}
+	}
+	close(sock);
+#elif defined(INDIGO_WINDOWS)
+	SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock == INVALID_SOCKET) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "WAF discovery: socket() failed (%d)", WSAGetLastError());
+		return 0;
+	}
+	BOOL broadcast = TRUE;
+	DWORD timeout_ms = ASKAR_DISCOVERY_TIMEOUT * 1000;
+	setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const char *)&broadcast, sizeof(broadcast));
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout_ms, sizeof(timeout_ms));
+	// SIO_GET_INTERFACE_LIST returns each interface's address and netmask; the
+	// directed broadcast is address | ~netmask. Uses only ws2_32 (no iphlpapi).
+	INTERFACE_INFO if_list[ASKAR_DISCOVERY_MAX_IFACES];
+	DWORD bytes_returned = 0;
+	if (WSAIoctl(sock, SIO_GET_INTERFACE_LIST, NULL, 0, if_list, sizeof(if_list), &bytes_returned, NULL, NULL) == 0) {
+		int count = (int)(bytes_returned / sizeof(INTERFACE_INFO));
+		for (int i = 0; i < count && target_count < ASKAR_DISCOVERY_MAX_IFACES; i++) {
+			u_long flags = if_list[i].iiFlags;
+			if (!(flags & IFF_UP) || !(flags & IFF_BROADCAST) || (flags & IFF_LOOPBACK)) continue;
+			u_long ip = if_list[i].iiAddress.AddressIn.sin_addr.s_addr;
+			u_long mask = if_list[i].iiNetmask.AddressIn.sin_addr.s_addr;
+			targets[target_count++].s_addr = ip | ~mask;
+		}
+	}
+	if (target_count == 0) {
+		targets[target_count++].s_addr = htonl(INADDR_BROADCAST);
+	}
+	struct sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(ASKAR_DISCOVERY_PORT);
+	for (int i = 0; i < ASKAR_DISCOVERY_RETRIES && found < max; i++) {
+		for (int t = 0; t < target_count; t++) {
+			addr.sin_addr = targets[t];
+			if (sendto(sock, ASKAR_DISCOVERY_REQUEST, (int)strlen(ASKAR_DISCOVERY_REQUEST), 0, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+				char ip_str[INET_ADDRSTRLEN];
+				inet_ntop(AF_INET, &targets[t], ip_str, sizeof(ip_str));
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "WAF discovery: sendto(%s) failed (%d)", ip_str, WSAGetLastError());
+			}
+		}
+		// Collect every distinct reply that arrives within the receive timeout.
+		while (found < max) {
+			struct sockaddr_in from;
+			int from_len = sizeof(from);
+			char reply[64] = {0};
+			int n = recvfrom(sock, reply, sizeof(reply) - 1, 0, (struct sockaddr *)&from, &from_len);
+			if (n <= 0) break;
+			reply[n] = 0;
+			askar_wifi_device dev;
+			if (askar_parse_reply(reply, &dev) && !askar_wifi_list_contains(list, found, dev.url)) {
+				list[found++] = dev;
+				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "WAF discovery: focuser detected at %s", dev.label);
+			}
+		}
+	}
+	closesocket(sock);
+#endif
+	return found;
+}
+
+// Append the UDP-discovered Wi-Fi focusers to DEVICE_PORTS as extra selectable
+// items, turning the serial-port list into a mixed serial + Wi-Fi list. Each
+// item's name is the "askar://<ip>:<port>" URL, so selecting it fills DEVICE_PORT
+// ready to connect. The property is grown to fit rather than relying on its
+// initial allocation.
+static void askar_append_wifi_ports(indigo_device *device) {
+	askar_wifi_device found[ASKAR_DISCOVERY_MAX_DEVICES];
+	int count = askar_discover_all(found, ASKAR_DISCOVERY_MAX_DEVICES);
+	if (count == 0) {
+		return;
+	}
+	int base = DEVICE_PORTS_PROPERTY->count;
+	DEVICE_PORTS_PROPERTY = indigo_resize_property(DEVICE_PORTS_PROPERTY, base + count);
+	for (int i = 0; i < count; i++) {
+		char label[INDIGO_NAME_SIZE];
+		snprintf(label, sizeof(label), "Askar-WAF (%s)", found[i].label);
+		indigo_init_switch_item(DEVICE_PORTS_PROPERTY->items + base + i, found[i].url, label, false);
+	}
+}
+
+// -------------------------------------------------------------------------------- Askar-WAF commands
+
+// FV# -> FVv# (firmware version), e.g. "FV1.1.0#"
+static bool askar_get_firmware(indigo_device *device, char *firmware, int max) {
+	char response[ASKAR_CMD_LEN] = {0};
+	if (!askar_command(device, "FV#", response, sizeof(response))) {
+		return false;
+	}
+	if (strncmp(response, "FV", 2) != 0) {
+		return false;
+	}
+	// strip leading "FV" and trailing '#'
+	char *src = response + 2;
+	char *hash = strchr(src, '#');
+	if (hash) *hash = 0;
+	strncpy(firmware, src, max - 1);
+	firmware[max - 1] = 0;
+	return true;
+}
+
+// FI# -> FImodel# (model name), e.g. "FIAskar-WAF#"
+static bool askar_get_model(indigo_device *device, char *model, int max) {
+	char response[ASKAR_CMD_LEN] = {0};
+	if (!askar_command(device, "FI#", response, sizeof(response))) {
+		return false;
+	}
+	if (strncmp(response, "FI", 2) != 0) {
+		return false;
+	}
+	char *src = response + 2;
+	char *hash = strchr(src, '#');
+	if (hash) *hash = 0;
+	strncpy(model, src, max - 1);
+	model[max - 1] = 0;
+	return true;
+}
+
+// Fp# -> Fpn# (read current logical position)
+static bool askar_get_position(indigo_device *device, int32_t *position) {
+	char response[ASKAR_CMD_LEN] = {0};
+	if (!askar_command(device, "Fp#", response, sizeof(response))) {
+		return false;
+	}
+	int parsed = sscanf(response, "Fp%d", position);
+	return parsed == 1;
+}
+
+// FQ# -> FQ0# (idle) / FQ1# (moving)
+static bool askar_is_moving(indigo_device *device, bool *moving) {
+	char response[ASKAR_CMD_LEN] = {0};
+	if (!askar_command(device, "FQ#", response, sizeof(response))) {
+		return false;
+	}
+	int state = 0;
+	int parsed = sscanf(response, "FQ%d", &state);
+	if (parsed != 1) {
+		return false;
+	}
+	*moving = (state != 0);
+	return true;
+}
+
+// Fm# -> Fmn# (read max travel). FM# is accepted as an alias by the firmware;
+// accept either reply casing so the driver works against old and new firmware.
+static bool askar_get_max_position(indigo_device *device, int32_t *max_position) {
+	char response[ASKAR_CMD_LEN] = {0};
+	if (!askar_command(device, "Fm#", response, sizeof(response))) {
+		return false;
+	}
+	int parsed = sscanf(response, "Fm%d", max_position);
+	if (parsed != 1) {
+		parsed = sscanf(response, "FM%d", max_position);
+	}
+	return parsed == 1;
+}
+
+// FMn# -> FMn# (set max travel; firmware clamps to [100, 1000000]). FXn# is the
+// legacy alias; accept either reply casing.
+static bool askar_set_max_position(indigo_device *device, int32_t max_position) {
+	if (max_position < ASKAR_MAX_TRAVEL_MIN || max_position > ASKAR_MAX_TRAVEL_MAX) {
+		return false;
+	}
+	char command[ASKAR_CMD_LEN];
+	char response[ASKAR_CMD_LEN] = {0};
+	snprintf(command, sizeof(command), "FM%d#", max_position);
+	if (!askar_command(device, command, response, sizeof(response))) {
+		return false;
+	}
+	// "FE" reply means firmware rejected the value
+	return strncmp(response, "FM", 2) == 0 || strncmp(response, "Fm", 2) == 0;
+}
+
+// FPn# -> FPn# (absolute move; async, poll Fp#/FQ# for completion)
+static bool askar_goto_position(indigo_device *device, int32_t position) {
+	char command[ASKAR_CMD_LEN];
+	char response[ASKAR_CMD_LEN] = {0};
+	snprintf(command, sizeof(command), "FP%d#", position);
+	if (!askar_command(device, command, response, sizeof(response))) {
+		return false;
+	}
+	return strncmp(response, "FP", 2) == 0;
+}
+
+// FYn# -> FYn# (set logical position without moving)
+static bool askar_sync_position(indigo_device *device, int32_t position) {
+	char command[ASKAR_CMD_LEN];
+	char response[ASKAR_CMD_LEN] = {0};
+	snprintf(command, sizeof(command), "FY%d#", position);
+	if (!askar_command(device, command, response, sizeof(response))) {
+		return false;
+	}
+	return strncmp(response, "FY", 2) == 0;
+}
+
+// FS# -> FS# (emergency stop)
+static bool askar_stop(indigo_device *device) {
+	char response[ASKAR_CMD_LEN] = {0};
+	if (!askar_command(device, "FS#", response, sizeof(response))) {
+		return false;
+	}
+	return strncmp(response, "FS", 2) == 0;
+}
+
+// Fb# -> Fbn# (read user backlash offset)
+static bool askar_get_backlash(indigo_device *device, int *backlash) {
+	char response[ASKAR_CMD_LEN] = {0};
+	if (!askar_command(device, "Fb#", response, sizeof(response))) {
+		return false;
+	}
+	int parsed = sscanf(response, "Fb%d", backlash);
+	return parsed == 1;
+}
+
+// FBn# -> FBn# (set user backlash offset; firmware clamps to [0, 10000])
+static bool askar_set_backlash(indigo_device *device, int backlash) {
+	char command[ASKAR_CMD_LEN];
+	char response[ASKAR_CMD_LEN] = {0};
+	if (backlash < 0) backlash = 0;
+	if (backlash > ASKAR_BACKLASH_MAX) backlash = ASKAR_BACKLASH_MAX;
+	snprintf(command, sizeof(command), "FB%d#", backlash);
+	if (!askar_command(device, command, response, sizeof(response))) {
+		return false;
+	}
+	return strncmp(response, "FB", 2) == 0;
+}
+
+// Fr# -> Fr0# (normal) / Fr1# (reversed) (read reverse motion direction)
+static bool askar_get_reverse(indigo_device *device, bool *reversed) {
+	char response[ASKAR_CMD_LEN] = {0};
+	if (!askar_command(device, "Fr#", response, sizeof(response))) {
+		return false;
+	}
+	int state = 0;
+	int parsed = sscanf(response, "Fr%d", &state);
+	if (parsed != 1) {
+		return false;
+	}
+	*reversed = (state != 0);
+	return true;
+}
+
+// FR0# / FR1# -> echo (set reverse motion; halts motion, persisted in NVS)
+static bool askar_set_reverse(indigo_device *device, bool reversed) {
+	char command[ASKAR_CMD_LEN];
+	char response[ASKAR_CMD_LEN] = {0};
+	snprintf(command, sizeof(command), "FR%d#", reversed ? 1 : 0);
+	if (!askar_command(device, command, response, sizeof(response))) {
+		return false;
+	}
+	return strncmp(response, "FR", 2) == 0;
+}
+
+// Fo# -> Fo0# (high performance) / Fo1# (balanced) (read motor mode)
+static bool askar_get_motor_mode(indigo_device *device, bool *balanced) {
+	char response[ASKAR_CMD_LEN] = {0};
+	if (!askar_command(device, "Fo#", response, sizeof(response))) {
+		return false;
+	}
+	int mode = 0;
+	int parsed = sscanf(response, "Fo%d", &mode);
+	if (parsed != 1) {
+		return false;
+	}
+	*balanced = (mode != 0);
+	return true;
+}
+
+// FO0# / FO1# -> echo (set motor mode; halts motion, persisted in NVS,
+// reconfigures the motor driver registers). "FE#" means the value was rejected.
+static bool askar_set_motor_mode(indigo_device *device, bool balanced) {
+	char command[ASKAR_CMD_LEN];
+	char response[ASKAR_CMD_LEN] = {0};
+	snprintf(command, sizeof(command), "FO%d#", balanced ? 1 : 0);
+	if (!askar_command(device, command, response, sizeof(response))) {
+		return false;
+	}
+	// accept either reply casing; "FE" is the firmware's rejection reply
+	return strncmp(response, "FO", 2) == 0 || strncmp(response, "Fo", 2) == 0;
+}
+
+// -------------------------------------------------------------------------------- INDIGO focuser device implementation
+
+static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
+
+static void focuser_scan_ports_callback(indigo_device *device) {
+	indigo_delete_property(device, DEVICE_PORTS_PROPERTY, NULL);
+	indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
+	askar_append_wifi_ports(device);
+	DEVICE_PORTS_PROPERTY->items[0].sw.value = false;
+	DEVICE_PORTS_PROPERTY->state = INDIGO_OK_STATE;
+	indigo_define_property(device, DEVICE_PORTS_PROPERTY, NULL);
+}
+
+static void focuser_timer_callback(indigo_device *device) {
+	bool moving = false;
+	int32_t position;
+
+	if (!askar_is_moving(device, &moving)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_is_moving(%p) failed", PRIVATE_DATA->handle);
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+
+	if (!askar_get_position(device, &position)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_get_position(%p) failed", PRIVATE_DATA->handle);
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+	} else {
+		PRIVATE_DATA->current_position = position;
+	}
+
+	FOCUSER_POSITION_ITEM->number.value = (double)PRIVATE_DATA->current_position;
+	if (!moving || PRIVATE_DATA->current_position == PRIVATE_DATA->target_position) {
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
+	} else {
+		indigo_execute_handler_in(device, 0.5, focuser_timer_callback);
+	}
+	indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+	indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+}
+
+static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
+	if (IS_CONNECTED) {
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_MOTOR_MODE_PROPERTY);
+	}
+	return indigo_focuser_enumerate_properties(device, client, property);
+}
+
+static indigo_result focuser_attach(indigo_device *device) {
+	assert(device != NULL);
+	assert(PRIVATE_DATA != NULL);
+	if (indigo_focuser_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
+		pthread_mutex_init(&PRIVATE_DATA->port_mutex, NULL);
+		PRIVATE_DATA->handle = NULL;
+		// -------------------------------------------------------------------------------- DEVICE_PORT
+		DEVICE_PORT_PROPERTY->hidden = false;
+		// -------------------------------------------------------------------------------- DEVICE_PORTS
+		DEVICE_PORTS_PROPERTY->hidden = false;
+		// The UDP Wi-Fi scan is appended asynchronously below so
+		// it does not block driver load. A Refresh repeats both (see change_property).
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
+		// -------------------------------------------------------------------------------- DEVICE_BAUDRATE
+		DEVICE_BAUDRATE_PROPERTY->hidden = false;
+		INDIGO_COPY_VALUE(DEVICE_BAUDRATE_ITEM->text.value, SERIAL_BAUDRATE);
+		// --------------------------------------------------------------------------------
+		INFO_PROPERTY->count = 6;
+
+		FOCUSER_LIMITS_PROPERTY->hidden = false;
+		FOCUSER_LIMITS_MAX_POSITION_ITEM->number.min = ASKAR_MAX_TRAVEL_MIN;
+		FOCUSER_LIMITS_MAX_POSITION_ITEM->number.max = ASKAR_MAX_TRAVEL_MAX;
+		FOCUSER_LIMITS_MAX_POSITION_ITEM->number.step = 100;
+
+		FOCUSER_LIMITS_MIN_POSITION_ITEM->number.min = 0;
+		FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value = 0;
+		FOCUSER_LIMITS_MIN_POSITION_ITEM->number.max = 0;
+
+		FOCUSER_POSITION_ITEM->number.min = 0;
+		FOCUSER_POSITION_ITEM->number.step = 100;
+		FOCUSER_POSITION_ITEM->number.max = ASKAR_MAX_TRAVEL_MAX;
+
+		FOCUSER_STEPS_ITEM->number.min = 0;
+		FOCUSER_STEPS_ITEM->number.step = 1;
+		FOCUSER_STEPS_ITEM->number.max = ASKAR_MAX_TRAVEL_MAX;
+
+		FOCUSER_ON_POSITION_SET_PROPERTY->hidden = false;
+
+		FOCUSER_BACKLASH_PROPERTY->hidden = false;
+		FOCUSER_BACKLASH_ITEM->number.min = 0;
+		FOCUSER_BACKLASH_ITEM->number.max = ASKAR_BACKLASH_MAX;
+
+		FOCUSER_REVERSE_MOTION_PROPERTY->hidden = false;
+
+		// -------------------------------------------------------------------------------- X_FOCUSER_MOTOR_MODE
+		X_FOCUSER_MOTOR_MODE_PROPERTY = indigo_init_switch_property(NULL, device->name, X_FOCUSER_MOTOR_MODE_PROPERTY_NAME, FOCUSER_ADVANCED_GROUP, "Motor mode", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
+		if (X_FOCUSER_MOTOR_MODE_PROPERTY == NULL) {
+			return INDIGO_FAILED;
+		}
+		indigo_init_switch_item(X_FOCUSER_MOTOR_MODE_HIGH_PERFORMANCE_ITEM, X_FOCUSER_MOTOR_MODE_HIGH_PERFORMANCE_ITEM_NAME, "High performance", true);
+		indigo_init_switch_item(X_FOCUSER_MOTOR_MODE_BALANCED_ITEM, X_FOCUSER_MOTOR_MODE_BALANCED_ITEM_NAME, "Balanced", false);
+
+		// Features the Askar-WAF CDC protocol does not expose.
+		FOCUSER_TEMPERATURE_PROPERTY->hidden = true;
+		FOCUSER_COMPENSATION_PROPERTY->hidden = true;
+		FOCUSER_MODE_PROPERTY->hidden = true;
+		FOCUSER_SPEED_PROPERTY->hidden = true;
+
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->master_device != NULL;
+
+		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
+		indigo_result result = focuser_enumerate_properties(device, NULL, NULL);
+		// Populate the initial DEVICE_PORTS list with discovered Wi-Fi focusers
+		// without blocking attach on the UDP scan.
+		indigo_execute_handler(device, focuser_scan_ports_callback);
+		return result;
+	}
+	return INDIGO_FAILED;
+}
+
+static void focuser_connect_callback(indigo_device *device) {
+	int32_t position;
+	if (CONNECTION_CONNECTED_ITEM->sw.value) {
+		if (!device->is_connected) {
+			if (indigo_try_global_lock(device) != INDIGO_OK) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
+				CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
+				indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
+				indigo_update_property(device, CONNECTION_PROPERTY, NULL);
+			} else {
+				char *name = DEVICE_PORT_ITEM->text.value;
+				if (!indigo_uni_is_url(name, "askar")) {
+					PRIVATE_DATA->handle = indigo_uni_open_serial_with_speed(name, atoi(DEVICE_BAUDRATE_ITEM->text.value), INDIGO_LOG_DEBUG);
+				} else {
+					char *host = strstr(name, "://");
+					host = host ? host + 3 : name;
+					bool resolved = (*host != 0);
+					if (!resolved) {
+						for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
+							if (indigo_uni_is_url(DEVICE_PORTS_PROPERTY->items[i].name, "askar")) {
+								INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+								name = DEVICE_PORT_ITEM->text.value;
+								indigo_update_property(device, DEVICE_PORT_PROPERTY, "Askar-WAF selected %s", name);
+								resolved = true;
+								break;
+							}
+						}
+						if (!resolved) {
+							INDIGO_DRIVER_ERROR(DRIVER_NAME, "No Wi-Fi focuser discovered (try Refresh)");
+						}
+					}
+					PRIVATE_DATA->handle = resolved ? indigo_uni_open_url(name, 8080, INDIGO_TCP_HANDLE, INDIGO_LOG_DEBUG) : NULL;
+				}
+
+				if (PRIVATE_DATA->handle == NULL) {
+					INDIGO_DRIVER_ERROR(DRIVER_NAME, "Opening device %s: failed", DEVICE_PORT_ITEM->text.value);
+					CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
+					indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
+					indigo_update_property(device, CONNECTION_PROPERTY, NULL);
+					indigo_global_unlock(device);
+					return;
+				} else if (!askar_get_position(device, &position)) {
+					askar_close(device);
+					indigo_global_unlock(device);
+					device->is_connected = false;
+					INDIGO_DRIVER_ERROR(DRIVER_NAME, "connect failed: Askar-WAF did not respond");
+					CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
+					indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
+					indigo_update_property(device, CONNECTION_PROPERTY, "Askar-WAF did not respond");
+					return;
+				} else {
+					char model[ASKAR_CMD_LEN] = "Askar-WAF";
+					char firmware[ASKAR_CMD_LEN] = "N/A";
+					askar_get_model(device, model, sizeof(model));
+					askar_get_firmware(device, firmware, sizeof(firmware));
+					INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, model);
+					INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
+					indigo_update_property(device, INFO_PROPERTY, NULL);
+
+					PRIVATE_DATA->current_position = position;
+					PRIVATE_DATA->target_position = position;
+					FOCUSER_POSITION_ITEM->number.value = FOCUSER_POSITION_ITEM->number.target = (double)position;
+
+					if (askar_get_max_position(device, &PRIVATE_DATA->max_position)) {
+						FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target = (double)PRIVATE_DATA->max_position;
+						FOCUSER_POSITION_ITEM->number.max = (double)PRIVATE_DATA->max_position;
+						FOCUSER_STEPS_ITEM->number.max = (double)PRIVATE_DATA->max_position;
+					} else {
+						INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_get_max_position(%p) failed", PRIVATE_DATA->handle);
+					}
+
+					int backlash = 0;
+					if (askar_get_backlash(device, &backlash)) {
+						FOCUSER_BACKLASH_ITEM->number.value = FOCUSER_BACKLASH_ITEM->number.target = (double)backlash;
+					}
+
+					bool reversed = false;
+					if (askar_get_reverse(device, &reversed)) {
+						FOCUSER_REVERSE_MOTION_ENABLED_ITEM->sw.value = reversed;
+						FOCUSER_REVERSE_MOTION_DISABLED_ITEM->sw.value = !reversed;
+					}
+
+					bool balanced = false;
+					if (askar_get_motor_mode(device, &balanced)) {
+						indigo_set_switch(X_FOCUSER_MOTOR_MODE_PROPERTY, balanced ? X_FOCUSER_MOTOR_MODE_BALANCED_ITEM : X_FOCUSER_MOTOR_MODE_HIGH_PERFORMANCE_ITEM, true);
+					}
+					X_FOCUSER_MOTOR_MODE_PROPERTY->state = INDIGO_OK_STATE;
+					indigo_define_property(device, X_FOCUSER_MOTOR_MODE_PROPERTY, NULL);
+
+					CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+					device->is_connected = true;
+
+					indigo_execute_handler_in(device, 0.5, focuser_timer_callback);
+				}
+			}
+		}
+	} else {
+		if (device->is_connected) {
+			indigo_cancel_pending_handlers(device);
+
+			askar_stop(device);
+
+			indigo_delete_property(device, X_FOCUSER_MOTOR_MODE_PROPERTY, NULL);
+
+			askar_close(device);
+			indigo_global_unlock(device);
+			device->is_connected = false;
+			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+		}
+	}
+	indigo_focuser_change_property(device, NULL, CONNECTION_PROPERTY);
+}
+
+// -------------------------------------------------------------------------------- per-property callbacks
+
+static void focuser_position_callback(indigo_device *device) {
+	if (FOCUSER_POSITION_ITEM->number.target < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value ||
+	    FOCUSER_POSITION_ITEM->number.target > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value) {
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		FOCUSER_POSITION_ITEM->number.value = (double)PRIVATE_DATA->current_position;
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	} else if ((int32_t)FOCUSER_POSITION_ITEM->number.target == PRIVATE_DATA->current_position) {
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	} else {
+		PRIVATE_DATA->target_position = (int32_t)FOCUSER_POSITION_ITEM->number.target;
+		FOCUSER_POSITION_ITEM->number.value = (double)PRIVATE_DATA->current_position;
+		if (FOCUSER_ON_POSITION_SET_GOTO_ITEM->sw.value) { /* GOTO */
+			FOCUSER_STEPS_PROPERTY->state = INDIGO_BUSY_STATE;
+			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+			if (!askar_goto_position(device, PRIVATE_DATA->target_position)) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_goto_position(%p, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
+				FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+				FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
+			indigo_execute_handler_in(device, 0.5, focuser_timer_callback);
+		} else { /* SYNC */
+			FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
+			FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
+			if (!askar_sync_position(device, PRIVATE_DATA->target_position)) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_sync_position(%p, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
+				FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+				FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
+			int32_t position;
+			if (askar_get_position(device, &position)) {
+				PRIVATE_DATA->current_position = position;
+				FOCUSER_POSITION_ITEM->number.value = (double)position;
+			}
+			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+			indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+		}
+	}
+}
+
+static void focuser_steps_callback(indigo_device *device) {
+	if (FOCUSER_STEPS_ITEM->number.value < 0 || FOCUSER_STEPS_ITEM->number.value > FOCUSER_STEPS_ITEM->number.max) {
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	} else {
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+
+		int32_t position;
+		if (askar_get_position(device, &position)) {
+			PRIVATE_DATA->current_position = position;
+		}
+
+		int32_t steps = (int32_t)FOCUSER_STEPS_ITEM->number.value;
+		if (FOCUSER_DIRECTION_MOVE_INWARD_ITEM->sw.value) {
+			PRIVATE_DATA->target_position = PRIVATE_DATA->current_position - steps;
+		} else {
+			PRIVATE_DATA->target_position = PRIVATE_DATA->current_position + steps;
+		}
+		if (PRIVATE_DATA->target_position > FOCUSER_POSITION_ITEM->number.max) {
+			PRIVATE_DATA->target_position = (int32_t)FOCUSER_POSITION_ITEM->number.max;
+		} else if (PRIVATE_DATA->target_position < FOCUSER_POSITION_ITEM->number.min) {
+			PRIVATE_DATA->target_position = (int32_t)FOCUSER_POSITION_ITEM->number.min;
+		}
+
+		FOCUSER_POSITION_ITEM->number.value = (double)PRIVATE_DATA->current_position;
+		if (!askar_goto_position(device, PRIVATE_DATA->target_position)) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_goto_position(%p, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
+			FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+			FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+		indigo_execute_handler_in(device, 0.5, focuser_timer_callback);
+	}
+}
+
+static void focuser_abort_callback(indigo_device *device) {
+	FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
+	FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
+	FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
+	indigo_cancel_pending_handler(device, focuser_timer_callback);
+
+	if (!askar_stop(device)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_stop(%p) failed", PRIVATE_DATA->handle);
+		FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	int32_t position;
+	if (askar_get_position(device, &position)) {
+		PRIVATE_DATA->current_position = position;
+	} else {
+		FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	PRIVATE_DATA->target_position = PRIVATE_DATA->current_position;
+	FOCUSER_POSITION_ITEM->number.value = (double)PRIVATE_DATA->current_position;
+	FOCUSER_ABORT_MOTION_ITEM->sw.value = false;
+	indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+	indigo_update_property(device, FOCUSER_ABORT_MOTION_PROPERTY, NULL);
+}
+
+static void focuser_limits_callback(indigo_device *device) {
+	FOCUSER_LIMITS_PROPERTY->state = INDIGO_OK_STATE;
+	int32_t requested = (int32_t)FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target;
+	if (!askar_set_max_position(device, requested)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_set_max_position(%p, %d) failed", PRIVATE_DATA->handle, requested);
+		FOCUSER_LIMITS_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	if (askar_get_max_position(device, &PRIVATE_DATA->max_position)) {
+		FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value = (double)PRIVATE_DATA->max_position;
+		FOCUSER_POSITION_ITEM->number.max = (double)PRIVATE_DATA->max_position;
+		FOCUSER_STEPS_ITEM->number.max = (double)PRIVATE_DATA->max_position;
+	}
+	// FXn# clamps the position, so re-read it as well.
+	int32_t position;
+	if (askar_get_position(device, &position)) {
+		PRIVATE_DATA->current_position = PRIVATE_DATA->target_position = position;
+		FOCUSER_POSITION_ITEM->number.value = (double)position;
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	}
+	indigo_update_property(device, FOCUSER_LIMITS_PROPERTY, NULL);
+}
+
+static void focuser_backlash_callback(indigo_device *device) {
+	int requested = (int)FOCUSER_BACKLASH_ITEM->number.target;
+	if (!askar_set_backlash(device, requested)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_set_backlash(%p, %d) failed", PRIVATE_DATA->handle, requested);
+		FOCUSER_BACKLASH_PROPERTY->state = INDIGO_ALERT_STATE;
+	} else {
+		FOCUSER_BACKLASH_PROPERTY->state = INDIGO_OK_STATE;
+	}
+	int backlash = 0;
+	if (askar_get_backlash(device, &backlash)) {
+		FOCUSER_BACKLASH_ITEM->number.value = (double)backlash;
+	}
+	indigo_update_property(device, FOCUSER_BACKLASH_PROPERTY, NULL);
+}
+
+static void focuser_motor_mode_callback(indigo_device *device) {
+	X_FOCUSER_MOTOR_MODE_PROPERTY->state = INDIGO_OK_STATE;
+	bool balanced = X_FOCUSER_MOTOR_MODE_BALANCED_ITEM->sw.value;
+	if (!askar_set_motor_mode(device, balanced)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_set_motor_mode(%p, %d) failed", PRIVATE_DATA->handle, balanced);
+		X_FOCUSER_MOTOR_MODE_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	// Read back the mode as the firmware may reject an invalid value.
+	if (askar_get_motor_mode(device, &balanced)) {
+		indigo_set_switch(X_FOCUSER_MOTOR_MODE_PROPERTY, balanced ? X_FOCUSER_MOTOR_MODE_BALANCED_ITEM : X_FOCUSER_MOTOR_MODE_HIGH_PERFORMANCE_ITEM, true);
+	}
+	// Setting the mode halts motion in firmware; re-read the position to stay in sync.
+	int32_t position;
+	if (askar_get_position(device, &position)) {
+		PRIVATE_DATA->current_position = PRIVATE_DATA->target_position = position;
+		FOCUSER_POSITION_ITEM->number.value = (double)position;
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	}
+	indigo_update_property(device, X_FOCUSER_MOTOR_MODE_PROPERTY, NULL);
+}
+
+// -------------------------------------------------------------------------------- change_property dispatch
+
+static indigo_result focuser_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
+	assert(device != NULL);
+	assert(DEVICE_CONTEXT != NULL);
+	assert(property != NULL);
+	if (indigo_property_match_changeable(CONNECTION_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- CONNECTION
+		if (indigo_ignore_connection_change(device, property))
+			return INDIGO_OK;
+		indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
+		CONNECTION_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_connect_callback);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(FOCUSER_POSITION_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- FOCUSER_POSITION
+		indigo_property_copy_values(FOCUSER_POSITION_PROPERTY, property, false);
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_position_callback);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(FOCUSER_STEPS_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- FOCUSER_STEPS
+		indigo_property_copy_values(FOCUSER_STEPS_PROPERTY, property, false);
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_steps_callback);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(FOCUSER_ABORT_MOTION_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- FOCUSER_ABORT_MOTION
+		indigo_property_copy_values(FOCUSER_ABORT_MOTION_PROPERTY, property, false);
+		FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, FOCUSER_ABORT_MOTION_PROPERTY, NULL);
+		indigo_execute_priority_handler(device, INDIGO_TASK_PRIORITY_URGENT, focuser_abort_callback);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(FOCUSER_LIMITS_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- FOCUSER_LIMITS
+		indigo_property_copy_values(FOCUSER_LIMITS_PROPERTY, property, false);
+		FOCUSER_LIMITS_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, FOCUSER_LIMITS_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_limits_callback);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(FOCUSER_BACKLASH_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- FOCUSER_BACKLASH
+		indigo_property_copy_values(FOCUSER_BACKLASH_PROPERTY, property, false);
+		FOCUSER_BACKLASH_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, FOCUSER_BACKLASH_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_backlash_callback);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(FOCUSER_REVERSE_MOTION_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- FOCUSER_REVERSE_MOTION
+		indigo_property_copy_values(FOCUSER_REVERSE_MOTION_PROPERTY, property, false);
+		FOCUSER_REVERSE_MOTION_PROPERTY->state = INDIGO_OK_STATE;
+		bool reversed = FOCUSER_REVERSE_MOTION_ENABLED_ITEM->sw.value;
+		if (!askar_set_reverse(device, reversed)) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "askar_set_reverse(%p, %d) failed", PRIVATE_DATA->handle, reversed);
+			FOCUSER_REVERSE_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+		// Setting reverse halts motion in firmware; re-read the position to stay in sync.
+		int32_t position;
+		if (askar_get_position(device, &position)) {
+			PRIVATE_DATA->current_position = PRIVATE_DATA->target_position = position;
+			FOCUSER_POSITION_ITEM->number.value = (double)position;
+			indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+		}
+		indigo_update_property(device, FOCUSER_REVERSE_MOTION_PROPERTY, NULL);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(X_FOCUSER_MOTOR_MODE_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- X_FOCUSER_MOTOR_MODE
+		indigo_property_copy_values(X_FOCUSER_MOTOR_MODE_PROPERTY, property, false);
+		X_FOCUSER_MOTOR_MODE_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, X_FOCUSER_MOTOR_MODE_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_motor_mode_callback);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(DEVICE_PORTS_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- DEVICE_PORTS
+		// Intercept Refresh so it also scans the network for Wi-Fi focusers.
+		for (int i = 0; i < property->count; i++) {
+			if (property->items[i].sw.value && !strncmp(property->items[i].name, DEVICE_PORTS_REFRESH_ITEM_NAME, sizeof(property->items[i].name))) {
+				DEVICE_PORTS_PROPERTY->state = INDIGO_BUSY_STATE;
+				indigo_update_property(device, DEVICE_PORTS_PROPERTY, NULL);
+				indigo_execute_handler(device, focuser_scan_ports_callback);
+				return INDIGO_OK;
+			}
+		}
+	}
+	return indigo_focuser_change_property(device, client, property);
+}
+
+static indigo_result focuser_detach(indigo_device *device) {
+	assert(device != NULL);
+	if (IS_CONNECTED) {
+		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
+		focuser_connect_callback(device);
+	}
+	indigo_release_property(X_FOCUSER_MOTOR_MODE_PROPERTY);
+	indigo_global_unlock(device);
+	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
+	return indigo_focuser_detach(device);
+}
+
+// --------------------------------------------------------------------------------
+indigo_result indigo_focuser_askar(indigo_driver_action action, indigo_driver_info *info) {
+	static askar_private_data *private_data = NULL;
+	static indigo_device *focuser = NULL;
+	static indigo_device focuser_template = INDIGO_DEVICE_INITIALIZER(
+		FOCUSER_ASKAR_NAME,
+		focuser_attach,
+		focuser_enumerate_properties,
+		focuser_change_property,
+		NULL,
+		focuser_detach
+	);
+
+	static indigo_driver_action last_action = INDIGO_DRIVER_SHUTDOWN;
+
+	SET_DRIVER_INFO(info, "Askar-WAF Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
+
+	if (action == last_action)
+		return INDIGO_OK;
+
+	switch (action) {
+	case INDIGO_DRIVER_INIT:
+		last_action = action;
+		private_data = indigo_safe_malloc(sizeof(askar_private_data));
+		focuser = indigo_safe_malloc_copy(sizeof(indigo_device), &focuser_template);
+		focuser->private_data = private_data;
+		indigo_attach_device(focuser);
+		break;
+
+	case INDIGO_DRIVER_SHUTDOWN:
+		VERIFY_NOT_CONNECTED(focuser);
+		last_action = action;
+		if (focuser != NULL) {
+			indigo_detach_device(focuser);
+			free(focuser);
+			focuser = NULL;
+		}
+		if (private_data != NULL) {
+			free(private_data);
+			private_data = NULL;
+		}
+		break;
+
+	case INDIGO_DRIVER_INFO:
+		break;
+	}
+
+	return INDIGO_OK;
+}

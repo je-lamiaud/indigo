@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_focuser_optec.c
  */
 
-#define DRIVER_VERSION 0x0007
+#define DRIVER_VERSION 0x02000007
 #define DRIVER_NAME "indigo_focuser_optec"
 
 #include <stdlib.h>
@@ -80,8 +80,9 @@ static bool optec_open(indigo_device *device) {
 			}
 			indigo_printf(PRIVATE_DATA->handle, "FTxxxA");
 			if (indigo_scanf(PRIVATE_DATA->handle, "A=%lf", &value) == 1) {
-				if (value == 1)
+				if (value == 1) {
 					FOCUSER_COMPENSATION_ITEM->number.value = -FOCUSER_COMPENSATION_ITEM->number.value;
+				}
 			} else {
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read current compensation");
 			}
@@ -115,10 +116,11 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -147,7 +149,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- FOCUSER_REVERSE_MOTION
 		FOCUSER_REVERSE_MOTION_PROPERTY->hidden = false;
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return indigo_focuser_enumerate_properties(device, NULL, NULL);
@@ -239,7 +241,7 @@ static void focuser_mode_handler(indigo_device *device) {
 				indigo_define_property(device, FOCUSER_STEPS_PROPERTY, NULL);
 				break;
 			}
-			indigo_usleep(ONE_SECOND_DELAY);
+			indigo_sleep(1);
 		}
 	}
 	indigo_update_property(device, FOCUSER_MODE_PROPERTY, NULL);
@@ -326,8 +328,9 @@ indigo_result indigo_focuser_optec(indigo_driver_action action, indigo_driver_in
 
 	SET_DRIVER_INFO(info, "Optec TCF-S Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

@@ -1,8 +1,8 @@
 # Saving images from the camera driver
 
-Revision: 31.01.2025 (draft)
+Revision: 04.05.2026 (draft)
 
-Author: **Rumen G.Bogdanovski**
+Author: **Rumen G. Bogdanovski**
 
 e-mail: *rumenastro@gmail.com*
 
@@ -20,6 +20,7 @@ In INDIGO, saving images from the camera driver is controlled by two separate pr
 * **CCD_LOCAL_MODE** - This property sets the path and the file name template of the driver saved copy of the image. It has two items:
 	- **DIR** - the directory where the image will be saved, this directory should exist and should be writable.
 	- **PREFIX** - the file name prefix or the file name template. There are two ways to provide the filename template. The first is the legacy, INDI style, where you can provide a prefix and a file number placeholder. The second is more complex with various placeholders. The image format extension is automatically appended.
+	- **OBJECT** - the object name %o expands to this value.
 
 In client-server setup the camera driver saved images are saved on the server. In this context "LOCAL" stands for local for the server and the clients can access them through the INDIGO Imager Agent.
 
@@ -44,7 +45,7 @@ INDIGO file name templates support a number of placeholders starting with "%" ch
 
 * **%E** or **%nE** - will be expanded to the exposure time. If "n" is provided it will be used as the number of digits after the decimal point.
 
-* **%T** - expands to the sensor temperature in &deg;C
+* **%T** or **%nT** - expands to the target sensor temperature in &deg;C as an integer. If "n" is provided it will be used as the number of digits after the decimal point (capped to 5). Expands to "NA" if the cooler is not available or not enabled.
 
 * **%F** - expands to the frame type: "Light", "Bias", "Dark" etc.
 
@@ -55,6 +56,8 @@ INDIGO file name templates support a number of placeholders starting with "%" ch
 * **%C** - expands to the filter name: "R", "G", "B", "Ha", "OIII" etc. This placeholder reads *FILTER* keyword set in the **CCD_FITS_HEADERS** property, if not set it will expand to "nofilter". INDIGO Imager Agent sets this keyword if filer wheel is selected.
 
 * **%nS** - expands to the sequential number of the file with the same name. Where 'n' is the number of digits used to represent the number and can be in the range [1, 5].
+
+* **%I** or **%nI** - expands to the next sequential number by scanning existing files with matching prefix and extension, finding the highest number, and adding 1. The **prefix** is everything in the template before **%I**/**%nI** (after removing the directory path), and the **extension** is the file extension including the dot. For example, in template "M42_%3I_Light.fits", the prefix is "M42_", the extension is ".fits", and existing files "M42_001_Light.fits", "M42_005_Light.fits" would result in "M42_006_Light.fits". Unlike **%nS**, it handles gaps in sequences, guaranteeing higher numbers always mean newer files. Only the **first** occurrence of **%I**/**%nI** in the template performs the directory scan; any subsequent occurrences are replaced by `1` zero-padded to n digits (e.g. `%3I` → `001`). 'n' specifies the number of digits with zero-padding in range [1-5], defaulting to 3 when omitted.
 
 * **%G** - expands to gain
 
@@ -68,11 +71,16 @@ INDIGO file name templates support a number of placeholders starting with "%" ch
 
 ### Examples
 
-1. FITS file with **PREFIX** = "m31_%-D_%.H_MDSum_%M" can expand to "m31_2022-10-29_22:38:45_MDSum_71f920fa275127a7b60fa4d4d41432a3.fits"
+1. FITS file with **TEMPLATE** = "m31_%-D_%.H_MDSum_%M" can expand to "m31_2022-10-29_22:38:45_MDSum_71f920fa275127a7b60fa4d4d41432a3.fits"
 
-1. The third XISF image in Ha with **PREFIX** = "Triangulum_Galaxy_%C_%3S" will expand to "Triangulum_Galaxy_Ha_003.xisf"
+1. The third XISF image in Ha with **TEMPLATE** = "Triangulum_Galaxy_%C_%3S" will expand to "Triangulum_Galaxy_Ha_003.xisf"
 
 1. The first Dark frame in FITS format with 300s exposure at -10&deg;C with **PREFIX** = "%F_%1Es_%TC_%2S" will expand to "Dark_300.0s_-10C_01.fits"
+
+1. Files with **TEMPLATE** = "NGC7000_%C_%3I.fits" and filter "Ha". If existing files are "NGC7000_Ha_001.fits", "NGC7000_Ha_002.fits", "NGC7000_Ha_005.fits", the next file will be "NGC7000_Ha_006.fits" (skipping the gap at 003-004).
+
+1. Files with **TEMPLATE** = "NGC7000_%3I_%C.fits" and existing files are "NGC7000_001_Ha.fits", "NGC7000_002_Ha.fits". When we change the filter to SII, the next file will be "NGC7000_003_SII.fits" because "%C" is between "%3I" and ".fits", so it is neither part of the **prefix** nor the **extension**.
+
 
 ## Downloading images saved by the driver
 Files saved by the camera driver are available for download from the INDIGO Imager Agent. There are four properties that must be used:

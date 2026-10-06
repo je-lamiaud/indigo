@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // Code is based on OpenSSAG library
@@ -21,29 +21,20 @@
 
 // version history
 // 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 /** INDIGO Orion StarShoot AutoGuider driver
  \file indigo_ccd_ssag.c
  */
 
-#define DRIVER_VERSION 0x000B
+#define DRIVER_VERSION 0x0300000C
 #define DRIVER_NAME "indigo_ccd_ssag"
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <pthread.h>
-#include <sys/time.h>
-
-#if defined(INDIGO_MACOS)
-#include <libusb-1.0/libusb.h>
-#elif defined(INDIGO_FREEBSD)
-#include <libusb.h>
-#else
-#include <libusb-1.0/libusb.h>
-#endif
 
 #include <indigo/indigo_usb_utils.h>
 #include <indigo/indigo_driver_xml.h>
@@ -144,7 +135,7 @@ static void ssag_firmware(libusb_device *dev) {
 		rc = rc < 0 ? rc : ssag_upload(handle, bootloader);
 		rc = rc < 0 ? rc : ssag_reset_mode(handle, 0x00);
 		if (rc >=0) {
-			indigo_usleep(ONE_SECOND_DELAY);
+			indigo_sleep(1);
 		}
 		rc = rc < 0 ? rc : ssag_reset_mode(handle, 0x01);
 		rc = rc < 0 ? rc : ssag_upload(handle, firmware);
@@ -178,13 +169,15 @@ static int ssag_init_sequence(indigo_device *device) {
 }
 
 static void ssag_set_gain(indigo_device *device, int gain) {
-	if (gain < 1)
+	if (gain < 1) {
 		gain = 1;
-	if (gain > 15)
+	}
+	if (gain > 15) {
 		gain = 15;
-	if (gain == 7)
+	}
+	if (gain == 7) {
 		PRIVATE_DATA->gain = 0x3b;
-	else if (gain <= 4)
+	} else if (gain <= 4)
 		PRIVATE_DATA->gain = gain * 8;
 	else if (gain <= 8)
 		PRIVATE_DATA->gain = (gain * 4) + 0x40;
@@ -225,7 +218,7 @@ static bool ssag_open(indigo_device *device) {
 
 static bool ssag_start_exposure(indigo_device *device, double exposure) {
 	unsigned char data[16];
-	unsigned duration = 1000 * exposure;
+	unsigned duration = (unsigned)(1000 * exposure);
 	int rc = ssag_init_sequence(device);
 	rc = rc < 0 ? rc : libusb_control_transfer(PRIVATE_DATA->handle, 0xc0, USB_RQ_EXPOSE, duration & 0xFFFF, duration >> 16, data, 2, USB_TIMEOUT);
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_control_transfer -> %s", rc < 0 ? libusb_error_name(rc) : "OK");
@@ -335,6 +328,7 @@ static indigo_result ccd_attach(indigo_device *device) {
 		CCD_INFO_PIXEL_SIZE_ITEM->number.value = CCD_INFO_PIXEL_WIDTH_ITEM->number.value = CCD_INFO_PIXEL_HEIGHT_ITEM->number.value = 5.2;
 		CCD_FRAME_PROPERTY->perm = INDIGO_RO_PERM;
 //		CCD_STREAMING_PROPERTY->hidden = false;
+//		CCD_STREAMING_SETTINGS_PROPERTY->hidden = false;
 //		CCD_IMAGE_FORMAT_PROPERTY->count = 7;
 		CCD_GAIN_PROPERTY->hidden = false;
 		CCD_GAIN_ITEM->number.min = CCD_GAIN_ITEM->number.value = CCD_GAIN_ITEM->number.target = 1;
@@ -394,15 +388,16 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(CCD_EXPOSURE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CCD_EXPOSURE
-		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE || CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE || CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE) {
 			return INDIGO_OK;
+		}
 		indigo_property_copy_values(CCD_EXPOSURE_PROPERTY, property, false);
 		indigo_use_shortest_exposure_if_bias(device);
 		CCD_EXPOSURE_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, CCD_EXPOSURE_PROPERTY, NULL);
 		ssag_start_exposure(device, CCD_EXPOSURE_ITEM->number.target);
 		if (CCD_EXPOSURE_ITEM->number.target < 0.1) {
-			indigo_usleep(CCD_EXPOSURE_ITEM->number.target * ONE_SECOND_DELAY);
+			indigo_sleep(CCD_EXPOSURE_ITEM->number.target);
 			indigo_set_timer(device, 0, exposure_timer_callback, &PRIVATE_DATA->exposure_timer);
 		} else
 			indigo_set_timer(device, CCD_EXPOSURE_ITEM->number.target, exposure_timer_callback, &PRIVATE_DATA->exposure_timer);
@@ -424,7 +419,7 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 //		}
 //		ssag_start_exposure(device, CCD_STREAMING_EXPOSURE_ITEM->number.target);
 //		if (CCD_STREAMING_EXPOSURE_ITEM->number.target < 0.1) {
-//			indigo_usleep(CCD_STREAMING_EXPOSURE_ITEM->number.target * ONE_SECOND_DELAY);
+//			indigo_sleep(CCD_STREAMING_EXPOSURE_ITEM->number.target);
 //			indigo_set_timer(device, 0, streaming_timer_callback, &PRIVATE_DATA->exposure_timer);
 //		} else
 //			indigo_set_timer(device, CCD_STREAMING_EXPOSURE_ITEM->number.target, streaming_timer_callback, &PRIVATE_DATA->exposure_timer);
@@ -440,7 +435,7 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		// -------------------------------------------------------------------------------- CCD_GAIN
 		indigo_property_copy_values(CCD_GAIN_PROPERTY, property, false);
 		CCD_GAIN_PROPERTY->state = INDIGO_OK_STATE;
-		ssag_set_gain(device, CCD_GAIN_ITEM->number.target);
+		ssag_set_gain(device, (int)CCD_GAIN_ITEM->number.target);
 		indigo_update_property(device, CCD_GAIN_PROPERTY, NULL);
 		// --------------------------------------------------------------------------------
 	}
@@ -508,11 +503,11 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 	} else if (indigo_property_match_changeable(GUIDER_GUIDE_DEC_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- GUIDER_GUIDE_DEC
 		indigo_property_copy_values(GUIDER_GUIDE_DEC_PROPERTY, property, false);
-		int duration = GUIDER_GUIDE_NORTH_ITEM->number.value;
+		int duration = (int)GUIDER_GUIDE_NORTH_ITEM->number.value;
 		if (duration > 0) {
 			ssag_guide(device, guide_north, duration);
 		} else {
-			int duration = GUIDER_GUIDE_SOUTH_ITEM->number.value;
+			int duration = (int)GUIDER_GUIDE_SOUTH_ITEM->number.value;
 			if (duration > 0) {
 				ssag_guide(device, guide_south, duration);
 			}
@@ -523,11 +518,11 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 	} else if (indigo_property_match_changeable(GUIDER_GUIDE_RA_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- GUIDER_GUIDE_RA
 		indigo_property_copy_values(GUIDER_GUIDE_RA_PROPERTY, property, false);
-		int duration = GUIDER_GUIDE_EAST_ITEM->number.value;
+		int duration = (int)GUIDER_GUIDE_EAST_ITEM->number.value;
 		if (duration > 0) {
 			ssag_guide(device, guide_east, duration);
 		} else {
-			duration = GUIDER_GUIDE_WEST_ITEM->number.value;
+			duration = (int)GUIDER_GUIDE_WEST_ITEM->number.value;
 			if (duration > 0) {
 				ssag_guide(device, guide_west, duration);
 			}
@@ -679,43 +674,46 @@ indigo_result indigo_ccd_ssag(indigo_driver_action action, indigo_driver_info *i
 
 	SET_DRIVER_INFO(info, "SSAG/QHY5 Camera", __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		last_action = action;
-		for (int i = 0; i < MAX_DEVICES; i++) {
-			devices[i] = 0;
-		}
-		indigo_start_usb_event_handler();
-		char *env;
-		if ((env = getenv("SSAG_VID")))
-			custom_vid = (int)strtol(env, NULL, 16);
-		if ((env = getenv("SSAG_PID")))
-			custom_pid = (int)strtol(env, NULL, 16);
-		if (custom_vid && custom_pid)
-			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "using custom VID = 0x%04x, PID = 0x%04x", custom_vid, custom_pid);
-		int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
-		return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
-
-	case INDIGO_DRIVER_SHUTDOWN:
-		for (int i = 0; i < MAX_DEVICES; i++)
-			VERIFY_NOT_CONNECTED(devices[i]);
-		last_action = action;
-		libusb_hotplug_deregister_callback(NULL, callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
-		for (int j = 0; j < MAX_DEVICES; j++) {
-			if (devices[j] != NULL) {
-				indigo_device *device = devices[j];
-				hotplug_callback(NULL, PRIVATE_DATA->dev, LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, NULL);
+		case INDIGO_DRIVER_INIT:
+			last_action = action;
+			for (int i = 0; i < MAX_DEVICES; i++) {
+				devices[i] = 0;
 			}
-		}
-		break;
+			indigo_start_usb_event_handler();
+			char *env;
+			if ((env = getenv("SSAG_VID")))
+				custom_vid = (int)strtol(env, NULL, 16);
+			if ((env = getenv("SSAG_PID")))
+				custom_pid = (int)strtol(env, NULL, 16);
+			if (custom_vid && custom_pid) {
+				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "using custom VID = 0x%04x, PID = 0x%04x", custom_vid, custom_pid);
+			}
+			int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
+			return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
 
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_SHUTDOWN:
+			for (int i = 0; i < MAX_DEVICES; i++) {
+				VERIFY_NOT_CONNECTED(devices[i]);
+			}
+			last_action = action;
+			libusb_hotplug_deregister_callback(NULL, callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
+			for (int j = 0; j < MAX_DEVICES; j++) {
+				if (devices[j] != NULL) {
+					indigo_device *device = devices[j];
+					hotplug_callback(NULL, PRIVATE_DATA->dev, LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, NULL);
+				}
+			}
+			break;
+
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

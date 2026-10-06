@@ -1,4 +1,4 @@
-// Copyright (c) 2017 CloudMakers, s. r. o.
+// Copyright (c) 2017-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_mount_starbook.c
  */
 
-#define DRIVER_VERSION 0x0004
+#define DRIVER_VERSION 0x02000004
 #define DRIVER_NAME	"indigo_mount_starbook"
 
 #include <stdlib.h>
@@ -226,8 +226,7 @@ static bool starbook_get(indigo_device *device, const char *path, char *buffer, 
 	if (response_size >= length) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Error: not enough memory");
 		return false;
-	}
-	else if (response_size < 0) {
+	} else if (response_size < 0) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Parse error: %s", temp);
 		return false;
 	}
@@ -286,18 +285,14 @@ static bool starbook_set(indigo_device *device, const char *path, int *error) {
 		if (error) {
 			if (strcmp(buffer, "ERROR:ILLEGAL STATE") == 0) {
 				*error = STARBOOK_ERROR_ILLEGAL_STATE;
-			}
-			else if (strcmp(buffer, "ERROR:FORMAT") == 0) {
+			} else if (strcmp(buffer, "ERROR:FORMAT") == 0) {
 				*error = STARBOOK_ERROR_FORMAT;
-			}
-			else if (strcmp(buffer, "ERROR:BELOW HORIZON") == 0
+			} else if (strcmp(buffer, "ERROR:BELOW HORIZON") == 0
 							 || strcmp(buffer, "ERROR:BELOW HORIZONE") == 0) {  // maybe typo
 				*error = STARBOOK_ERROR_BELOW_HORIZON;
-			}
-			else if (strcmp(buffer, "WARNING:NEAR SUN") == 0) {
+			} else if (strcmp(buffer, "WARNING:NEAR SUN") == 0) {
 				*error = STARBOOK_WARNING_NEAR_SUN;
-			}
-			else {
+			} else {
 				*error = STARBOOK_ERROR_UNKNOWN;
 			}
 		}
@@ -715,20 +710,15 @@ static bool starbook_get_status(indigo_device *device, double *ra, double *dec, 
 		}
 		if (strcmp(temp, "SCOPE") == 0) {
 			*state = STARBOOK_STATE_SCOPE;
-		}
-		else if (strcmp(temp, "STOP") == 0) {
+		} else if (strcmp(temp, "STOP") == 0) {
 			*state = STARBOOK_STATE_STOP;
-		}
-		else if (strcmp(temp, "INIT") == 0) {
+		} else if (strcmp(temp, "INIT") == 0) {
 			*state = STARBOOK_STATE_INIT;
-		}
-		else if (strcmp(temp, "CHART") == 0) {
+		} else if (strcmp(temp, "CHART") == 0) {
 			*state = STARBOOK_STATE_CHART;
-		}
-		else if (strcmp(temp, "TRACK") == 0) {
+		} else if (strcmp(temp, "TRACK") == 0) {
 			*state = STARBOOK_STATE_TRACK;
-		}
-		else {
+		} else {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Unknown state: %s", temp);
 			*state = STARBOOK_STATE_UNKNOWN;
 		}
@@ -1198,7 +1188,7 @@ static void status_timer_callback(indigo_device *device) {
 		int utc_offset;
 		time_t secs;
 		if (starbook_get_utc(device, &secs, &utc_offset)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "get_utc: %d + %d", secs, utc_offset);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_utc: %d + %d", secs, utc_offset);
 			sprintf(MOUNT_UTC_OFFSET_ITEM->text.value, "%d", utc_offset);
 			indigo_timetoisogm(secs, MOUNT_UTC_ITEM->text.value, INDIGO_VALUE_SIZE);
 			MOUNT_UTC_TIME_PROPERTY->state = INDIGO_OK_STATE;
@@ -1233,14 +1223,16 @@ static indigo_result mount_attach(indigo_device *device) {
 
 		// TIMEZONE
 		TIMEZONE_PROPERTY = indigo_init_number_property(NULL, device->name, TIMEZONE_PROPERTY_NAME, MOUNT_SITE_GROUP, "Timezone", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (TIMEZONE_PROPERTY == NULL)
+		if (TIMEZONE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(TIMEZONE_VALUE_ITEM, TIMEZONE_VALUE_ITEM_NAME, "Timezone", -12, 12, 1, 0);
 
 		// RESET
 		RESET_PROPERTY = indigo_init_switch_property(NULL, device->name, RESET_PROPERTY_NAME, MOUNT_ADVANCED_GROUP, "Reset", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 1);
-		if (RESET_PROPERTY == NULL)
+		if (RESET_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(RESET_CTRL_ITEM, RESET_CTRL_ITEM_NAME, "Reset", false);
 
 		pthread_mutex_init(&PRIVATE_DATA->port_mutex, NULL);
@@ -1252,10 +1244,10 @@ static indigo_result mount_attach(indigo_device *device) {
 
 static indigo_result mount_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(TIMEZONE_PROPERTY);
-		indigo_define_matching_property(RESET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(TIMEZONE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(RESET_PROPERTY);
 	}
-	return indigo_mount_enumerate_properties(device, NULL, NULL);
+	return indigo_mount_enumerate_properties(device, client, property);
 }
 
 static void mount_connect_callback(indigo_device *device) {
@@ -1267,11 +1259,11 @@ static void mount_connect_callback(indigo_device *device) {
 		}
 		if (result) {
 			// MOUNT_INFO
-			indigo_copy_value(MOUNT_INFO_VENDOR_ITEM->text.value, "Vixen");
-			indigo_copy_value(MOUNT_INFO_MODEL_ITEM->text.value, "StarBook");
+			INDIGO_COPY_VALUE(MOUNT_INFO_VENDOR_ITEM->text.value, "Vixen");
+			INDIGO_COPY_VALUE(MOUNT_INFO_MODEL_ITEM->text.value, "StarBook");
 			char temp[128];
 			sprintf(temp, "v%.02f", PRIVATE_DATA->version);
-			indigo_copy_value(MOUNT_INFO_FIRMWARE_ITEM->text.value, temp);
+			INDIGO_COPY_VALUE(MOUNT_INFO_FIRMWARE_ITEM->text.value, temp);
 			// MOUNT_TRACKING
 			MOUNT_TRACKING_PROPERTY->perm = INDIGO_RO_PERM;
 			int track_state = 0;
@@ -1291,7 +1283,6 @@ static void mount_connect_callback(indigo_device *device) {
 			int side = STARBOOK_PIERSIDE_UNKNOWN;
 			if (starbook_get_pierside(device, &side) && side != STARBOOK_PIERSIDE_UNKNOWN) {
 				MOUNT_SIDE_OF_PIER_PROPERTY->hidden = false;
-				MOUNT_SIDE_OF_PIER_PROPERTY->perm = INDIGO_RO_PERM;
 			}
 			// TIMEZONE
 			indigo_define_property(device, TIMEZONE_PROPERTY, NULL);
@@ -1598,7 +1589,7 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		indigo_update_property(device, MOUNT_SLEW_RATE_PROPERTY, NULL);
 		indigo_set_timer(device, 0, mount_slew_rate_callback, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, DEVICE_PORT_PROPERTY);
 		}
@@ -1793,8 +1784,9 @@ indigo_result indigo_mount_starbook(indigo_driver_action action, indigo_driver_i
 
 	SET_DRIVER_INFO(info, "Vixen StarBook Mount", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

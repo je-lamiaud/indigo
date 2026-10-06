@@ -1,5 +1,5 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
-// Copyright (c) 2016 Rumen G. Bogdanovski
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -19,35 +19,27 @@
 
 // version history
 // 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 
 /** INDIGO ZWO ASI CCD driver
  \file indigo_ccd_asi.c
  */
 
-#define DRIVER_VERSION 0x002C
+#define DRIVER_VERSION 0x0300002D
 #define DRIVER_NAME "indigo_ccd_asi"
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <pthread.h>
-#include <sys/time.h>
 
 #include <indigo/indigo_driver_xml.h>
+#include <indigo/indigo_usb_utils.h>
 
 #include "indigo_ccd_asi.h"
-
-#if defined(INDIGO_MACOS)
-#include <libusb-1.0/libusb.h>
-#elif defined(INDIGO_FREEBSD)
-#include <libusb.h>
-#else
-#include <libusb-1.0/libusb.h>
-#endif
 
 #include "ASICamera2.h"
 
@@ -122,6 +114,7 @@ typedef struct {
 	indigo_property *asi_advanced_property;
 } asi_private_data;
 
+static pthread_mutex_t indigo_device_enumeration_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int get_unity_gain(indigo_device *device) {
 	if (PRIVATE_DATA->is_asi120) {
@@ -223,8 +216,12 @@ static int get_pixel_format(indigo_device *device) {
 
 static bool pixel_format_supported(indigo_device *device, ASI_IMG_TYPE type) {
 	for (int i = 0; i < ASI_MAX_FORMATS; i++) {
-		if (i == ASI_IMG_END) return false;
-		if (type == PRIVATE_DATA->info.SupportedVideoFormat[i]) return true;
+		if (PRIVATE_DATA->info.SupportedVideoFormat[i] == ASI_IMG_END) {
+			return false;
+		}
+		if (type == PRIVATE_DATA->info.SupportedVideoFormat[i]) {
+			return true;
+		}
 	}
 	return false;
 }
@@ -232,12 +229,12 @@ static bool pixel_format_supported(indigo_device *device, ASI_IMG_TYPE type) {
 
 static indigo_result asi_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(PIXEL_FORMAT_PROPERTY);
-		indigo_define_matching_property(ASI_PRESETS_PROPERTY);
-		indigo_define_matching_property(ASI_CUSTOM_SUFFIX_PROPERTY);
-		indigo_define_matching_property(ASI_ADVANCED_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(PIXEL_FORMAT_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(ASI_PRESETS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(ASI_CUSTOM_SUFFIX_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(ASI_ADVANCED_PROPERTY);
 	}
-	return indigo_ccd_enumerate_properties(device, NULL, NULL);
+	return indigo_ccd_enumerate_properties(device, client, property);
 }
 
 
@@ -247,42 +244,50 @@ static bool asi_open(indigo_device *device) {
 
 	if (device->is_connected) return false;
 
+	pthread_mutex_lock(&indigo_device_enumeration_mutex);
 	pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 	if (PRIVATE_DATA->count_open++ == 0) {
 		if (indigo_try_global_lock(device) != INDIGO_OK) {
-			pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
 			PRIVATE_DATA->count_open--;
+			pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
 			return false;
 		}
 		res = ASIOpenCamera(id);
 		if (res) {
-			pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIOpenCamera(%d) = %d", id, res);
 			PRIVATE_DATA->count_open--;
+			indigo_global_unlock(device);
+			pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIOpenCamera(%d) = %d", id, res);
 			return false;
 		}
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "ASIOpenCamera(%d) = %d", id, res);
 		res = ASIInitCamera(id);
 		if (res) {
 			ASICloseCamera(id);
-			pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIInitCamera(%d) = %d", id, res);
 			PRIVATE_DATA->count_open--;
+			indigo_global_unlock(device);
+			pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIInitCamera(%d) = %d", id, res);
 			return false;
 		}
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "ASIInitCamera(%d) = %d", id, res);
 		if (PRIVATE_DATA->buffer == NULL) {
-			if (PRIVATE_DATA->info.IsColorCam)
+			if (PRIVATE_DATA->info.IsColorCam) {
 				PRIVATE_DATA->buffer_size = PRIVATE_DATA->info.MaxHeight*PRIVATE_DATA->info.MaxWidth*3 + FITS_HEADER_SIZE;
-			else
+			} else {
 				PRIVATE_DATA->buffer_size = PRIVATE_DATA->info.MaxHeight*PRIVATE_DATA->info.MaxWidth*2 + FITS_HEADER_SIZE;
+			}
 
 			PRIVATE_DATA->buffer = (unsigned char*)indigo_alloc_blob_buffer(PRIVATE_DATA->buffer_size);
 		}
 	}
 	PRIVATE_DATA->is_asi120 = strstr(PRIVATE_DATA->info.Name, "ASI120M") != NULL;
 	pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 	return true;
 }
 
@@ -373,9 +378,9 @@ static bool asi_read_pixels(indigo_device *device) {
 	ASI_EXPOSURE_STATUS status;
 	int wait_cycles = 30000;    /* 30000*2000us = 1min */
 	status = ASI_EXP_WORKING;
-	
+
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "start checking exposure status: dev_id = %d, wait_cycles = %d", PRIVATE_DATA->dev_id, wait_cycles);
-	
+
 	/* wait for the exposure to complete */
 	while((status == ASI_EXP_WORKING) && wait_cycles--) {
 		pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
@@ -383,9 +388,9 @@ static bool asi_read_pixels(indigo_device *device) {
 		pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
 		indigo_usleep(2000);
 	}
-	
+
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "stopped checking exposure status: dev_id = %d, wait_cycles = %d, status = %d", PRIVATE_DATA->dev_id, wait_cycles, status);
-	
+
 	if (status == ASI_EXP_SUCCESS) {
 		pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 		res = ASIGetDataAfterExp(PRIVATE_DATA->dev_id, PRIVATE_DATA->buffer + FITS_HEADER_SIZE, PRIVATE_DATA->buffer_size - FITS_HEADER_SIZE);
@@ -430,10 +435,11 @@ static bool asi_set_cooler(indigo_device *device, bool status, double target, do
 
 	if (PRIVATE_DATA->has_temperature_sensor) {
 		res = ASIGetControlValue(id, ASI_TEMPERATURE, &temp_x10, &unused);
-		if (res)
+		if (res) {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIGetControlValue(%d, ASI_TEMPERATURE) = %d", id, res);
-		else
+		} else {
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "ASIGetControlValue(%d, ASI_TEMPERATURE) = %d", id, res);
+		}
 		*current = temp_x10/10.0; /* ASI_TEMPERATURE gives temp x 10 */
 	} else {
 		*current = 0;
@@ -468,7 +474,7 @@ static bool asi_set_cooler(indigo_device *device, bool status, double target, do
 		} else {
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "ASIGetControlValue(%d, ASI_TARGET_TEMP) = %d", id, res);
 		}
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Temperature control: current_target = %d, new_target = %d", current_target, (long)target);
+		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Temperature control: current_target = %ld, new_target = %ld", current_target, (long)target);
 		if ((long)target != current_target) {
 			res = ASISetControlValue(id, ASI_TARGET_TEMP, (long)target, false);
 			if (res) {
@@ -481,10 +487,11 @@ static bool asi_set_cooler(indigo_device *device, bool status, double target, do
 	}
 
 	res = ASIGetControlValue(id, ASI_COOLER_POWER_PERC, cooler_power, &unused);
-	if (res)
+	if (res) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIGetControlValue(%d, ASI_COOLER_POWER_PERC) = %d", id, res);
-	else
+	} else {
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "ASIGetControlValue(%d, ASI_COOLER_POWER_PERC) = %d", id, res);
+	}
 
 	pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
 	return success;
@@ -492,11 +499,12 @@ static bool asi_set_cooler(indigo_device *device, bool status, double target, do
 
 
 static void asi_close(indigo_device *device) {
-	
+
 	if (!device->is_connected) {
 		return;
 	}
-	
+
+	pthread_mutex_lock(&indigo_device_enumeration_mutex);
 	pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 	if (--PRIVATE_DATA->count_open == 0) {
 		ASICloseCamera(PRIVATE_DATA->dev_id);
@@ -508,6 +516,7 @@ static void asi_close(indigo_device *device) {
 		}
 	}
 	pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 }
 
 // -------------------------------------------------------------------------------- INDIGO CCD device implementation
@@ -566,10 +575,10 @@ static void streaming_timer_callback(indigo_device *device) {
 		{ 0 }
 	};
 	int id = PRIVATE_DATA->dev_id;
-	int timeout = 1000 * (CCD_STREAMING_EXPOSURE_ITEM->number.value * 2 + 500);
+	int timeout = (int)(1000 * (CCD_STREAMING_EXPOSURE_ITEM->number.value * 2 + 500));
 	ASI_ERROR_CODE res;
 	PRIVATE_DATA->can_check_temperature = false;
-	if (asi_setup_exposure(device, CCD_STREAMING_EXPOSURE_ITEM->number.value, CCD_FRAME_LEFT_ITEM->number.value, CCD_FRAME_TOP_ITEM->number.value, CCD_FRAME_WIDTH_ITEM->number.value, CCD_FRAME_HEIGHT_ITEM->number.value, CCD_BIN_HORIZONTAL_ITEM->number.value, CCD_BIN_VERTICAL_ITEM->number.value)) {
+	if (asi_setup_exposure(device, CCD_STREAMING_EXPOSURE_ITEM->number.value, (int)CCD_FRAME_LEFT_ITEM->number.value, (int)CCD_FRAME_TOP_ITEM->number.value, (int)CCD_FRAME_WIDTH_ITEM->number.value, (int)CCD_FRAME_HEIGHT_ITEM->number.value, (int)CCD_BIN_HORIZONTAL_ITEM->number.value, (int)CCD_BIN_VERTICAL_ITEM->number.value)) {
 		pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 		res = ASIStartVideoCapture(id);
 		pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
@@ -584,7 +593,7 @@ static void streaming_timer_callback(indigo_device *device) {
 					if (CCD_STREAMING_COUNT_ITEM->number.value < 0) {
 						CCD_STREAMING_COUNT_ITEM->number.value = 0;
 					}
-					indigo_usleep(ONE_SECOND_DELAY);
+					indigo_sleep(1);
 					indigo_update_property(device, CCD_STREAMING_PROPERTY, NULL);
 				}
 				pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
@@ -617,12 +626,12 @@ static void streaming_timer_callback(indigo_device *device) {
 			pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 			res = ASIStopVideoCapture(id);
 			pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
-			if (res)
+			if (res) {
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIStopVideoCapture(%d) = %d", id, res);
-			else
+			} else {
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "ASIStopVideoCapture(%d) = %d", id, res);
+			}
 		}
-		pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
 	} else {
 		res = ASI_ERROR_GENERAL_ERROR;
 	}
@@ -649,10 +658,11 @@ static void ccd_temperature_callback(indigo_device *device) {
 	if (PRIVATE_DATA->can_check_temperature) {
 		if (asi_set_cooler(device, CCD_COOLER_ON_ITEM->sw.value, PRIVATE_DATA->target_temperature, &PRIVATE_DATA->current_temperature, &PRIVATE_DATA->cooler_power)) {
 			double diff = PRIVATE_DATA->current_temperature - PRIVATE_DATA->target_temperature;
-			if (CCD_COOLER_ON_ITEM->sw.value)
+			if (CCD_COOLER_ON_ITEM->sw.value) {
 				CCD_TEMPERATURE_PROPERTY->state = fabs(diff) > 0.5 ? INDIGO_BUSY_STATE : INDIGO_OK_STATE;
-			else
+			} else {
 				CCD_TEMPERATURE_PROPERTY->state = INDIGO_OK_STATE;
+			}
 			CCD_TEMPERATURE_ITEM->number.value = PRIVATE_DATA->current_temperature;
 			CCD_COOLER_PROPERTY->state = INDIGO_OK_STATE;
 			CCD_COOLER_POWER_PROPERTY->state = INDIGO_OK_STATE;
@@ -698,16 +708,16 @@ static void guider_timer_callback_ra(indigo_device *device) {
 static void guider_timer_callback_dec(indigo_device *device) {
 	PRIVATE_DATA->guider_timer_dec = NULL;
 	int id = PRIVATE_DATA->dev_id;
-	
+
 	if (!CONNECTION_CONNECTED_ITEM->sw.value) {
 		return;
 	}
-	
+
 	pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 	ASIPulseGuideOff(id, ASI_GUIDE_SOUTH);
 	ASIPulseGuideOff(id, ASI_GUIDE_NORTH);
 	pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
-	
+
 	if (PRIVATE_DATA->guide_relays[ASI_GUIDE_NORTH] || PRIVATE_DATA->guide_relays[ASI_GUIDE_SOUTH]) {
 		GUIDER_GUIDE_NORTH_ITEM->number.value = 0;
 		GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
@@ -726,8 +736,9 @@ static indigo_result ccd_attach(indigo_device *device) {
 		pthread_mutex_init(&PRIVATE_DATA->usb_mutex, NULL);
 		// -------------------------------------------------------------------------------- PIXEL_FORMAT_PROPERTY
 		PIXEL_FORMAT_PROPERTY = indigo_init_switch_property(NULL, device->name, "PIXEL_FORMAT", CCD_ADVANCED_GROUP, "Pixel Format", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, ASI_MAX_FORMATS);
-		if (PIXEL_FORMAT_PROPERTY == NULL)
+		if (PIXEL_FORMAT_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 
 		int format_count = 0;
 		if (pixel_format_supported(device, ASI_IMG_RAW8)) {
@@ -749,14 +760,14 @@ static indigo_result ccd_attach(indigo_device *device) {
 		PIXEL_FORMAT_PROPERTY->count = format_count;
 
 		INFO_PROPERTY->count = 6;
-		indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->info.Name);
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->info.Name);
 		char *sdk_version = ASIGetSDKVersion();
-		indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, sdk_version);
-		indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->label, "SDK version");
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, sdk_version);
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->label, "SDK version");
 
 		if (PRIVATE_DATA->serial_number[0] != '\0') {
 			INFO_PROPERTY->count = 8;
-			indigo_copy_value(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, PRIVATE_DATA->serial_number);
+			INDIGO_COPY_VALUE(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, PRIVATE_DATA->serial_number);
 		}
 
 		CCD_INFO_WIDTH_ITEM->number.value = PRIVATE_DATA->info.MaxWidth;
@@ -817,22 +828,26 @@ static indigo_result ccd_attach(indigo_device *device) {
 		CCD_MODE_PROPERTY->count = mode_count;
 		// -------------------------------------------------------------------------------- CCD_STREAMING
 		CCD_STREAMING_PROPERTY->hidden = false;
+		CCD_STREAMING_SETTINGS_PROPERTY->hidden = false;
 		CCD_IMAGE_FORMAT_PROPERTY->count = 7;
 		CCD_STREAMING_EXPOSURE_ITEM->number.max = 5.0;
 
 		// -------------------------------------------------------------------------------- ASI_PRESETS
 		ASI_PRESETS_PROPERTY = indigo_init_switch_property(NULL, device->name, "ASI_PRESETS", CCD_ADVANCED_GROUP, "Presets (Gain, Offset)", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
-		if (ASI_PRESETS_PROPERTY == NULL)
+		if (ASI_PRESETS_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		// --------------------------------------------------------------------------------- ASI_CUSTOM_SUFFIX
 		ASI_CUSTOM_SUFFIX_PROPERTY = indigo_init_text_property(NULL, device->name, "ASI_CUSTOM_SUFFIX", CCD_ADVANCED_GROUP, "Device name custom suffix", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (ASI_CUSTOM_SUFFIX_PROPERTY == NULL)
+		if (ASI_CUSTOM_SUFFIX_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_text_item(ASI_CUSTOM_SUFFIX_ITEM, ASI_CUSTOM_SUFFIX_NAME, "Suffix", PRIVATE_DATA->custom_suffix);
 		// -------------------------------------------------------------------------------- ASI_ADVANCED
 		ASI_ADVANCED_PROPERTY = indigo_init_number_property(NULL, device->name, "ASI_ADVANCED", CCD_ADVANCED_GROUP, "Advanced", INDIGO_OK_STATE, INDIGO_RW_PERM, 0);
-		if (ASI_ADVANCED_PROPERTY == NULL)
+		if (ASI_ADVANCED_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		// --------------------------------------------------------------------------------
 		return asi_enumerate_properties(device, NULL, NULL);
 	}
@@ -857,15 +872,19 @@ static indigo_result handle_advanced_property(indigo_device *device, indigo_prop
 	}
 	ASI_BOOL unused;
 	long value;
-	for(int ctrl_no = 0; ctrl_no < ctrl_count; ctrl_no++) {
+	for (int ctrl_no = 0; ctrl_no < ctrl_count; ctrl_no++) {
 		ASIGetControlCaps(id, ctrl_no, &ctrl_caps);
-		for(int item = 0; item < property->count; item++) {
+		for (int item = 0; item < property->count; item++) {
 			if (!strncmp(ctrl_caps.Name, property->items[item].name, INDIGO_NAME_SIZE)) {
-				res = ASISetControlValue(id, ctrl_caps.ControlType,property->items[item].number.value, ASI_FALSE);
-				if (res) INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASISetControlValue(%d, %s) = %d", id, ctrl_caps.Name, res);
+				res = ASISetControlValue(id, ctrl_caps.ControlType, (long)property->items[item].number.value, ASI_FALSE);
+				if (res) {
+					INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASISetControlValue(%d, %s) = %d", id, ctrl_caps.Name, res);
+				}
 				res = ASIGetControlValue(id, ctrl_caps.ControlType,&value, &unused);
 				property->items[item].number.value = value;
-				if (res) INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIGetControlValue(%d, %s) = %d, value = %d", id, ctrl_caps.Name, res, property->items[item].number.value);
+				if (res) {
+					INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIGetControlValue(%d, %s) = %d, value = %g", id, ctrl_caps.Name, res, property->items[item].number.value);
+				}
 			}
 		}
 	}
@@ -882,10 +901,11 @@ static indigo_result init_camera_property(indigo_device *device, ASI_CONTROL_CAP
 
 	if (ctrl_caps.ControlType == ASI_EXPOSURE) {
 		CCD_EXPOSURE_PROPERTY->hidden = false;
-		if (ctrl_caps.IsWritable)
+		if (ctrl_caps.IsWritable) {
 			CCD_EXPOSURE_PROPERTY->perm = INDIGO_RW_PERM;
-		else
+		} else {
 			CCD_EXPOSURE_PROPERTY->perm = INDIGO_RO_PERM;
+		}
 
 		CCD_EXPOSURE_ITEM->number.min = us2s(ctrl_caps.MinValue);
 		CCD_EXPOSURE_ITEM->number.max = us2s(ctrl_caps.MaxValue);
@@ -900,10 +920,11 @@ static indigo_result init_camera_property(indigo_device *device, ASI_CONTROL_CAP
 	if (ctrl_caps.ControlType == ASI_GAIN) {
 		CCD_GAIN_PROPERTY->hidden = false;
 		CCD_EGAIN_PROPERTY->hidden = false;
-		if (ctrl_caps.IsWritable)
+		if (ctrl_caps.IsWritable) {
 			CCD_GAIN_PROPERTY->perm = INDIGO_RW_PERM;
-		else
+		} else {
 			CCD_GAIN_PROPERTY->perm = INDIGO_RO_PERM;
+		}
 
 		CCD_GAIN_ITEM->number.min = ctrl_caps.MinValue;
 		CCD_GAIN_ITEM->number.max = ctrl_caps.MaxValue;
@@ -922,10 +943,11 @@ static indigo_result init_camera_property(indigo_device *device, ASI_CONTROL_CAP
 
 	if (ctrl_caps.ControlType == ASI_GAMMA) {
 		CCD_GAMMA_PROPERTY->hidden = false;
-		if (ctrl_caps.IsWritable)
+		if (ctrl_caps.IsWritable) {
 			CCD_GAMMA_PROPERTY->perm = INDIGO_RW_PERM;
-		else
+		} else {
 			CCD_GAMMA_PROPERTY->perm = INDIGO_RO_PERM;
+		}
 
 		CCD_GAMMA_ITEM->number.min = ctrl_caps.MinValue;
 		CCD_GAMMA_ITEM->number.max = ctrl_caps.MaxValue;
@@ -944,10 +966,11 @@ static indigo_result init_camera_property(indigo_device *device, ASI_CONTROL_CAP
 
 	if (ctrl_caps.ControlType == ASI_OFFSET) {
 		CCD_OFFSET_PROPERTY->hidden = false;
-		if (ctrl_caps.IsWritable)
+		if (ctrl_caps.IsWritable) {
 			CCD_OFFSET_PROPERTY->perm = INDIGO_RW_PERM;
-		else
+		} else {
 			CCD_OFFSET_PROPERTY->perm = INDIGO_RO_PERM;
+		}
 
 		CCD_OFFSET_ITEM->number.min = ctrl_caps.MinValue;
 		CCD_OFFSET_ITEM->number.max = ctrl_caps.MaxValue;
@@ -957,7 +980,7 @@ static indigo_result init_camera_property(indigo_device *device, ASI_CONTROL_CAP
 		if (res) {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIGetControlValue(%d, ASI_OFFSET) = %d", id, res);
 		} else {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIGetControlValue(%d, ASI_OFFSET) = %d -> %d", id, res, value);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "ASIGetControlValue(%d, ASI_OFFSET) = %d -> %d", id, res, value);
 		}
 		CCD_OFFSET_ITEM->number.value = CCD_OFFSET_ITEM->number.target = value;
 		CCD_OFFSET_ITEM->number.step = 1;
@@ -966,10 +989,11 @@ static indigo_result init_camera_property(indigo_device *device, ASI_CONTROL_CAP
 
 	if (ctrl_caps.ControlType == ASI_TARGET_TEMP) {
 		CCD_TEMPERATURE_PROPERTY->hidden = false;
-		if (ctrl_caps.IsWritable)
+		if (ctrl_caps.IsWritable) {
 			CCD_TEMPERATURE_PROPERTY->perm = INDIGO_RW_PERM;
-		else
+		} else {
 			CCD_TEMPERATURE_PROPERTY->perm = INDIGO_RO_PERM;
+		}
 
 		CCD_TEMPERATURE_ITEM->number.min = ctrl_caps.MinValue;
 		CCD_TEMPERATURE_ITEM->number.max = ctrl_caps.MaxValue;
@@ -991,20 +1015,22 @@ static indigo_result init_camera_property(indigo_device *device, ASI_CONTROL_CAP
 
 	if (ctrl_caps.ControlType == ASI_COOLER_ON) {
 		CCD_COOLER_PROPERTY->hidden = false;
-		if (ctrl_caps.IsWritable)
+		if (ctrl_caps.IsWritable) {
 			CCD_COOLER_PROPERTY->perm = INDIGO_RW_PERM;
-		else
+		} else {
 			CCD_COOLER_PROPERTY->perm = INDIGO_RO_PERM;
+		}
 
 		return INDIGO_OK;
 	}
 
 	if (ctrl_caps.ControlType == ASI_COOLER_POWER_PERC) {
 		CCD_COOLER_POWER_PROPERTY->hidden = false;
-		if (ctrl_caps.IsWritable)
+		if (ctrl_caps.IsWritable) {
 			CCD_COOLER_POWER_PROPERTY->perm = INDIGO_RW_PERM;
-		else
+		} else {
 			CCD_COOLER_POWER_PROPERTY->perm = INDIGO_RO_PERM;
+		}
 
 		CCD_COOLER_POWER_ITEM->number.min = ctrl_caps.MinValue;
 		CCD_COOLER_POWER_ITEM->number.max = ctrl_caps.MaxValue;
@@ -1063,7 +1089,7 @@ static void handle_ccd_connect_property(indigo_device *device) {
 					INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASIGetNumOfControls(%d) = %d", id, res);
 				}
 				ASI_ADVANCED_PROPERTY = indigo_resize_property(ASI_ADVANCED_PROPERTY, 0);
-				for(int ctrl_no = 0; ctrl_no < ctrl_count; ctrl_no++) {
+				for (int ctrl_no = 0; ctrl_no < ctrl_count; ctrl_no++) {
 					pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 					ASIGetControlCaps(id, ctrl_no, &ctrl_caps);
 					pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
@@ -1146,7 +1172,7 @@ static void handle_ccd_connect_property(indigo_device *device) {
 
 
 static void handle_ccd_exposure(indigo_device *device) {
-	asi_start_exposure(device, CCD_EXPOSURE_ITEM->number.target, CCD_FRAME_TYPE_DARK_ITEM->sw.value || CCD_FRAME_TYPE_DARKFLAT_ITEM->sw.value || CCD_FRAME_TYPE_BIAS_ITEM->sw.value, CCD_FRAME_LEFT_ITEM->number.value, CCD_FRAME_TOP_ITEM->number.value, CCD_FRAME_WIDTH_ITEM->number.value, CCD_FRAME_HEIGHT_ITEM->number.value, CCD_BIN_HORIZONTAL_ITEM->number.value, CCD_BIN_VERTICAL_ITEM->number.value);
+	asi_start_exposure(device, CCD_EXPOSURE_ITEM->number.target, CCD_FRAME_TYPE_DARK_ITEM->sw.value || CCD_FRAME_TYPE_DARKFLAT_ITEM->sw.value || CCD_FRAME_TYPE_BIAS_ITEM->sw.value, (int)CCD_FRAME_LEFT_ITEM->number.value, (int)CCD_FRAME_TOP_ITEM->number.value, (int)CCD_FRAME_WIDTH_ITEM->number.value, (int)CCD_FRAME_HEIGHT_ITEM->number.value, (int)CCD_BIN_HORIZONTAL_ITEM->number.value, (int)CCD_BIN_VERTICAL_ITEM->number.value);
 	if (CCD_UPLOAD_MODE_LOCAL_ITEM->sw.value || CCD_UPLOAD_MODE_BOTH_ITEM->sw.value) {
 		CCD_IMAGE_FILE_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, CCD_IMAGE_FILE_PROPERTY, NULL);
@@ -1197,7 +1223,7 @@ static void handle_gain(indigo_device *device) {
 	ASI_CAMERA_INFO info;
 	pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 	ASI_ERROR_CODE res = ASISetControlValue(PRIVATE_DATA->dev_id, ASI_GAIN, (long)(CCD_GAIN_ITEM->number.target), ASI_FALSE);
-	ASIGetCameraProperty(&info, PRIVATE_DATA->dev_id);
+	ASIGetCameraPropertyByID(PRIVATE_DATA->dev_id, &info);
 	pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
 	if (res) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASISetControlValue(%d, ASI_GAIN) = %d", PRIVATE_DATA->dev_id, res);
@@ -1237,7 +1263,7 @@ static void handle_presets(indigo_device *device) {
 	ASI_CAMERA_INFO info;
 	pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 	ASI_ERROR_CODE res = ASISetControlValue(PRIVATE_DATA->dev_id, ASI_GAIN, (long)gain, ASI_FALSE);
-	ASIGetCameraProperty(&info, PRIVATE_DATA->dev_id);
+	ASIGetCameraPropertyByID(PRIVATE_DATA->dev_id, &info);
 	pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
 	if (res) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "ASISetControlValue(%d, ASI_GAIN) = %d", PRIVATE_DATA->dev_id, res);
@@ -1306,8 +1332,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		return INDIGO_OK;
 		// -------------------------------------------------------------------------------- CCD_EXPOSURE
 	} else if (indigo_property_match_changeable(CCD_EXPOSURE_PROPERTY, property)) {
-		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE || CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE || CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE) {
 			return INDIGO_OK;
+		}
 		indigo_property_copy_values(CCD_EXPOSURE_PROPERTY, property, false);
 		indigo_use_shortest_exposure_if_bias(device);
 		CCD_EXPOSURE_PROPERTY->state = INDIGO_BUSY_STATE;
@@ -1315,8 +1342,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		indigo_set_timer(device, 0, handle_ccd_exposure, NULL);
 	} else if (indigo_property_match_changeable(CCD_STREAMING_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CCD_STREAMING
-		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE || CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE || CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE) {
 			return INDIGO_OK;
+		}
 		indigo_property_copy_values(CCD_STREAMING_PROPERTY, property, false);
 		indigo_use_shortest_exposure_if_bias(device);
 		CCD_STREAMING_PROPERTY->state = INDIGO_BUSY_STATE;
@@ -1343,7 +1371,7 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 			indigo_update_property(device, CCD_ABORT_EXPOSURE_PROPERTY, NULL);
 			indigo_cancel_timer(device, &PRIVATE_DATA->exposure_timer);
 			indigo_set_timer(device, 0, asi_abort_exposure, NULL);
-		} else if (exposing && CCD_STREAMING_COUNT_ITEM->number.value != 0) {
+		} else if (streaming && CCD_STREAMING_COUNT_ITEM->number.value != 0) {
 			if (CCD_STREAMING_EXPOSURE_ITEM->number.value >= 1) {
 				indigo_update_property(device, CCD_ABORT_EXPOSURE_PROPERTY, "Streaming will stop in %.0f sec", CCD_STREAMING_EXPOSURE_ITEM->number.value);
 			} else {
@@ -1444,7 +1472,6 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		if (CCD_FRAME_HEIGHT_ITEM->number.value != CCD_FRAME_HEIGHT_ITEM->number.max) {
 			CCD_FRAME_HEIGHT_ITEM->number.value = CCD_FRAME_HEIGHT_ITEM->number.target = 2 * (int)(CCD_FRAME_HEIGHT_ITEM->number.value / 2);
 		}
-
 		if (CCD_FRAME_WIDTH_ITEM->number.value / CCD_BIN_HORIZONTAL_ITEM->number.value < 64) {
 			CCD_FRAME_WIDTH_ITEM->number.value = 64 * CCD_BIN_HORIZONTAL_ITEM->number.value;
 		}
@@ -1576,17 +1603,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		int vertical_bin = (int)CCD_BIN_VERTICAL_ITEM->number.value;
 		/* ASI cameras work with binx = biny for we force it here */
 		if (prev_h_bin != horizontal_bin) {
-			vertical_bin =
-			CCD_BIN_HORIZONTAL_ITEM->number.target =
-			CCD_BIN_HORIZONTAL_ITEM->number.value =
-			CCD_BIN_VERTICAL_ITEM->number.target =
-			CCD_BIN_VERTICAL_ITEM->number.value = horizontal_bin;
+			vertical_bin = (int)(CCD_BIN_HORIZONTAL_ITEM->number.target = CCD_BIN_HORIZONTAL_ITEM->number.value = CCD_BIN_VERTICAL_ITEM->number.target = CCD_BIN_VERTICAL_ITEM->number.value = horizontal_bin);
 		} else if (prev_v_bin != vertical_bin) {
-			horizontal_bin =
-			CCD_BIN_HORIZONTAL_ITEM->number.target =
-			CCD_BIN_HORIZONTAL_ITEM->number.value =
-			CCD_BIN_VERTICAL_ITEM->number.target =
-			CCD_BIN_VERTICAL_ITEM->number.value = vertical_bin;
+			horizontal_bin = (int)(CCD_BIN_HORIZONTAL_ITEM->number.target = CCD_BIN_HORIZONTAL_ITEM->number.value = CCD_BIN_VERTICAL_ITEM->number.target = CCD_BIN_VERTICAL_ITEM->number.value = vertical_bin);
 		}
 		char name[32] = "";
 		for (int i = 0; i < PIXEL_FORMAT_PROPERTY->count; i++) {
@@ -1603,7 +1622,7 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		indigo_update_property(device, CCD_MODE_PROPERTY, NULL);
 		indigo_update_property(device, CCD_BIN_PROPERTY, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, PIXEL_FORMAT_PROPERTY);
@@ -1619,18 +1638,18 @@ static indigo_result ccd_detach(indigo_device *device) {
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		handle_ccd_connect_property(device);
 	}
-	
+
 	if (device == device->master_device) {
 		indigo_global_unlock(device);
 	}
-	
+
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
-	
+
 	indigo_release_property(PIXEL_FORMAT_PROPERTY);
 	indigo_release_property(ASI_PRESETS_PROPERTY);
 	indigo_release_property(ASI_CUSTOM_SUFFIX_PROPERTY);
 	indigo_release_property(ASI_ADVANCED_PROPERTY);
-	
+
 	return indigo_ccd_detach(device);
 }
 
@@ -1641,7 +1660,7 @@ static indigo_result guider_attach(indigo_device *device) {
 	assert(PRIVATE_DATA != NULL);
 	if (indigo_guider_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		INFO_PROPERTY->count = 5;
-		indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->info.Name);
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->info.Name);
 		return indigo_guider_enumerate_properties(device, NULL, NULL);
 	}
 	return INDIGO_FAILED;
@@ -1680,7 +1699,7 @@ static void handle_guide_dec(indigo_device *device) {
 	ASI_ERROR_CODE res;
 
 	indigo_cancel_timer(device, &PRIVATE_DATA->guider_timer_dec);
-	int duration = GUIDER_GUIDE_NORTH_ITEM->number.value;
+	int duration = (int)GUIDER_GUIDE_NORTH_ITEM->number.value;
 	if (duration > 0) {
 		pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 		res = ASIPulseGuideOn(PRIVATE_DATA->dev_id, ASI_GUIDE_NORTH);
@@ -1690,7 +1709,7 @@ static void handle_guide_dec(indigo_device *device) {
 		indigo_set_timer(device, duration/1000.0, guider_timer_callback_dec, &PRIVATE_DATA->guider_timer_dec);
 		PRIVATE_DATA->guide_relays[ASI_GUIDE_NORTH] = true;
 	} else {
-		int duration = GUIDER_GUIDE_SOUTH_ITEM->number.value;
+		int duration = (int)GUIDER_GUIDE_SOUTH_ITEM->number.value;
 		if (duration > 0) {
 			pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 			res = ASIPulseGuideOn(PRIVATE_DATA->dev_id, ASI_GUIDE_SOUTH);
@@ -1715,7 +1734,7 @@ static void handle_guide_ra(indigo_device *device) {
 	ASI_ERROR_CODE res;
 
 	indigo_cancel_timer(device, &PRIVATE_DATA->guider_timer_ra);
-	int duration = GUIDER_GUIDE_EAST_ITEM->number.value;
+	int duration = (int)GUIDER_GUIDE_EAST_ITEM->number.value;
 	if (duration > 0) {
 		pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 		res = ASIPulseGuideOn(PRIVATE_DATA->dev_id, ASI_GUIDE_EAST);
@@ -1725,7 +1744,7 @@ static void handle_guide_ra(indigo_device *device) {
 		indigo_set_timer(device, duration/1000.0, guider_timer_callback_ra, &PRIVATE_DATA->guider_timer_ra);
 		PRIVATE_DATA->guide_relays[ASI_GUIDE_EAST] = true;
 	} else {
-		int duration = GUIDER_GUIDE_WEST_ITEM->number.value;
+		int duration = (int)GUIDER_GUIDE_WEST_ITEM->number.value;
 		if (duration > 0) {
 			pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 			res = ASIPulseGuideOn(PRIVATE_DATA->dev_id, ASI_GUIDE_WEST);
@@ -1782,18 +1801,16 @@ static indigo_result guider_detach(indigo_device *device) {
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		handle_guider_connection_property(device);
 	}
-	
+
 	if (device == device->master_device) {
 		indigo_global_unlock(device);
 	}
-	
+
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_guider_detach(device);
 }
 
 // -------------------------------------------------------------------------------- hot-plug support
-
-static pthread_mutex_t device_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define MAX_DEVICES                   24
 #define NO_DEVICE                 (-1000)
@@ -1809,7 +1826,7 @@ static bool connected_ids[ASICAMERA_ID_MAX] = {false};
 static int find_index_by_device_id(int id) {
 	ASI_CAMERA_INFO info;
 	int count = ASIGetNumOfConnectedCameras();
-	for(int index = 0; index < count; index++) {
+	for (int index = 0; index < count; index++) {
 		ASIGetCameraProperty(&info, index);
 		if (info.CameraID == id) return index;
 	}
@@ -1822,7 +1839,7 @@ static int find_plugged_device_id() {
 	ASI_CAMERA_INFO info;
 
 	int count = ASIGetNumOfConnectedCameras();
-	for(i = 0; i < count; i++) {
+	for (i = 0; i < count; i++) {
 		ASIGetCameraProperty(&info, i);
 		id = info.CameraID;
 		if (!connected_ids[id]) {
@@ -1836,7 +1853,7 @@ static int find_plugged_device_id() {
 
 
 static int find_available_device_slot() {
-	for(int slot = 0; slot < MAX_DEVICES; slot++) {
+	for (int slot = 0; slot < MAX_DEVICES; slot++) {
 		if (devices[slot] == NULL) return slot;
 	}
 	return -1;
@@ -1844,7 +1861,7 @@ static int find_available_device_slot() {
 
 
 static int find_device_slot(int id) {
-	for(int slot = 0; slot < MAX_DEVICES; slot++) {
+	for (int slot = 0; slot < MAX_DEVICES; slot++) {
 		indigo_device *device = devices[slot];
 		if (device == NULL) {
 			continue;
@@ -1861,13 +1878,13 @@ static int find_unplugged_device_id() {
 	ASI_CAMERA_INFO info;
 
 	int count = ASIGetNumOfConnectedCameras();
-	for(i = 0; i < count; i++) {
+	for (i = 0; i < count; i++) {
 		ASIGetCameraProperty(&info, i);
 		dev_tmp[info.CameraID] = true;
 	}
 
 	int id = -1;
-	for(i = 0; i < ASICAMERA_ID_MAX; i++) {
+	for (i = 0; i < ASICAMERA_ID_MAX; i++) {
 		if (connected_ids[i] && !dev_tmp[i]){
 			id = i;
 			connected_ids[id] = false;
@@ -1895,25 +1912,25 @@ static void process_plug_event(indigo_device *unused) {
 		NULL,
 		guider_detach
 		);
-	pthread_mutex_lock(&device_mutex);
+	pthread_mutex_lock(&indigo_device_enumeration_mutex);
 	int slot = find_available_device_slot();
 	if (slot < 0) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "No device slots available.");
-		pthread_mutex_unlock(&device_mutex);
+		pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 		return;
 	}
 
 	int id = find_plugged_device_id();
 	if (id == NO_DEVICE) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "No plugged device found.");
-		pthread_mutex_unlock(&device_mutex);
+		pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 		return;
 	}
 
 	int index = find_index_by_device_id(id);
 	if (index < 0) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "No index of plugged device found.");
-		pthread_mutex_unlock(&device_mutex);
+		pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 		return;
 	}
 	ASIGetCameraProperty(&info, index);
@@ -1986,14 +2003,14 @@ static void process_plug_event(indigo_device *unused) {
 	device->private_data = private_data;
 	indigo_attach_device(device);
 	if (name_collision) {
-		indigo_send_message(device,"Warning: Camera model '%s' is already attached, please condsider changing the camera identifier", info.Name);
+		indigo_send_message(device, NULL, "Warning: Camera model '%s' is already attached, please condsider changing the camera identifier", info.Name);
 	}
 	devices[slot]=device;
 	if (info.ST4Port) {
 		slot = find_available_device_slot();
 		if (slot < 0) {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "No device slots available.");
-			pthread_mutex_unlock(&device_mutex);
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			return;
 		}
 		device = indigo_safe_malloc_copy(sizeof(indigo_device), &guider_template);
@@ -2004,12 +2021,12 @@ static void process_plug_event(indigo_device *unused) {
 		indigo_attach_device(device);
 		devices[slot]=device;
 	}
-	pthread_mutex_unlock(&device_mutex);
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 }
 
 
 static void process_unplug_event(indigo_device *unused) {
-	pthread_mutex_lock(&device_mutex);
+	pthread_mutex_lock(&indigo_device_enumeration_mutex);
 	int id, slot;
 	bool removed = false;
 	asi_private_data *private_data = NULL;
@@ -2018,15 +2035,18 @@ static void process_unplug_event(indigo_device *unused) {
 		while (slot >= 0) {
 			indigo_device **device = &devices[slot];
 			if (*device == NULL) {
-				pthread_mutex_unlock(&device_mutex);
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				return;
 			}
-			indigo_detach_device(*device);
-			if ((*device)->private_data) {
-				private_data = (*device)->private_data;
+			indigo_device *device_to_detach = *device;
+			if (device_to_detach->private_data) {
+				private_data = device_to_detach->private_data;
 			}
-			free(*device);
 			*device = NULL;
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
+			indigo_detach_device(device_to_detach);
+			free(device_to_detach);
+			pthread_mutex_lock(&indigo_device_enumeration_mutex);
 			removed = true;
 			slot = find_device_slot(id);
 		}
@@ -2044,7 +2064,7 @@ static void process_unplug_event(indigo_device *unused) {
 	if (!removed) {
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "No ASI Camera unplugged (maybe EFW wheel)!");
 	}
-	pthread_mutex_unlock(&device_mutex);
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 }
 
 static int hotplug_callback(libusb_context *ctx, libusb_device *dev, libusb_hotplug_event event, void *user_data) {
@@ -2073,7 +2093,7 @@ static void remove_all_devices() {
 	int i;
 	asi_private_data *pds[ASICAMERA_ID_MAX] = {NULL};
 
-	for(i = 0; i < MAX_DEVICES; i++) {
+	for (i = 0; i < MAX_DEVICES; i++) {
 		indigo_device *device = devices[i];
 		if (device == NULL) {
 			continue;
@@ -2085,7 +2105,7 @@ static void remove_all_devices() {
 	}
 
 	/* free private data */
-	for(i = 0; i < ASICAMERA_ID_MAX; i++) {
+	for (i = 0; i < ASICAMERA_ID_MAX; i++) {
 		if (pds[i]) {
 			if (pds[i]->buffer != NULL) {
 				ASICloseCamera(pds[i]->dev_id);
@@ -2096,8 +2116,9 @@ static void remove_all_devices() {
 		}
 	}
 
-	for(i = 0; i < ASICAMERA_ID_MAX; i++)
+	for (i = 0; i < ASICAMERA_ID_MAX; i++) {
 		connected_ids[i] = false;
+	}
 }
 
 
@@ -2108,8 +2129,9 @@ indigo_result indigo_ccd_asi(indigo_driver_action action, indigo_driver_info *in
 
 	SET_DRIVER_INFO(info, "ZWO ASI Camera", __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:
@@ -2146,4 +2168,3 @@ indigo_result indigo_ccd_asi(indigo_driver_action action, indigo_driver_info *in
 
 	return INDIGO_OK;
 }
-

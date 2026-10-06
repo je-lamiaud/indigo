@@ -1,9 +1,9 @@
-// Copyright (c) 2016 Rumen G. Bogdanovski
+// Copyright (c) 2017-2026 Rumen G. Bogdanovski
 // All rights reserved.
-//
-// You can use this software under the terms of 'INDIGO Astronomy
+
+// You may use this software under the terms of 'INDIGO Astronomy
 // open-source license' (see LICENSE.md).
-//
+
 // THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
 // OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
 // WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -16,15 +16,7 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-
-// version history
-// 2.0 by Rumen G. Bogdanovski
-
-/** INDIGO GPS NMEA 0183 driver main
- \file indigo_gps_nmea_main.c
- */
-
-#include <stdio.h>
+// This file generated from indigo_gps_nmea.driver
 
 #include <indigo/indigo_driver_xml.h>
 
@@ -33,7 +25,7 @@
 int main(int argc, const char * argv[]) {
 	indigo_main_argc = argc;
 	indigo_main_argv = argv;
-	indigo_client *protocol_adapter = indigo_xml_device_adapter(0, 1);
+	indigo_client *protocol_adapter = indigo_xml_device_adapter(indigo_stdin_handle, indigo_stdout_handle);
 	indigo_start();
 	indigo_gps_nmea(INDIGO_DRIVER_INIT, NULL);
 	indigo_attach_client(protocol_adapter);

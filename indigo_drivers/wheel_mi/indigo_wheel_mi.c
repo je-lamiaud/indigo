@@ -23,7 +23,7 @@
  \file indigo_wheel_mi.c
  */
 
-#define DRIVER_VERSION 0x0003
+#define DRIVER_VERSION 0x02000003
 #define DRIVER_NAME "indigo_wheel_mi"
 
 #include <ctype.h>
@@ -40,12 +40,6 @@
 #include <indigo/indigo_wheel_driver.h>
 
 #include "indigo_wheel_mi.h"
-
-#if defined(INDIGO_FREEBSD)
-#include <libusb.h>
-#else
-#include <libusb-1.0/libusb.h>
-#endif
 
 #include <gxccd.h>
 
@@ -123,8 +117,9 @@ static indigo_result wheel_attach(indigo_device *device) {
 	if (indigo_wheel_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		// -------------------------------------------------------------------------------- SFW_REINIT_SWITCH
 		SFW_REINIT_SWITCH_PROPERTY = indigo_init_switch_property(NULL, device->name, SFW_COMMANDS_GROUP, MAIN_GROUP, "Commands", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 1);
-		if (SFW_REINIT_SWITCH_PROPERTY == NULL)
+		if (SFW_REINIT_SWITCH_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(SFW_REINIT_SWITCH_ITEM, SFW_REINIT_SWITCH_ITEM_NAME, "Reinit Filter Wheel", false);
 		// --------------------------------------------------------------------------------
 		INFO_PROPERTY->count = 8;
@@ -136,9 +131,9 @@ static indigo_result wheel_attach(indigo_device *device) {
 
 static indigo_result wheel_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(SFW_REINIT_SWITCH_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SFW_REINIT_SWITCH_PROPERTY);
 	}
-	return indigo_wheel_enumerate_properties(device, NULL, NULL);
+	return indigo_wheel_enumerate_properties(device, client, property);
 }
 
 static void wheel_connect_callback(indigo_device *device) {
@@ -262,6 +257,8 @@ static void callback(int eid) {
 	new_eid = eid;
 }
 
+static pthread_mutex_t indigo_device_enumeration_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static void process_plug_event(libusb_device *dev) {
 	static indigo_device wheel_template = INDIGO_DEVICE_INITIALIZER(
 		"",
@@ -337,8 +334,9 @@ indigo_result indigo_wheel_mi(indigo_driver_action action, indigo_driver_info *i
 
 	SET_DRIVER_INFO(info, "Moravian Instruments SFW", __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT:
@@ -352,8 +350,9 @@ indigo_result indigo_wheel_mi(indigo_driver_action action, indigo_driver_info *i
 			return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
 
 		case INDIGO_DRIVER_SHUTDOWN:
-			for (int i = 0; i < MAX_DEVICES; i++)
+			for (int i = 0; i < MAX_DEVICES; i++) {
 				VERIFY_NOT_CONNECTED(devices[i]);
+			}
 			last_action = action;
 			libusb_hotplug_deregister_callback(NULL, callback_handle);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");

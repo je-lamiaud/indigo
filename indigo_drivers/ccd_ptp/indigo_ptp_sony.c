@@ -1,4 +1,4 @@
-// Copyright (c) 2019 CloudMakers, s. r. o.
+// Copyright (c) 2019-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -29,9 +29,9 @@
 #include <unistd.h>
 #include <assert.h>
 #include <stdarg.h>
-#include <libusb-1.0/libusb.h>
 
 #include <indigo/indigo_ccd_driver.h>
+#include <indigo/indigo_usb_utils.h>
 
 #include "indigo_ptp.h"
 #include "indigo_ptp_sony.h"
@@ -542,10 +542,11 @@ char *ptp_property_sony_value_code_label(indigo_device *device, uint16_t propert
 			}
 			int a = (int)code >> 16;
 			int b = (int)code & 0xFFFF;
-			if (b == 10)
+			if (b == 10) {
 				sprintf(label, "%g\"", (double)a / b);
-			else
+			} else {
 				sprintf(label, "1/%d", b);
+			}
 			return label;
 		}
 		case ptp_property_sony_AspectRatio: {
@@ -1119,8 +1120,12 @@ uint8_t *ptp_sony_decode_property(uint8_t *source, indigo_device *device) {
 						break;
 					}
 					case ptp_str_type: {
-						if (i < 16)
+						if (i < 16) {
 							source = ptp_decode_string(source, target->value.sw_str.values[i]);
+						} else {
+							char tmp[PTP_MAX_CHARS];
+							source = ptp_decode_string(source, tmp);
+						}
 						break;
 					}
 					default:
@@ -1175,11 +1180,10 @@ uint8_t *ptp_sony_decode_property(uint8_t *source, indigo_device *device) {
 					case ptp_str_type: {
 						char tmp[PTP_MAX_CHARS];
 						for (int i = 0; i < count; i++) {
-							if (i < 16)
-								source = ptp_decode_string(source, tmp);
-							}
+							source = ptp_decode_string(source, tmp);
 						}
 						break;
+					}
 					default:
 						INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Bad type: 0x%x", target->type);
 						return NULL;
@@ -1223,7 +1227,7 @@ uint8_t *ptp_sony_decode_property(uint8_t *source, indigo_device *device) {
 			case ptp_property_sony_ISO:
 				if (target->count == 0) {
 					target->count = 1;
-					target->value.sw.values[1] = target->value.number.value;
+					target->value.sw.values[0] = target->value.number.value;
 					target->writable = false;
 				} else {
 					target->writable = mode == 1 || mode == 2 || mode == 3 || mode == 4 || mode == 0x8050 || mode == 0x8051 || mode == 0x8052 || mode == 0x8053;
@@ -1232,7 +1236,7 @@ uint8_t *ptp_sony_decode_property(uint8_t *source, indigo_device *device) {
 			case ptp_property_sony_ShutterSpeed:
 				if (target->count == 0) {
 					target->count = 1;
-					target->value.sw.values[1] = target->value.number.value;
+					target->value.sw.values[0] = target->value.number.value;
 					target->writable = false;
 				} else {
 					target->writable = mode == 1 || mode == 4 || mode == 0x8052 || mode == 0x8053;
@@ -1242,7 +1246,7 @@ uint8_t *ptp_sony_decode_property(uint8_t *source, indigo_device *device) {
 			case ptp_property_FNumber:
 				if (target->count == 0) {
 					target->count = 1;
-					target->value.sw.values[1] = target->value.number.value;
+					target->value.sw.values[0] = target->value.number.value;
 					target->writable = false;
 				} else {
 					target->writable = mode == 1 ||  mode == 3 || mode == 0x8051 || mode == 0x8053;
@@ -1327,10 +1331,11 @@ bool ptp_sony_initialise(indigo_device *device) {
 			SONY_PRIVATE_DATA->api_version = SONY_OLD_API;
 			indigo_log("0x%04x < 0x%04x old API used", PRIVATE_DATA->model.product, SONY_NEW_API_SUPPORT_PRODUCT_ID_BORDER);
 		}
-		if (PRIVATE_DATA->model.product == SONY_ILCE_7RM4_PRODUCT_ID || PRIVATE_DATA->model.product == SONY_ILCE_7RM4A_PRODUCT_ID)
+		if (PRIVATE_DATA->model.product == SONY_ILCE_7RM4_PRODUCT_ID || PRIVATE_DATA->model.product == SONY_ILCE_7RM4A_PRODUCT_ID) {
 			SONY_PRIVATE_DATA->needs_pre_capture_delay = true;
-		else
+		} else {
 			SONY_PRIVATE_DATA->needs_pre_capture_delay = false;
+		}
 		if (ptp_transaction_1_0_i(device, ptp_operation_sony_GetSDIOGetExtDeviceInfo, SONY_PRIVATE_DATA->api_version, &buffer, &size)) {
 			uint32_t count = size / 2;
 			uint16_t operations[PTP_MAX_ELEMENTS] = { 0 }, *last_operation = operations;
@@ -1365,7 +1370,7 @@ bool ptp_sony_initialise(indigo_device *device) {
 				INDIGO_LOG(indigo_log("  %04x %s", *property, ptp_property_sony_code_label(*property)));
 			}
 			// SONY a7II and a7S need to wait to boot
-			indigo_usleep(ONE_SECOND_DELAY);
+			indigo_sleep(1);
 			ptp_transaction_3_0(device, ptp_operation_sony_SDIOConnect, 3, 0, 0);
 			if (ptp_transaction_0_0_i(device, ptp_operation_sony_GetAllDevicePropData, &buffer, &size)) {
 				uint8_t *source = buffer;
@@ -1462,8 +1467,9 @@ bool ptp_sony_set_property(indigo_device *device, ptp_property *property) {
 				} else if (property->property->items[2].sw.value) {
 					value = 1;
 				}
-				if (property->code == ptp_property_sony_ShutterSpeed)
+				if (property->code == ptp_property_sony_ShutterSpeed) {
 					value = -value;
+				}
 				indigo_set_switch(property->property, property->property->items + 1, true);
 				return ptp_transaction_0_1_o(device, ptp_operation_sony_SetControlDeviceB, property->code, &value, sizeof(uint16_t));
 			}
@@ -1519,8 +1525,9 @@ bool ptp_sony_exposure(indigo_device *device) {
 				if (now.tv_sec - SONY_PRIVATE_DATA->connection_time > 3) {
 					break;
 				}
-				if (PRIVATE_DATA->abort_capture)
+				if (PRIVATE_DATA->abort_capture) {
 					return false;
+				}
 			}
 		}
 	}
@@ -1560,11 +1567,11 @@ bool ptp_sony_exposure(indigo_device *device) {
 		}
 		if (SONY_PRIVATE_DATA->api_version == SONY_NEW_API) {
 			// readout memory buffer
-			while (true) {
-				// NOTE: DO NOT ABORT HERE
-				// The image remains in the memory buffer as long as the object is not read out.
-				ptp_property *property = ptp_property_supported(device, ptp_property_sony_ObjectInMemory);
-				if (property) {
+			ptp_property *property = ptp_property_supported(device, ptp_property_sony_ObjectInMemory);
+			if (property) {
+				while (true) {
+					// NOTE: DO NOT ABORT HERE
+					// The image remains in the memory buffer as long as the object is not read out.
 					if (property->value.number.value > 0x8000) {
 						// CaptureCompleted
 						uint32_t dummy[1] = { 0xffffc001 };
@@ -1626,8 +1633,9 @@ bool ptp_sony_liveview(indigo_device *device) {
 				if (now.tv_sec - SONY_PRIVATE_DATA->connection_time > 3) {
 					break;
 				}
-				if (PRIVATE_DATA->abort_capture)
+				if (PRIVATE_DATA->abort_capture) {
 					return false;
+				}
 			}
 		}
 	}
@@ -1635,11 +1643,11 @@ bool ptp_sony_liveview(indigo_device *device) {
 		if (ptp_transaction_1_0_i(device, ptp_operation_GetObject, 0xffffc002, &buffer, &size)) {
 			uint8_t *start = (uint8_t *)buffer;
 			while (size > 0) {
-				if (start[0] == 0xFF && start[1] == 0xD8 && start[2] == 0xFF && start[3] == 0xDB) {
+				if (size > 3 && start[0] == 0xFF && start[1] == 0xD8 && start[2] == 0xFF && start[3] == 0xDB) {
 					uint8_t *end = start + 2;
 					size -= 2;
 					while (size > 0) {
-						if (end[0] == 0xFF && end[1] == 0xD9) {
+						if (size > 2 && end[0] == 0xFF && end[1] == 0xD9) {
 							if (CCD_UPLOAD_MODE_LOCAL_ITEM->sw.value || CCD_UPLOAD_MODE_BOTH_ITEM->sw.value) {
 								CCD_IMAGE_FILE_PROPERTY->state = INDIGO_BUSY_STATE;
 								indigo_update_property(device, CCD_IMAGE_FILE_PROPERTY, NULL);
@@ -1655,8 +1663,9 @@ bool ptp_sony_liveview(indigo_device *device) {
 							PRIVATE_DATA->image_buffer = buffer;
 							buffer = NULL;
 							CCD_STREAMING_COUNT_ITEM->number.value--;
-							if (CCD_STREAMING_COUNT_ITEM->number.value < 0)
+							if (CCD_STREAMING_COUNT_ITEM->number.value < 0) {
 								CCD_STREAMING_COUNT_ITEM->number.value = -1;
+							}
 							indigo_update_property(device, CCD_STREAMING_PROPERTY, NULL);
 							retry_count = 0;
 							break;
@@ -1696,7 +1705,7 @@ bool ptp_sony_af(indigo_device *device) {
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "focus_state %d", (int)(SONY_PRIVATE_DATA->focus_state));
 			value = 1;
 			ptp_transaction_0_1_o(device, ptp_operation_sony_SetControlDeviceB, ptp_property_sony_Autofocus, &value, sizeof(uint16_t));
-			return SONY_PRIVATE_DATA->focus_state;
+			return SONY_PRIVATE_DATA->focus_state == 2;
 		}
 	}
 	return false;

@@ -1,0 +1,119 @@
+// Copyright (c) 2016-2026 CloudMakers, s. r. o.
+// All rights reserved.
+//
+// You can use this software under the terms of 'INDIGO Astronomy
+// open-source license' (see LICENSE.md).
+//
+// THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
+// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+// GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+// NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// Shoestring GPUSB guider driver definition
+
+// version history
+// 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+
+// TODO: Add libgpusb for windows
+
+driver gpusb {
+	label = "Shoestring GPUSB guider";
+	author = "Peter Polakovic <peter.polakovic@cloudmakers.eu>";
+	copyright = "Copyright (c) 2016-2026 CloudMakers, s. r. o.";
+	version = 6;
+	libusb {
+		hotplug = true;
+		vid = GPUSB_VID;
+	}
+	include {
+		#include <libgpusb.h>
+	}
+	data {
+		libgpusb_device_context *device_context;
+		unsigned short relay_mask;
+	}
+	code {
+		static bool gpusb_match(libusb_device *dev, const char **name) {
+			return libgpusb_guider(dev, name);
+		}
+
+		static bool gpusb_open(indigo_device *device) {
+			return libgpusb_open(PRIVATE_DATA->usbdev, &PRIVATE_DATA->device_context);
+		}
+
+		static void gpusb_close(indigo_device *device) {
+			libgpusb_set(PRIVATE_DATA->device_context, 0);
+			libgpusb_close(PRIVATE_DATA->device_context);
+		}
+
+		static void gpusb_debug(const char *message) {
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libgpusb: %s\n", message);
+		}
+		
+		static void guider_guide_dec_finish_handler(indigo_device *device) {
+			GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
+			PRIVATE_DATA->relay_mask &= ~(GPUSB_DEC_NORTH | GPUSB_DEC_SOUTH);
+			libgpusb_set(PRIVATE_DATA->device_context, PRIVATE_DATA->relay_mask);
+			INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_OK_STATE, NULL);
+		}
+
+		static void guider_guide_ra_finish_handler(indigo_device *device) {
+			GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_WEST_ITEM->number.value = 0;
+			PRIVATE_DATA->relay_mask &= ~(GPUSB_RA_EAST | GPUSB_RA_WEST);
+			libgpusb_set(PRIVATE_DATA->device_context, PRIVATE_DATA->relay_mask);
+			INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_OK_STATE, NULL);
+		}
+	}
+	on_init {
+		libgpusb_debug = &gpusb_debug;
+	}
+	guider {
+		name = "%s";
+		inherited GUIDER_GUIDE_DEC {
+			on_change {
+				PRIVATE_DATA->relay_mask &= ~(GPUSB_DEC_NORTH | GPUSB_DEC_SOUTH);
+				int duration = GUIDER_GUIDE_NORTH_ITEM->number.value;
+				if (duration > 0) {
+					PRIVATE_DATA->relay_mask |= GPUSB_DEC_NORTH;
+				} else {
+					duration = GUIDER_GUIDE_SOUTH_ITEM->number.value;
+					if (duration > 0) {
+						PRIVATE_DATA->relay_mask |= GPUSB_DEC_SOUTH;
+					}
+				}
+				libgpusb_set(PRIVATE_DATA->device_context, PRIVATE_DATA->relay_mask);
+				if (duration > 0) {
+					INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_BUSY_STATE, NULL);
+					indigo_execute_priority_handler_in(device, 100, duration / 1000.0, guider_guide_dec_finish_handler);
+				}
+			}
+		}
+		inherited GUIDER_GUIDE_RA {
+			on_change {
+				PRIVATE_DATA->relay_mask &= ~(GPUSB_RA_EAST | GPUSB_RA_WEST);
+				int duration = GUIDER_GUIDE_EAST_ITEM->number.value;
+				if (duration > 0) {
+					PRIVATE_DATA->relay_mask |= GPUSB_RA_EAST;
+				} else {
+					duration = GUIDER_GUIDE_WEST_ITEM->number.value;
+					if (duration > 0) {
+						PRIVATE_DATA->relay_mask |= GPUSB_RA_WEST;
+					}
+				}
+				libgpusb_set(PRIVATE_DATA->device_context, PRIVATE_DATA->relay_mask);
+				if (duration > 0) {
+					INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_BUSY_STATE, NULL);
+					indigo_execute_priority_handler_in(device, 100, duration / 1000.0, guider_guide_ra_finish_handler);
+				}
+			}
+		}
+	}
+}

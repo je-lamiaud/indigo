@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 //  This code is partially based on PHD driver by Craig Stark
@@ -29,7 +29,7 @@
  \file indigo_guider_eqmac.c
  */
 
-#define DRIVER_VERSION 0x0002
+#define DRIVER_VERSION 0x02000002
 #define DRIVER_NAME "indigo_guider_eqmac"
 
 #include <stdlib.h>
@@ -202,8 +202,9 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 
 static indigo_result guider_detach(indigo_device *device) {
 	assert(device != NULL);
-	if (CONNECTION_CONNECTED_ITEM->sw.value)
+	if (CONNECTION_CONNECTED_ITEM->sw.value) {
 		indigo_device_disconnect(NULL, device->name);
+	}
 	indigo_global_unlock(device);
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_guider_detach(device);
@@ -225,8 +226,9 @@ indigo_result indigo_guider_eqmac(indigo_driver_action action, indigo_driver_inf
 
 	SET_DRIVER_INFO(info, "EQMac Guider", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

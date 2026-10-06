@@ -84,10 +84,9 @@ static indigo_result mount_attach(indigo_device *device) {
 		strncpy(MOUNT_GUIDE_RATE_PROPERTY->label,"ST4 guide rate", INDIGO_VALUE_SIZE);
 		// -------------------------------------------------------------------------------- MOUNT_RAW_COORDINATES
 		MOUNT_RAW_COORDINATES_PROPERTY->hidden = false;
-		// -------------------------------------------------------------------------------- MOUNT_MOUNT_TARGET_INFO
-		MOUNT_TARGET_INFO_PROPERTY->hidden = true;
 		// -------------------------------------------------------------------------------- DEVICE_PORTS
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 		// -------------------------------------------------------------------------------- DEVICE_PORT
 		DEVICE_PORT_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- DEVICE_BAUDRATE
@@ -103,39 +102,43 @@ static indigo_result mount_attach(indigo_device *device) {
 		MOUNT_EPOCH_PROPERTY->perm = INDIGO_RO_PERM;
 		// -------------------------------------------------------------------------------- MOUNT_SIDE_OF_PIER
 		MOUNT_SIDE_OF_PIER_PROPERTY->hidden = false;
-		MOUNT_SIDE_OF_PIER_PROPERTY->perm = INDIGO_RO_PERM;
 		// -------------------------------------------------------------------------------- MOUNT_POLARSCOPE
 		MOUNT_POLARSCOPE_PROPERTY = indigo_init_number_property(NULL, device->name, MOUNT_POLARSCOPE_PROPERTY_NAME, MOUNT_MAIN_GROUP, "Polarscope", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (MOUNT_POLARSCOPE_PROPERTY == NULL)
+		if (MOUNT_POLARSCOPE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		MOUNT_POLARSCOPE_PROPERTY->hidden = true;
 		indigo_init_number_item(MOUNT_POLARSCOPE_BRIGHTNESS_ITEM, MOUNT_POLARSCOPE_BRIGHTNESS_ITEM_NAME, "Polarscope Brightness", 0, 255, 0, 0);
 		// -------------------------------------------------------------------------------- MOUNT_OPERATING_MODE
 		MOUNT_OPERATING_MODE_PROPERTY = indigo_init_switch_property(NULL, device->name, MOUNT_OPERATING_MODE_PROPERTY_NAME, MOUNT_MAIN_GROUP, "Operating mode", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (MOUNT_OPERATING_MODE_PROPERTY == NULL)
+		if (MOUNT_OPERATING_MODE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		MOUNT_OPERATING_MODE_PROPERTY->hidden = true;
 		indigo_init_switch_item(POLAR_MODE_ITEM, POLAR_MODE_ITEM_NAME, "Polar mode", true);
 		indigo_init_switch_item(ALTAZ_MODE_ITEM, ALTAZ_MODE_ITEM_NAME, "Alt/Az mode", false);
 
 		// -------------------------------------------------------------------------------- MOUNT_USE_ENCODERS
 		MOUNT_USE_ENCODERS_PROPERTY = indigo_init_switch_property(NULL, device->name, MOUNT_USE_ENCODERS_PROPERTY_NAME, MOUNT_MAIN_GROUP, "Use encoders", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 2);
-		if (MOUNT_USE_ENCODERS_PROPERTY == NULL)
+		if (MOUNT_USE_ENCODERS_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		MOUNT_USE_ENCODERS_PROPERTY->hidden = true;
 		indigo_init_switch_item(MOUNT_USE_RA_ENCODER_ITEM, MOUNT_USE_RA_ENCODER_ITEM_NAME, "Use RA encoder", false);
 		indigo_init_switch_item(MOUNT_USE_DEC_ENCODER_ITEM, MOUNT_USE_DEC_ENCODER_ITEM_NAME, "Use Dec encoder", false);
 
 		// -------------------------------------------------------------------------------- MOUNT_AUTOHOME
 		MOUNT_AUTOHOME_PROPERTY = indigo_init_switch_property(NULL, device->name, MOUNT_AUTOHOME_PROPERTY_NAME, MOUNT_MAIN_GROUP, "Auto home", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 1);
-		if (MOUNT_AUTOHOME_PROPERTY == NULL)
+		if (MOUNT_AUTOHOME_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		MOUNT_AUTOHOME_PROPERTY->hidden = true;
 		indigo_init_switch_item(MOUNT_AUTOHOME_ITEM, MOUNT_AUTOHOME_ITEM_NAME, "Start auto home procedure", false);
 		// -------------------------------------------------------------------------------- MOUNT_POLARSCOPE
 		MOUNT_AUTOHOME_SETTINGS_PROPERTY = indigo_init_number_property(NULL, device->name, MOUNT_AUTOHOME_SETTINGS_PROPERTY_NAME, MOUNT_MAIN_GROUP, "Auto home settings", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (MOUNT_AUTOHOME_SETTINGS_PROPERTY == NULL)
+		if (MOUNT_AUTOHOME_SETTINGS_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		MOUNT_AUTOHOME_SETTINGS_PROPERTY->hidden = true;
 		indigo_init_number_item(MOUNT_AUTOHOME_DEC_OFFSET_ITEM, MOUNT_AUTOHOME_DEC_OFFSET_ITEM_NAME, "Dec offset", -90, 90, 0, 0);
 
@@ -143,7 +146,7 @@ static indigo_result mount_attach(indigo_device *device) {
 		pthread_mutex_init(&PRIVATE_DATA->port_mutex, NULL);
 		pthread_mutex_init(&PRIVATE_DATA->driver_mutex, NULL);
 		PRIVATE_DATA->mountConfigured = false;
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		
 		return mount_enumerate_properties(device, NULL, NULL);
@@ -156,11 +159,11 @@ static indigo_result mount_enumerate_properties(indigo_device *device, indigo_cl
 	assert(device != NULL);
 	assert(DEVICE_CONTEXT != NULL);
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(MOUNT_POLARSCOPE_PROPERTY);
-		indigo_define_matching_property(MOUNT_OPERATING_MODE_PROPERTY);
-		indigo_define_matching_property(MOUNT_USE_ENCODERS_PROPERTY);
-		indigo_define_matching_property(MOUNT_AUTOHOME_PROPERTY);
-		indigo_define_matching_property(MOUNT_AUTOHOME_SETTINGS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(MOUNT_POLARSCOPE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(MOUNT_OPERATING_MODE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(MOUNT_USE_ENCODERS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(MOUNT_AUTOHOME_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(MOUNT_AUTOHOME_SETTINGS_PROPERTY);
 	}
 	return indigo_mount_enumerate_properties(device, client, property);
 }
@@ -231,8 +234,7 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 //			if (PRIVATE_DATA->globalMode == kGlobalModeIdle) {
 //				//  Pass sync requests through to indigo common code
 //				return indigo_mount_change_property(device, client, property);
-//			}
-//			else {
+//			} else {
 //				MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
 //				indigo_update_coordinates(device, "Sync not performed - mount is busy.");
 //				return INDIGO_OK;
@@ -245,8 +247,7 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 				MOUNT_HORIZONTAL_COORDINATES_AZ_ITEM->number.value = az;
 				MOUNT_HORIZONTAL_COORDINATES_ALT_ITEM->number.value = alt;
 				mount_handle_aa_coordinates(device);
-			}
-			else {
+			} else {
 				MOUNT_HORIZONTAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
 				//  FIXME - is there an assumption about coordinates here?
 				//indigo_update_coordinates(device, "Slew not started - mount is busy.");
@@ -299,8 +300,7 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		indigo_property_copy_values(MOUNT_ABORT_MOTION_PROPERTY, property, false);
 		mount_handle_abort(device);
 		return INDIGO_OK;
-	}
-	else if (indigo_property_match_changeable(MOUNT_GUIDE_RATE_PROPERTY, property)) {
+	} else if (indigo_property_match_changeable(MOUNT_GUIDE_RATE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- MOUNT_GUIDE_RATE
 		indigo_property_copy_values(MOUNT_GUIDE_RATE_PROPERTY, property, false);
 		mount_handle_st4_guiding_rate(device);
@@ -346,7 +346,7 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		MOUNT_OPERATING_MODE_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, MOUNT_OPERATING_MODE_PROPERTY, "Switched mount operating mode");
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, MOUNT_POLARSCOPE_PROPERTY);
@@ -386,7 +386,7 @@ static indigo_result guider_attach(indigo_device *device) {
 		GUIDER_RATE_PROPERTY->hidden = false;
 		GUIDER_RATE_PROPERTY->count = 2;
 		strncpy(GUIDER_RATE_PROPERTY->label,"Pulse-Guide Rate", INDIGO_VALUE_SIZE);
-		indigo_copy_value(GUIDER_RATE_ITEM->label, "RA Guiding rate (% of sidereal)");
+		INDIGO_COPY_VALUE(GUIDER_RATE_ITEM->label, "RA Guiding rate (% of sidereal)");
 
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 
@@ -415,8 +415,7 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 		CONNECTION_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
 		return synscan_guider_connect(device);
-	}
-	else if (indigo_property_match_changeable(GUIDER_GUIDE_RA_PROPERTY, property)) {
+	} else if (indigo_property_match_changeable(GUIDER_GUIDE_RA_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- GUIDER_GUIDE_RA
 		indigo_property_copy_values(GUIDER_GUIDE_RA_PROPERTY, property, false);
 		GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_OK_STATE;
@@ -426,14 +425,12 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 			duration = -GUIDER_GUIDE_EAST_ITEM->number.value;
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Guiding %dms EAST", -duration);
 			indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, NULL);
-		}
-		else if (GUIDER_GUIDE_WEST_ITEM->number.value > 0) {
+		} else if (GUIDER_GUIDE_WEST_ITEM->number.value > 0) {
 			GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_BUSY_STATE;
 			duration = GUIDER_GUIDE_WEST_ITEM->number.value;
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Guiding %dms WEST", duration);
 			indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, NULL);
-		}
-		else {
+		} else {
 			indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, NULL);
 		}
 
@@ -452,14 +449,12 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 			PRIVATE_DATA->ha_pulse_ms = duration;
 			pthread_cond_signal(&PRIVATE_DATA->ha_pulse_cond);
 			pthread_mutex_unlock(&PRIVATE_DATA->ha_mutex);
-		}
-		else if (duration != 0 && !tracking_enabled) {
+		} else if (duration != 0 && !tracking_enabled) {
 			GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_ALERT_STATE;
 			indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, "Ignoring RA guide pulse - mount is not tracking.");
 		}
 		return INDIGO_OK;
-	}
-	else if (indigo_property_match_changeable(GUIDER_GUIDE_DEC_PROPERTY, property)) {
+	} else if (indigo_property_match_changeable(GUIDER_GUIDE_DEC_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- GUIDER_GUIDE_DEC
 		indigo_property_copy_values(GUIDER_GUIDE_DEC_PROPERTY, property, false);
 		GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_OK_STATE;
@@ -469,14 +464,12 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 			duration = GUIDER_GUIDE_NORTH_ITEM->number.value;
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Guiding %dms NORTH", duration);
 			indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
-		}
-		else if (GUIDER_GUIDE_SOUTH_ITEM->number.value > 0) {
+		} else if (GUIDER_GUIDE_SOUTH_ITEM->number.value > 0) {
 			GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_BUSY_STATE;
 			duration = -GUIDER_GUIDE_SOUTH_ITEM->number.value;
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Guiding %dms SOUTH", -duration);
 			indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
-		}
-		else {
+		} else {
 			indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
 		}
 
@@ -488,14 +481,12 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 			pthread_mutex_unlock(&PRIVATE_DATA->dec_mutex);
 		}
 		return INDIGO_OK;
-	}
-	else if (indigo_property_match_changeable(GUIDER_RATE_PROPERTY, property)) {
+	} else if (indigo_property_match_changeable(GUIDER_RATE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- GUIDE_RATE
 		indigo_property_copy_values(GUIDER_RATE_PROPERTY, property, false);
 		indigo_update_property(device, GUIDER_RATE_PROPERTY, "Guide rate updated.");
 		return INDIGO_OK;
-	}
-	else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property))
 			indigo_save_property(device, NULL, GUIDER_RATE_PROPERTY);
@@ -511,10 +502,7 @@ static indigo_result guider_detach(indigo_device *device) {
 		synscan_guider_connect(device);
 	}
 
-	//  Wake up the pulse timer threads to exit
-	PRIVATE_DATA->guiding_thread_exit = true;
-	pthread_cond_signal(&PRIVATE_DATA->ha_pulse_cond);
-	pthread_cond_signal(&PRIVATE_DATA->dec_pulse_cond);
+	synscan_stop_guider_threads(device);
 
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_guider_detach(device);
@@ -548,8 +536,9 @@ indigo_result indigo_mount_synscan(indigo_driver_action action, indigo_driver_in
 
 	SET_DRIVER_INFO(info, "SynScan Mount", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

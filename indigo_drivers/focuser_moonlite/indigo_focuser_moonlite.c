@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_focuser_moonlite.c
  */
 
-#define DRIVER_VERSION 0x000A
+#define DRIVER_VERSION 0x0200000A
 #define DRIVER_NAME "indigo_focuser_moonlite"
 
 #include <stdlib.h>
@@ -50,6 +50,7 @@
 
 typedef struct {
 	int handle;
+	bool has_temperature_sensor;
 	indigo_timer *timer;
 	indigo_property *stepping_mode_property;
 	pthread_mutex_t mutex;
@@ -96,17 +97,19 @@ static indigo_result focuser_attach(indigo_device *device) {
 	assert(PRIVATE_DATA != NULL);
 	if (indigo_focuser_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		X_FOCUSER_STEPPING_MODE_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_FOCUSER_STEPPING_MODE", FOCUSER_MAIN_GROUP, "Stepping mode", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (X_FOCUSER_STEPPING_MODE_PROPERTY == NULL)
+		if (X_FOCUSER_STEPPING_MODE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_FOCUSER_STEPPING_MODE_HALF_ITEM, "HALF", "Half", false);
 		indigo_init_switch_item(X_FOCUSER_STEPPING_MODE_FULL_ITEM, "FULL", "Full", true);
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -116,7 +119,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 #endif
 		// -------------------------------------------------------------------------------- INFO
 		INFO_PROPERTY->count = 6;
-		strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "MoonLite Focuser");
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "MoonLite Focuser");
 		// -------------------------------------------------------------------------------- FOCUSER_TEMPERATURE
 		FOCUSER_TEMPERATURE_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- FOCUSER_SPEED
@@ -149,7 +152,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_LIMITS_MAX_POSITION_ITEM->number.step = 1;
 		FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target = 0xFFFF;
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return focuser_enumerate_properties(device, NULL, NULL);
@@ -159,9 +162,9 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_FOCUSER_STEPPING_MODE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_STEPPING_MODE_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static void focuser_timer_callback(indigo_device *device) {
@@ -169,9 +172,8 @@ static void focuser_timer_callback(indigo_device *device) {
 		return;
 	}
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	static bool read_temperature = false;
 	char response[16];
-	if (read_temperature) {
+	if (PRIVATE_DATA->has_temperature_sensor) {
 		if (moonlite_command(device, ":GT#", response, sizeof(response))) {
 			double temp = ((int8_t)strtol(response, NULL, 16)) / 2.0;
 			if (FOCUSER_TEMPERATURE_ITEM->number.value != temp) {
@@ -180,10 +182,10 @@ static void focuser_timer_callback(indigo_device *device) {
 				indigo_update_property(device, FOCUSER_TEMPERATURE_PROPERTY, NULL);
 			}
 		}
-		read_temperature = false;
+		PRIVATE_DATA->has_temperature_sensor = false;
 	} else {
 		moonlite_command(device, ":C#", NULL, 0);
-		read_temperature = true;
+		PRIVATE_DATA->has_temperature_sensor = true;
 	}
 	bool update = false;
 	if (moonlite_command(device, ":GP#", response, sizeof(response))) {
@@ -228,7 +230,7 @@ static void focuser_connection_handler(indigo_device *device) {
 					break;
 				} else if (i < 5) {
 					INDIGO_DRIVER_ERROR(DRIVER_NAME, "No reply from MoonLite focuser - retrying");
-					indigo_usleep(2 * ONE_SECOND_DELAY);
+					indigo_sleep(2);
 				} else {
 					INDIGO_DRIVER_ERROR(DRIVER_NAME, "MoonLite focuser not detected");
 					close(PRIVATE_DATA->handle);
@@ -257,6 +259,7 @@ static void focuser_connection_handler(indigo_device *device) {
 		if (PRIVATE_DATA->handle > 0) {
 			indigo_define_property(device, X_FOCUSER_STEPPING_MODE_PROPERTY, NULL);
 			INDIGO_DRIVER_LOG(DRIVER_NAME, "Connected to %s", DEVICE_PORT_ITEM->text.value);
+			PRIVATE_DATA->has_temperature_sensor = true;
 			indigo_set_timer(device, 0, focuser_timer_callback, &PRIVATE_DATA->timer);
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
@@ -296,14 +299,18 @@ static void focuser_steps_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[16];
 	int position = FOCUSER_POSITION_ITEM->number.value + (int)FOCUSER_STEPS_ITEM->number.value * (FOCUSER_DIRECTION_MOVE_INWARD_ITEM->sw.value ? 1 : -1) * (FOCUSER_REVERSE_MOTION_ENABLED_ITEM->sw.value ? -1 : 1);
-	if (position < 0)
+	if (position < 0) {
 		position = 0;
-	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value)
+	}
+	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value) {
 		position = FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value;
-	if (position > 0xFFFF)
+	}
+	if (position > 0xFFFF) {
 		position = 0xFFFF;
-	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value)
+	}
+	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value) {
 		position = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value;
+	}
 	snprintf(command, sizeof(command), ":SN%04X#:FG#", position);
 	if (moonlite_command(device, command, NULL, 0)) {
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
@@ -320,10 +327,12 @@ static void focuser_position_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[16];
 	int position = (int)FOCUSER_POSITION_ITEM->number.target;
-	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value)
+	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value) {
 		position = FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value;
-	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value)
+	}
+	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value) {
 		position = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value;
+	}
 	FOCUSER_POSITION_ITEM->number.target = position;
 	snprintf(command, sizeof(command), ":SN%04X#:FG#", position);
 	if (moonlite_command(device, command, NULL, 0)) {
@@ -490,8 +499,9 @@ indigo_result indigo_focuser_moonlite(indigo_driver_action action, indigo_driver
 
 	SET_DRIVER_INFO(info, "MoonLite Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

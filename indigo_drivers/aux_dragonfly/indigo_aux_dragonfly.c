@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Rumen G. Bogdanovski
+// Copyright (C) 2020-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** INDIGO Lunatico Dragonfly AUX driver
  \file indigo_aux_dragonfly.c
@@ -25,7 +25,7 @@
 
 #include "indigo_aux_dragonfly.h"
 
-#define DRIVER_VERSION         0x0004
+#define DRIVER_VERSION 0x02000004
 #define AUX_DRAGONFLY_NAME     "Dragonfly Controller"
 
 #define DRIVER_NAME              "indigo_aux_dragonfly"
@@ -156,14 +156,15 @@ static int lunatico_init_properties(indigo_device *device) {
 	// -------------------------------------------------------------------------------- DEVICE_PORT
 	DEVICE_PORT_PROPERTY->hidden = false;
 	DEVICE_PORT_PROPERTY->state = INDIGO_OK_STATE;
-	indigo_copy_value(DEVICE_PORT_ITEM->text.value, "udp://dragonfly");
-	indigo_copy_value(DEVICE_PORT_ITEM->label, "Devce URL");
+	INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, "udp://dragonfly");
+	INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->label, "Devce URL");
 	// --------------------------------------------------------------------------------
 	INFO_PROPERTY->count = 6;
 	// -------------------------------------------------------------------------------- OUTLET_NAMES
 	AUX_OUTLET_NAMES_PROPERTY = indigo_init_text_property(NULL, device->name, AUX_OUTLET_NAMES_PROPERTY_NAME, AUX_RELAYS_GROUP, "Relay names", INDIGO_OK_STATE, INDIGO_RW_PERM, 8);
-	if (AUX_OUTLET_NAMES_PROPERTY == NULL)
+	if (AUX_OUTLET_NAMES_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_text_item(AUX_OUTLET_NAME_1_ITEM, AUX_GPIO_OUTLET_NAME_1_ITEM_NAME, "Relay 1", "Relay #1");
 	indigo_init_text_item(AUX_OUTLET_NAME_2_ITEM, AUX_GPIO_OUTLET_NAME_2_ITEM_NAME, "Relay 2", "Relay #2");
 	indigo_init_text_item(AUX_OUTLET_NAME_3_ITEM, AUX_GPIO_OUTLET_NAME_3_ITEM_NAME, "Relay 3", "Relay #3");
@@ -174,8 +175,9 @@ static int lunatico_init_properties(indigo_device *device) {
 	indigo_init_text_item(AUX_OUTLET_NAME_8_ITEM, AUX_GPIO_OUTLET_NAME_8_ITEM_NAME, "Relay 8", "Relay #8");
 	// -------------------------------------------------------------------------------- GPIO OUTLETS
 	AUX_GPIO_OUTLET_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_GPIO_OUTLETS_PROPERTY_NAME, AUX_RELAYS_GROUP, "Relay outlets", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 8);
-	if (AUX_GPIO_OUTLET_PROPERTY == NULL)
+	if (AUX_GPIO_OUTLET_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(AUX_GPIO_OUTLET_1_ITEM, AUX_GPIO_OUTLETS_OUTLET_1_ITEM_NAME, "Relay #1", false);
 	indigo_init_switch_item(AUX_GPIO_OUTLET_2_ITEM, AUX_GPIO_OUTLETS_OUTLET_2_ITEM_NAME, "Relay #2", false);
 	indigo_init_switch_item(AUX_GPIO_OUTLET_3_ITEM, AUX_GPIO_OUTLETS_OUTLET_3_ITEM_NAME, "Relay #3", false);
@@ -186,8 +188,9 @@ static int lunatico_init_properties(indigo_device *device) {
 	indigo_init_switch_item(AUX_GPIO_OUTLET_8_ITEM, AUX_GPIO_OUTLETS_OUTLET_8_ITEM_NAME, "Relay #8", false);
 	// -------------------------------------------------------------------------------- GPIO PULSE OUTLETS
 	AUX_OUTLET_PULSE_LENGTHS_PROPERTY = indigo_init_number_property(NULL, device->name, "AUX_OUTLET_PULSE_LENGTHS", AUX_RELAYS_GROUP, "Relay pulse lengths (ms)", INDIGO_OK_STATE, INDIGO_RW_PERM, 8);
-	if (AUX_OUTLET_PULSE_LENGTHS_PROPERTY == NULL)
+	if (AUX_OUTLET_PULSE_LENGTHS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_OUTLET_PULSE_LENGTHS_1_ITEM, AUX_GPIO_OUTLETS_OUTLET_1_ITEM_NAME, "Relay #1", 0, 100000, 100, 0);
 	indigo_init_number_item(AUX_OUTLET_PULSE_LENGTHS_2_ITEM, AUX_GPIO_OUTLETS_OUTLET_2_ITEM_NAME, "Relay #2", 0, 100000, 100, 0);
 	indigo_init_number_item(AUX_OUTLET_PULSE_LENGTHS_3_ITEM, AUX_GPIO_OUTLETS_OUTLET_3_ITEM_NAME, "Relay #3", 0, 100000, 100, 0);
@@ -198,8 +201,9 @@ static int lunatico_init_properties(indigo_device *device) {
 	indigo_init_number_item(AUX_OUTLET_PULSE_LENGTHS_8_ITEM, AUX_GPIO_OUTLETS_OUTLET_8_ITEM_NAME, "Relay #8", 0, 100000, 100, 0);
 	// -------------------------------------------------------------------------------- SENSOR_NAMES
 	AUX_SENSOR_NAMES_PROPERTY = indigo_init_text_property(NULL, device->name, AUX_SENSOR_NAMES_PROPERTY_NAME, AUX_SENSORS_GROUP, "Sensor names", INDIGO_OK_STATE, INDIGO_RW_PERM, 8);
-	if (AUX_SENSOR_NAMES_PROPERTY == NULL)
+	if (AUX_SENSOR_NAMES_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_text_item(AUX_SENSOR_NAME_1_ITEM, AUX_GPIO_SENSOR_NAME_1_ITEM_NAME, "Sensor 1", "Sensor #1");
 	indigo_init_text_item(AUX_SENSOR_NAME_2_ITEM, AUX_GPIO_SENSOR_NAME_2_ITEM_NAME, "Sensor 2", "Sensor #2");
 	indigo_init_text_item(AUX_SENSOR_NAME_3_ITEM, AUX_GPIO_SENSOR_NAME_3_ITEM_NAME, "Sensor 3", "Sensor #3");
@@ -210,8 +214,9 @@ static int lunatico_init_properties(indigo_device *device) {
 	indigo_init_text_item(AUX_SENSOR_NAME_8_ITEM, AUX_GPIO_SENSOR_NAME_8_ITEM_NAME, "Sensor 8", "Sensor #8");
 	// -------------------------------------------------------------------------------- GPIO_SENSORS
 	AUX_GPIO_SENSORS_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_GPIO_SENSORS_PROPERTY_NAME, AUX_SENSORS_GROUP, "Sensors", INDIGO_OK_STATE, INDIGO_RO_PERM, 8);
-	if (AUX_GPIO_SENSORS_PROPERTY == NULL)
+	if (AUX_GPIO_SENSORS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_GPIO_SENSOR_1_ITEM, AUX_GPIO_SENSOR_NAME_1_ITEM_NAME, "Sensor #1", 0, 1024, 1, 0);
 	indigo_init_number_item(AUX_GPIO_SENSOR_2_ITEM, AUX_GPIO_SENSOR_NAME_2_ITEM_NAME, "Sensor #2", 0, 1024, 1, 0);
 	indigo_init_number_item(AUX_GPIO_SENSOR_3_ITEM, AUX_GPIO_SENSOR_NAME_3_ITEM_NAME, "Sensor #3", 0, 1024, 1, 0);
@@ -354,14 +359,14 @@ static bool set_gpio_outlets(indigo_device *device) {
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (DEVICE_CONNECTED) {
-		indigo_define_matching_property(AUX_GPIO_OUTLET_PROPERTY);
-		indigo_define_matching_property(AUX_OUTLET_PULSE_LENGTHS_PROPERTY);
-		indigo_define_matching_property(AUX_GPIO_SENSORS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_GPIO_OUTLET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_OUTLET_PULSE_LENGTHS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_GPIO_SENSORS_PROPERTY);
 	}
-	indigo_define_matching_property(AUX_OUTLET_NAMES_PROPERTY);
-	indigo_define_matching_property(AUX_SENSOR_NAMES_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_OUTLET_NAMES_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_SENSOR_NAMES_PROPERTY);
 
-	return indigo_aux_enumerate_properties(device, NULL, NULL);
+	return indigo_aux_enumerate_properties(device, client, property);
 }
 
 
@@ -385,8 +390,8 @@ static void handle_aux_connect_property(indigo_device *device) {
 				char board[LUNATICO_CMD_LEN] = "N/A";
 				char firmware[LUNATICO_CMD_LEN] = "N/A";
 				if (lunatico_get_info(device, board, firmware) && !strncmp(board, "Dragonfly", INDIGO_VALUE_SIZE)) {
-					indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, board);
-					indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
+					INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, board);
+					INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
 					indigo_update_property(device, INFO_PROPERTY, NULL);
 					bool relay_value[8];
 					if (!lunatico_read_relays(device, relay_value)) {
@@ -524,7 +529,7 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 		} else {
 			lunatico_authenticate2(device, AUTHENTICATION_PASSWORD_ITEM->text.value);
 		}
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, AUX_OUTLET_NAMES_PROPERTY);
@@ -640,30 +645,31 @@ indigo_result indigo_aux_dragonfly(indigo_driver_action action, indigo_driver_in
 
 	SET_DRIVER_INFO(info, DRIVER_INFO, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		last_action = action;
-		if (indigo_driver_initialized(CONFLICTING_DRIVER)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Conflicting driver %s is already loaded", CONFLICTING_DRIVER);
-			last_action = INDIGO_DRIVER_SHUTDOWN;
-			return INDIGO_FAILED;
-		}
-		create_port_device(0, 0);
-		break;
+		case INDIGO_DRIVER_INIT:
+			last_action = action;
+			if (indigo_driver_initialized(CONFLICTING_DRIVER)) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "Conflicting driver %s is already loaded", CONFLICTING_DRIVER);
+				last_action = INDIGO_DRIVER_SHUTDOWN;
+				return INDIGO_FAILED;
+			}
+			create_port_device(0, 0);
+			break;
 
-	case INDIGO_DRIVER_SHUTDOWN:
-		if (at_least_one_device_connected() == true) return INDIGO_BUSY;
-		last_action = action;
-		for (int index = 0; index < MAX_LOGICAL_DEVICES; index++) {
-			delete_port_device(0, index);
-		}
-		break;
+		case INDIGO_DRIVER_SHUTDOWN:
+			if (at_least_one_device_connected() == true) return INDIGO_BUSY;
+			last_action = action;
+			for (int index = 0; index < MAX_LOGICAL_DEVICES; index++) {
+				delete_port_device(0, index);
+			}
+			break;
 
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

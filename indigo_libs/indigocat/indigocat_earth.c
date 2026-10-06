@@ -1,4 +1,5 @@
-// Created by Rumen Bogdanovski, 2022
+// Copyright (c) 2022-2025 Rumen G. Bogdanovski
+// All rights reserved.
 //
 // THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
 // OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -12,7 +13,7 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
-//	Created by Rumen Bogdanovski, based on Liam Girdwood's code.
+//	Created by Rumen G. Bogdanovski, based on Liam Girdwood's code.
 //
 //  Some functions in this file use the VSOP87 solution by
 //  Messrs. Bretagnon and Francou.
@@ -40,6 +41,10 @@
 #define RADIUS_R3 20
 #define RADIUS_R4 9
 #define RADIUS_R5 2
+
+#if defined(INDIGO_WINDOWS)
+#pragma warning(disable:4305)
+#endif
 
 static const struct vsop earth_longitude_l0[LONG_L0] = {
     {     1.75347045673,  0.00000000000,        0.00000000000},

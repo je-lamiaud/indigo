@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // Thanks to Gene Nolan and Leon Palmer for their support.
@@ -24,7 +24,7 @@
  \file indigo_focuser_nstep.c
  */
 
-#define DRIVER_VERSION 0x0006
+#define DRIVER_VERSION 0x02000006
 #define DRIVER_NAME "indigo_focuser_nstep"
 
 #include <stdlib.h>
@@ -89,14 +89,16 @@ static indigo_result focuser_attach(indigo_device *device) {
 	assert(PRIVATE_DATA != NULL);
 	if (indigo_focuser_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		X_FOCUSER_STEPPING_MODE_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_FOCUSER_STEPPING_MODE", FOCUSER_MAIN_GROUP, "Stepping mode", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 3);
-		if (X_FOCUSER_STEPPING_MODE_PROPERTY == NULL)
+		if (X_FOCUSER_STEPPING_MODE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_FOCUSER_STEPPING_MODE_WAVE_ITEM, "WAVE", "Wave", false);
 		indigo_init_switch_item(X_FOCUSER_STEPPING_MODE_HALF_ITEM, "HALF", "Half", false);
 		indigo_init_switch_item(X_FOCUSER_STEPPING_MODE_FULL_ITEM, "FULL", "Full", true);
 		X_FOCUSER_PHASE_WIRING_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_FOCUSER_PHASE_WIRING", FOCUSER_MAIN_GROUP, "Phase wiring", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 3);
-		if (X_FOCUSER_PHASE_WIRING_PROPERTY == NULL)
+		if (X_FOCUSER_PHASE_WIRING_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_FOCUSER_PHASE_WIRING_0_ITEM, "0", "0", true);
 		indigo_init_switch_item(X_FOCUSER_PHASE_WIRING_1_ITEM, "1", "1", false);
 		indigo_init_switch_item(X_FOCUSER_PHASE_WIRING_2_ITEM, "2", "2", false);
@@ -108,10 +110,11 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -142,7 +145,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_POSITION_PROPERTY->perm = INDIGO_RO_PERM;
 
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return focuser_enumerate_properties(device, NULL, NULL);
@@ -152,10 +155,10 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_FOCUSER_STEPPING_MODE_PROPERTY);
-		indigo_define_matching_property(X_FOCUSER_PHASE_WIRING_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_STEPPING_MODE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_PHASE_WIRING_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static void focuser_timer_callback(indigo_device *device) {
@@ -246,10 +249,11 @@ static void focuser_connection_handler(indigo_device *device) {
 					if (nstep_command(device, ":RB", response, 3)) {
 						ts = atoi(response);
 					}
-					if (tt == 0)
+					if (tt == 0) {
 						FOCUSER_COMPENSATION_ITEM->number.value = 0;
-					else
+					} else {
 						FOCUSER_COMPENSATION_ITEM->number.value = ts / tt;
+					}
 					FOCUSER_MODE_PROPERTY->hidden = false;
 					if (nstep_command(device, ":RG", response, 1)) {
 						indigo_set_switch(FOCUSER_MODE_PROPERTY, *response == '2' ? FOCUSER_MODE_AUTOMATIC_ITEM : FOCUSER_MODE_MANUAL_ITEM, true);
@@ -362,12 +366,13 @@ static void focuser_abort_handler(indigo_device *device) {
 static void focuser_phase_wiring_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[16];
-	if (X_FOCUSER_PHASE_WIRING_1_ITEM->sw.value)
+	if (X_FOCUSER_PHASE_WIRING_1_ITEM->sw.value) {
 		strcpy(command, ":CW1#");
-	else if (X_FOCUSER_PHASE_WIRING_2_ITEM->sw.value)
+	} else if (X_FOCUSER_PHASE_WIRING_2_ITEM->sw.value) {
 		strcpy(command, ":CW2#");
-	else
+	} else {
 		strcpy(command, ":CW0#");
+	}
 	if (nstep_command(device, command, NULL, 0)) {
 		X_FOCUSER_PHASE_WIRING_PROPERTY->state = INDIGO_OK_STATE;
 	} else {
@@ -397,10 +402,11 @@ static void focuser_mode_handler(indigo_device *device) {
 static void focuser_compensation_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[16];
-	if (FOCUSER_COMPENSATION_ITEM->number.value > 0)
+	if (FOCUSER_COMPENSATION_ITEM->number.value > 0) {
 		sprintf(command, ":TT+010#:TS%03d#", (int)FOCUSER_COMPENSATION_ITEM->number.value);
-	else
+	} else {
 		sprintf(command, ":TT-010#:TS%03d#", (int)FOCUSER_COMPENSATION_ITEM->number.value);
+	}
 	if (nstep_command(device, command, NULL, 0)) {
 		FOCUSER_COMPENSATION_PROPERTY->state = INDIGO_OK_STATE;
 	} else {
@@ -524,8 +530,9 @@ indigo_result indigo_focuser_nstep(indigo_driver_action action, indigo_driver_in
 
 	SET_DRIVER_INFO(info, "Rigel Systems nSTEP Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Rumen G. Bogdanovski
+// Copyright (C) 2020-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** INDIGO Lunatico Armadillo, Platypus etc. focuser driver
  \file lunatico_shared.c
@@ -37,14 +37,8 @@
 #include <stdbool.h>
 #include <sys/time.h>
 
-#if defined(INDIGO_FREEBSD)
-#include <libusb.h>
-#else
-#include <libusb-1.0/libusb.h>
-#endif
-
 #include <indigo/indigo_driver_xml.h>
-
+#include <indigo/indigo_usb_utils.h>
 #include <indigo/indigo_io.h>
 #include <indigo/indigo_client.h>
 #include <indigo/indigo_aux_driver.h>
@@ -187,6 +181,7 @@ typedef struct {
 	    temperature_sensor_index;
 	device_type_t device_type;
 	double r_target_position, r_current_position, prev_temp;
+	bool has_temperature_sensor;
 	indigo_timer *focuser_timer;
 	indigo_timer *rotator_timer;
 	indigo_timer *temperature_timer;
@@ -765,9 +760,10 @@ static int lunatico_init_properties(indigo_device *device) {
 	DEVICE_PORT_PROPERTY->hidden = false;
 	// -------------------------------------------------------------------------------- DEVICE_PORTS
 	DEVICE_PORTS_PROPERTY->hidden = false;
+	indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 	// -------------------------------------------------------------------------------- DEVICE_BAUDRATE
 	DEVICE_BAUDRATE_PROPERTY->hidden = false;
-	indigo_copy_value(DEVICE_BAUDRATE_ITEM->text.value, DEFAULT_BAUDRATE);
+	INDIGO_COPY_VALUE(DEVICE_BAUDRATE_ITEM->text.value, DEFAULT_BAUDRATE);
 	// --------------------------------------------------------------------------------
 	INFO_PROPERTY->count = 6;
 	// --------------------------------------------------------------------------------
@@ -880,19 +876,19 @@ static int lunatico_init_properties(indigo_device *device) {
 
 static indigo_result lunatico_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (DEVICE_CONNECTED) {
-		indigo_define_matching_property(LA_STEP_MODE_PROPERTY);
-		indigo_define_matching_property(LA_POWER_CONTROL_PROPERTY);
-		indigo_define_matching_property(LA_TEMPERATURE_SENSOR_PROPERTY);
-		indigo_define_matching_property(LA_WIRING_PROPERTY);
-		indigo_define_matching_property(LA_MOTOR_TYPE_PROPERTY);
-		indigo_define_matching_property(AUX_POWER_OUTLET_PROPERTY);
-		indigo_define_matching_property(AUX_GPIO_SENSORS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(LA_STEP_MODE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(LA_POWER_CONTROL_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(LA_TEMPERATURE_SENSOR_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(LA_WIRING_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(LA_MOTOR_TYPE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_POWER_OUTLET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_GPIO_SENSORS_PROPERTY);
 	}
-	indigo_define_matching_property(LA_MODEL_PROPERTY);
-	indigo_define_matching_property(LA_PORT_EXP_CONFIG_PROPERTY);
-	indigo_define_matching_property(LA_PORT_THIRD_CONFIG_PROPERTY);
-	indigo_define_matching_property(AUX_OUTLET_NAMES_PROPERTY);
-	indigo_define_matching_property(AUX_SENSOR_NAMES_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(LA_MODEL_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(LA_PORT_EXP_CONFIG_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(LA_PORT_THIRD_CONFIG_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_OUTLET_NAMES_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_SENSOR_NAMES_PROPERTY);
 	return INDIGO_OK;
 }
 
@@ -901,8 +897,8 @@ static void lunatico_init_device(indigo_device *device) {
 	char board[LUNATICO_CMD_LEN] = "N/A";
 	char firmware[LUNATICO_CMD_LEN] = "N/A";
 	if (lunatico_get_info(device, board, firmware)) {
-		indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, board);
-		indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, board);
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
 		indigo_update_property(device, INFO_PROPERTY, NULL);
 	}
 
@@ -1105,7 +1101,7 @@ static indigo_result lunatico_common_update_property(indigo_device *device, indi
 		}
 		indigo_update_property(device, LA_MOTOR_TYPE_PROPERTY, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			lunatico_save_properties(device);
@@ -1184,7 +1180,7 @@ static bool set_power_outlets(indigo_device *device) {
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	lunatico_enumerate_properties(device, client, property);
-	return indigo_aux_enumerate_properties(device, NULL, NULL);
+	return indigo_aux_enumerate_properties(device, client, property);
 }
 
 
@@ -1207,8 +1203,8 @@ static void handle_aux_connect_property(indigo_device *device) {
 				char board[LUNATICO_CMD_LEN] = "N/A";
 				char firmware[LUNATICO_CMD_LEN] = "N/A";
 				if (lunatico_get_info(device, board, firmware)) {
-					indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, board);
-					indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
+					INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, board);
+					INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
 					indigo_update_property(device, INFO_PROPERTY, NULL);
 				}
 				indigo_define_property(device, AUX_POWER_OUTLET_PROPERTY, NULL);
@@ -1380,7 +1376,7 @@ static void rotator_timer_callback(indigo_device *device) {
 
 static indigo_result rotator_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	lunatico_enumerate_properties(device, client, property);
-	return indigo_rotator_enumerate_properties(device, NULL, NULL);
+	return indigo_rotator_enumerate_properties(device, client, property);
 }
 
 
@@ -1696,7 +1692,7 @@ static indigo_result rotator_change_property(indigo_device *device, indigo_clien
 
 		indigo_update_property(device, ROTATOR_STEPS_PER_REVOLUTION_PROPERTY, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, ROTATOR_DIRECTION_PROPERTY);
@@ -1757,7 +1753,6 @@ static void focuser_timer_callback(indigo_device *device) {
 
 static void temperature_timer_callback(indigo_device *device) {
 	double temp;
-	static bool has_sensor = true;
 
 	FOCUSER_TEMPERATURE_PROPERTY->state = INDIGO_OK_STATE;
 	if (!lunatico_get_temperature(device, PORT_DATA.temperature_sensor_index, &temp)) {
@@ -1770,13 +1765,13 @@ static void temperature_timer_callback(indigo_device *device) {
 
 	if (FOCUSER_TEMPERATURE_ITEM->number.value <= NO_TEMP_READING) { /* -127 is returned when the sensor is not connected */
 		FOCUSER_TEMPERATURE_PROPERTY->state = INDIGO_IDLE_STATE;
-		if (has_sensor) {
+		if (PORT_DATA.has_temperature_sensor) {
 			INDIGO_DRIVER_LOG(DRIVER_NAME, "The temperature sensor is not connected.");
 			indigo_update_property(device, FOCUSER_TEMPERATURE_PROPERTY, "The temperature sensor is not connected.");
-			has_sensor = false;
+			PORT_DATA.has_temperature_sensor = false;
 		}
 	} else {
-		has_sensor = true;
+		PORT_DATA.has_temperature_sensor = true;
 		indigo_update_property(device, FOCUSER_TEMPERATURE_PROPERTY, NULL);
 	}
 	if (FOCUSER_MODE_AUTOMATIC_ITEM->sw.value) {
@@ -1848,7 +1843,7 @@ static void compensate_focus(indigo_device *device, double new_temp) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	lunatico_enumerate_properties(device, client, property);
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 
@@ -1948,6 +1943,7 @@ static void handle_focuser_connect_property(indigo_device *device) {
 
 				lunatico_get_temperature(device, 0, &FOCUSER_TEMPERATURE_ITEM->number.value);
 				PORT_DATA.prev_temp = FOCUSER_TEMPERATURE_ITEM->number.value;
+				PORT_DATA.has_temperature_sensor = true;
 				indigo_set_timer(device, 1, temperature_timer_callback, &PORT_DATA.temperature_timer);
 
 				CONNECTION_PROPERTY->state = INDIGO_OK_STATE;

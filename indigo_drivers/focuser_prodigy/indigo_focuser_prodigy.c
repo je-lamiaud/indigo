@@ -1,4 +1,4 @@
-// Copyright (c) 2022 CloudMakers, s. r. o.
+// Copyright (c) 2022-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_focuser_prodigy.c
  */
 
-#define DRIVER_VERSION 0x0002
+#define DRIVER_VERSION 0x02000002
 #define DRIVER_NAME "indigo_focuser_prodigy"
 
 #include <stdlib.h>
@@ -110,16 +110,18 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_BACKLASH_ITEM->number.target = FOCUSER_BACKLASH_ITEM->number.value = 100;
 		// -------------------------------------------------------------------------------- X_FOCUSER_PARK
 		X_FOCUSER_PARK_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_FOCUSER_PARK", FOCUSER_MAIN_GROUP, "Park", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 1);
-		if (X_FOCUSER_PARK_PROPERTY == NULL)
+		if (X_FOCUSER_PARK_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_FOCUSER_PARK_ITEM, "PARK", "Park", false);
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (strstr(DEVICE_PORTS_PROPERTY->items[i].name, "usbserial")) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -129,8 +131,8 @@ static indigo_result focuser_attach(indigo_device *device) {
 #endif
 		// -------------------------------------------------------------------------------- INFO
 		INFO_PROPERTY->count = 6;
-		strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "Undefined");
-		strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Undefined");
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Undefined");
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Undefined");
 		// -------------------------------------------------------------------------------- FOCUSER_REVERSE_MOTION
 		//FOCUSER_REVERSE_MOTION_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- FOCUSER_TEMPERATURE
@@ -152,7 +154,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_POSITION_ITEM->number.max = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target = FOCUSER_LIMITS_MIN_POSITION_ITEM->number.max = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.max = 999999;
 		FOCUSER_POSITION_ITEM->number.step = 1;
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return focuser_enumerate_properties(device, NULL, NULL);
@@ -162,9 +164,9 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_FOCUSER_PARK_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_PARK_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static void focuser_timer_callback(indigo_device *device) {
@@ -231,10 +233,10 @@ static void focuser_connection_handler(indigo_device *device) {
 		if (PRIVATE_DATA->handle > 0) {
 			if (prodigy_command(device, "A", response, sizeof(response)) && !strncmp(response, "OK_", 3)) {
 				char *pnt, *token = strtok_r(response, ":", &pnt);
-				strcpy(INFO_DEVICE_MODEL_ITEM->text.value, token + 3);
+				INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, token + 3);
 				token = strtok_r(NULL, ":", &pnt); // status
 				if (token) { // version
-					strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, token);
+					INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, token);
 				}
 				token = strtok_r(NULL, ":", &pnt); // motor
 				token = strtok_r(NULL, ":", &pnt);
@@ -279,8 +281,8 @@ static void focuser_connection_handler(indigo_device *device) {
 			indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		}
 	} else {
-		strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "Undefined");
-		strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Undefined");
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Undefined");
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Undefined");
 		indigo_update_property(device, INFO_PROPERTY, NULL);
 		indigo_delete_property(device, X_FOCUSER_PARK_PROPERTY, NULL);
 		if (--PRIVATE_DATA->count == 0) {
@@ -499,36 +501,41 @@ static indigo_result aux_attach(indigo_device *device) {
 		INFO_PROPERTY->count = 4;
 		// -------------------------------------------------------------------------------- OUTLET_NAMES
 		AUX_OUTLET_NAMES_PROPERTY = indigo_init_text_property(NULL, device->name, AUX_OUTLET_NAMES_PROPERTY_NAME, AUX_GROUP, "Outlet names", INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
-		if (AUX_OUTLET_NAMES_PROPERTY == NULL)
+		if (AUX_OUTLET_NAMES_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_text_item(AUX_POWER_OUTLET_NAME_1_ITEM, AUX_POWER_OUTLET_NAME_1_ITEM_NAME, "Outlet #1", "Outlet #1");
 		indigo_init_text_item(AUX_POWER_OUTLET_NAME_2_ITEM, AUX_POWER_OUTLET_NAME_2_ITEM_NAME, "Outlet #2", "Outlet #2");
 		indigo_init_text_item(AUX_USB_PORT_NAME_1_ITEM, AUX_USB_PORT_NAME_1_ITEM_NAME, "Port #1", "Port #1");
 		indigo_init_text_item(AUX_USB_PORT_NAME_2_ITEM, AUX_USB_PORT_NAME_2_ITEM_NAME, "Port #2", "Port #2");
 		// -------------------------------------------------------------------------------- POWER OUTLETS
 		AUX_POWER_OUTLET_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_POWER_OUTLET_PROPERTY_NAME, AUX_GROUP, "Power outlets", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 2);
-		if (AUX_POWER_OUTLET_PROPERTY == NULL)
+		if (AUX_POWER_OUTLET_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(AUX_POWER_OUTLET_1_ITEM, AUX_POWER_OUTLET_1_ITEM_NAME, "Outlet #1", true);
 		indigo_init_switch_item(AUX_POWER_OUTLET_2_ITEM, AUX_POWER_OUTLET_2_ITEM_NAME, "Outlet #2", true);
 		// -------------------------------------------------------------------------------- USB PORTS
 		AUX_USB_PORT_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_USB_PORT_PROPERTY_NAME, AUX_GROUP, "USB ports", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 2);
-		if (AUX_USB_PORT_PROPERTY == NULL)
+		if (AUX_USB_PORT_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(AUX_USB_PORT_1_ITEM, AUX_USB_PORT_1_ITEM_NAME, "Port #1", true);
 		indigo_init_switch_item(AUX_USB_PORT_2_ITEM, AUX_USB_PORT_2_ITEM_NAME, "Port #2", true);
 		// -------------------------------------------------------------------------------- X_AUX_REBOOT
 		X_AUX_REBOOT_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_AUX_REBOOT", AUX_GROUP, "Reboot", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 1);
-		if (X_AUX_REBOOT_PROPERTY == NULL)
+		if (X_AUX_REBOOT_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_AUX_REBOOT_ITEM, "REBOOT", "Reboot", false);
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (strstr(DEVICE_PORTS_PROPERTY->items[i].name, "usbserial")) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -546,12 +553,12 @@ static indigo_result aux_attach(indigo_device *device) {
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(AUX_POWER_OUTLET_PROPERTY);
-		indigo_define_matching_property(AUX_USB_PORT_PROPERTY);
-		indigo_define_matching_property(X_AUX_REBOOT_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_POWER_OUTLET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_USB_PORT_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_AUX_REBOOT_PROPERTY);
 	}
-	indigo_define_matching_property(AUX_OUTLET_NAMES_PROPERTY);
-	return indigo_aux_enumerate_properties(device, NULL, NULL);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_OUTLET_NAMES_PROPERTY);
+	return indigo_aux_enumerate_properties(device, client, property);
 }
 
 static void aux_connection_handler(indigo_device *device) {
@@ -710,7 +717,7 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 		indigo_set_timer(device, 0, aux_reboot_handler, NULL);
 		return INDIGO_OK;
 		// -------------------------------------------------------------------------------- CONFIG
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, AUX_OUTLET_NAMES_PROPERTY);
 		}
@@ -762,8 +769,9 @@ indigo_result indigo_focuser_prodigy(indigo_driver_action action, indigo_driver_
 
 	SET_DRIVER_INFO(info, "PegasusAstro Prodigy Microfocuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

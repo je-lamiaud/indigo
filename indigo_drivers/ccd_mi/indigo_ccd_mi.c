@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_ccd_mi.c
  */
 
-#define DRIVER_VERSION 0x001C
+#define DRIVER_VERSION 0x0200001D
 #define DRIVER_NAME "indigo_ccd_mi"
 
 #include <ctype.h>
@@ -39,12 +39,6 @@
 #include <indigo/indigo_driver_xml.h>
 
 #include "indigo_ccd_mi.h"
-
-#if defined(INDIGO_FREEBSD)
-#include <libusb.h>
-#else
-#include <libusb-1.0/libusb.h>
-#endif
 
 #include <gxccd.h>
 
@@ -217,12 +211,14 @@ static void ccd_connect_callback(indigo_device *device) {
 			CCD_BIN_VERTICAL_ITEM->number.max = CCD_INFO_MAX_VERTICAL_BIN_ITEM->number.value = int_value;
 			gxccd_get_integer_parameter(PRIVATE_DATA->camera, GIP_MINIMAL_EXPOSURE, &int_value);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "gxccd_get_integer_parameter(..., GIP_MINIMAL_EXPOSURE, -> %d)", int_value);
-			if (int_value > 0)
+			if (int_value > 0) {
 				CCD_EXPOSURE_ITEM->number.min = int_value / 1000000.0;
+			}
 			gxccd_get_integer_parameter(PRIVATE_DATA->camera, GIP_MAXIMAL_EXPOSURE, &int_value);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "gxccd_get_integer_parameter(..., GIP_MAXIMAL_EXPOSURE, -> %d)", int_value);
-			if (int_value > 0)
+			if (int_value > 0) {
 				CCD_EXPOSURE_ITEM->number.max = int_value / 1000.0;
+			}
 
 			int_value = 1;
 			CCD_MODE_PROPERTY->count = 0;
@@ -251,7 +247,7 @@ static void ccd_connect_callback(indigo_device *device) {
 				CCD_READ_MODE_PROPERTY = indigo_resize_property(CCD_READ_MODE_PROPERTY, int_value);
 				CCD_READ_MODE_PROPERTY->hidden = false;
 				gxccd_get_integer_parameter(PRIVATE_DATA->camera, GIP_DEFAULT_READ_MODE, &PRIVATE_DATA->read_mode);
-				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "gxccd_get_integer_parameter(..., GIP_DEFAULT_READ_MODE, -> %d)", int_value);
+				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "gxccd_get_integer_parameter(..., GIP_DEFAULT_READ_MODE, -> %d)", PRIVATE_DATA->read_mode);
 				char name[32], description[32];
 				for (int i = 0; i < int_value; i++) {
 					gxccd_enumerate_read_modes(PRIVATE_DATA->camera, i, description, sizeof(description));
@@ -265,7 +261,6 @@ static void ccd_connect_callback(indigo_device *device) {
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "gxccd_get_boolean_parameter(..., GBP_COOLER, -> %d)", bool_value);
 			if (bool_value) {
 				CCD_COOLER_PROPERTY->hidden = false;
-				float float_value;
 				int state = gxccd_get_value(PRIVATE_DATA->camera, GV_POWER_UTILIZATION, &float_value);
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "gxccd_get_value(..., GV_POWER_UTILIZATION, -> %g) -> %d", float_value, state);
 				if (float_value == 0) { // initial cooler state is guessed from the cooler power
@@ -273,7 +268,7 @@ static void ccd_connect_callback(indigo_device *device) {
 					CCD_TEMPERATURE_ITEM->number.value = TEMP_COOLER_OFF;
 					indigo_set_switch(CCD_COOLER_PROPERTY, CCD_COOLER_OFF_ITEM, true);
 				} else {
-					int state = gxccd_get_value(PRIVATE_DATA->camera, GV_CHIP_TEMPERATURE, &float_value);
+					state = gxccd_get_value(PRIVATE_DATA->camera, GV_CHIP_TEMPERATURE, &float_value);
 					INDIGO_DRIVER_DEBUG(DRIVER_NAME, "gxccd_get_value(..., GV_CHIP_TEMPERATURE, -> %g) -> %d", float_value, state);
 					PRIVATE_DATA->target_temperature = float_value;  // initial target is set to the current temperature
 					indigo_set_switch(CCD_COOLER_PROPERTY, CCD_COOLER_ON_ITEM, true);
@@ -364,8 +359,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(CCD_EXPOSURE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CCD_EXPOSURE
-		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE) {
 			return INDIGO_OK;
+		}
 		indigo_property_copy_values(CCD_EXPOSURE_PROPERTY, property, false);
 		indigo_use_shortest_exposure_if_bias(device);
 		if (CCD_UPLOAD_MODE_LOCAL_ITEM->sw.value || CCD_UPLOAD_MODE_BOTH_ITEM->sw.value) {
@@ -394,9 +390,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 			state = gxccd_start_exposure(PRIVATE_DATA->camera, CCD_EXPOSURE_ITEM->number.target, !(CCD_FRAME_TYPE_DARK_ITEM->sw.value || CCD_FRAME_TYPE_DARKFLAT_ITEM->sw.value || CCD_FRAME_TYPE_BIAS_ITEM->sw.value), left, top, width, height);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "gxccd_start_exposure(..., %g, %d, %d, %d, %d, %d) -> %d", CCD_EXPOSURE_ITEM->number.target, !(CCD_FRAME_TYPE_DARK_ITEM->sw.value || CCD_FRAME_TYPE_DARKFLAT_ITEM->sw.value || CCD_FRAME_TYPE_BIAS_ITEM->sw.value), left, top, width, height, state);
 		}
-		if (state != -1)
+		if (state != -1) {
 			indigo_set_timer(device, CCD_EXPOSURE_ITEM->number.target, exposure_timer_callback, &PRIVATE_DATA->exposure_timer);
-		else {
+		} else {
 			mi_report_error(device, CCD_EXPOSURE_PROPERTY);
 			return INDIGO_OK;
 		}
@@ -872,12 +868,13 @@ static libusb_hotplug_callback_handle callback_handle;
 
 indigo_result indigo_ccd_mi(indigo_driver_action action, indigo_driver_info *info) {
 	static indigo_driver_action last_action = INDIGO_DRIVER_SHUTDOWN;
-	
+
 	SET_DRIVER_INFO(info, "Moravian Instruments Camera", __FUNCTION__, DRIVER_VERSION, true, last_action);
-	
-	if (action == last_action)
+
+	if (action == last_action) {
 		return INDIGO_OK;
-	
+	}
+
 	switch(action) {
 		case INDIGO_DRIVER_INIT:
 			last_action = action;
@@ -888,14 +885,15 @@ indigo_result indigo_ccd_mi(indigo_driver_action action, indigo_driver_info *inf
 			int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, MI_VID, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
 			return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
-			
+
 		case INDIGO_DRIVER_SHUTDOWN:
-			for (int i = 0; i < MAX_DEVICES; i++)
+			for (int i = 0; i < MAX_DEVICES; i++) {
 				VERIFY_NOT_CONNECTED(devices[i]);
+			}
 			last_action = action;
 			libusb_hotplug_deregister_callback(NULL, callback_handle);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
-			
+
 			for (int i = MAX_DEVICES - 1; i >=0; i--) {
 				indigo_device *device = devices[i];
 				if (device) {
@@ -911,12 +909,12 @@ indigo_result indigo_ccd_mi(indigo_driver_action action, indigo_driver_info *inf
 					devices[i] = NULL;
 				}
 			}
-			
+
 			break;
-			
+
 		case INDIGO_DRIVER_INFO:
 			break;
 	}
-	
+
 	return INDIGO_OK;
 }

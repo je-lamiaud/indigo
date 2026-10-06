@@ -7,8 +7,8 @@ here is the suggested procedure.
 --> EFWGetNum
 --> EFWGetID for each filter wheel
 
---> EFWGetProperty
 --> EFWOpen
+--> EFWGetProperty
 --> EFWGetPosition
 --> EFWSetPosition
 	...
@@ -34,6 +34,10 @@ typedef struct _EFW_INFO
 	int slotNum;
 } EFW_INFO;
 
+typedef struct _EFW_HID_FILE_BUF {
+	int buffer_size;
+	char buf[55];
+}EFW_HID_FILE_BUFF;
 
 typedef enum _EFW_ERROR_CODE{
 	EFW_SUCCESS = 0,
@@ -45,6 +49,8 @@ typedef enum _EFW_ERROR_CODE{
 	EFW_ERROR_ERROR_STATE,//filter wheel is in error state
 	EFW_ERROR_GENERAL_ERROR,//other error
 	EFW_ERROR_NOT_SUPPORTED,
+	EFW_ERROR_INVALID_LENGTH,
+	EFW_ERROR_USB_UPGRADE_FAILED,
 	EFW_ERROR_CLOSED,
 	EFW_ERROR_END = -1
 }EFW_ERROR_CODE;
@@ -76,8 +82,22 @@ Paras:
 int* pPIDs: pointer to array of PIDs
 
 Return: length of the array.
+
+Note: This api will be deprecated. Please use EFWCheck instead
 ***************************************************************************/
 EFW_API int EFWGetProductIDs(int* pPIDs);
+
+/***************************************************************************
+Descriptions:
+Check if the device is EFW
+
+Paras:
+int iVID: VID is 0x03C3 for EFW
+int iPID: PID of the device
+
+Return: If the device is EFW, return 1, otherwise return 0
+***************************************************************************/
+EFW_API int EFWCheck(int iVID, int iPID);
 
 /***************************************************************************
 Descriptions:
@@ -237,8 +257,51 @@ EFW_API	EFW_ERROR_CODE EFWClose(int ID);
 Descriptions:
 get version string, like "0, 4, 0824"
 ***************************************************************************/
-EFW_API char* EFWGetSDKVersion();
+EFW_API const char* EFWGetSDKVersion();
 
+/***************************************************************************
+Descriptions:
+This interface serves as the starting point for the USB firmware upgrade process.
+Paras:
+int ID: connect device id.
+
+Return: 
+EFW_SUCCESS
+EFW_ERROR_INVALID_ID
+EFW_ERROR_REMOVED
+EFW_ERROR_NOT_SUPPORTED
+EFW_ERROR_ERROR_STATE
+***************************************************************************/
+EFW_API EFW_ERROR_CODE EFWHidStartUpdate(int ID);
+/***************************************************************************
+Descriptions:
+This interface is for sending the upgrade firmware. After it is activated, only firmware files can be sent and all other interfaces will be disabled.
+Paras:
+int ID: connect device id.
+EFW_HID_FILE_BUFF stuFileBuf: Structure for upgrade file package and byte size
+
+Note: Each package can contain a maximum of 11 bytes.
+
+Return: 
+EFW_SUCCESS
+EFW_ERROR_GENERAL_ERROR
+EFW_ERROR_INVALID_ID
+EFW_ERROR_INVALID_LENGTH
+***************************************************************************/
+EFW_API EFW_ERROR_CODE EFWHidWriteUpdateFile(int ID, EFW_HID_FILE_BUFF stuFileBuf);
+/***************************************************************************
+Descriptions:
+This interface serves as the ending point for the USB firmware upgrade process.
+Paras:
+int ID: connect device id.
+
+Return: 
+EFW_SUCCESS
+EFW_ERROR_INVALID_ID
+EFW_ERROR_REMOVED
+EFW_ERROR_USB_UPGRADE_FAILED
+***************************************************************************/
+EFW_API EFW_ERROR_CODE EFWHidEndUpdate(int ID);
 
 /***************************************************************************
 Descriptions:

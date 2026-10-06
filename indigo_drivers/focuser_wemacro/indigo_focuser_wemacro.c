@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_focuser_wemacro.c
  */
 
-#define DRIVER_VERSION 0x0005
+#define DRIVER_VERSION 0x02000005
 #define DRIVER_NAME "indigo_focuser_wemacro"
 
 #include <stdlib.h>
@@ -80,6 +80,9 @@ static uint8_t wemacro_read(indigo_device *device) {
 	tv.tv_usec = 0;
 	long result = select(PRIVATE_DATA->handle+1, &readout, NULL, NULL, &tv);
 	if (result < 0) {
+		if (PRIVATE_DATA->handle <= 0 || errno == EBADF) {
+			return 0;
+		}
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "select %s -> %s (%d)", DEVICE_PORT_ITEM->text.value, strerror(errno), errno);
 		return 0;
 	}
@@ -106,10 +109,11 @@ static bool wemacro_write(indigo_device *device, uint8_t cmd, uint8_t a, uint8_t
 	for (int i = 0; i < 10; i++) {
 		crc = crc ^ out[i];
 		for (int j = 0; j < 8; j++) {
-			if (crc & 0x0001)
+			if (crc & 0x0001) {
 				crc = (crc >> 1) ^ 0xA001;
-			else
+			} else {
 				crc = crc >> 1;
+			}
 		}
 	}
 	out[10] = crc & 0xFF;
@@ -157,8 +161,9 @@ static char *wemacro_reader(indigo_device *device) {
 					X_RAIL_EXECUTE_COUNT_ITEM->number.value--;
 				}
 				if (X_RAIL_CONFIG_BACK_ITEM->sw.value) {
-					if (state == 0xf6)
+					if (state == 0xf6) {
 						X_RAIL_EXECUTE_PROPERTY->state = INDIGO_OK_STATE;
+					}
 				} else if (X_RAIL_EXECUTE_COUNT_ITEM->number.value == 0) {
 					X_RAIL_EXECUTE_PROPERTY->state = INDIGO_OK_STATE;
 				}
@@ -178,25 +183,29 @@ static indigo_result focuser_attach(indigo_device *device) {
 	if (indigo_focuser_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 		FOCUSER_REVERSE_MOTION_PROPERTY->hidden = false;
 		FOCUSER_POSITION_PROPERTY->hidden = true;
 		FOCUSER_SPEED_ITEM->number.value = FOCUSER_SPEED_ITEM->number.target = 1;
 		FOCUSER_SPEED_ITEM->number.max = 2;
 		// -------------------------------------------------------------------------------- X_RAIL_CONFIG
 		X_RAIL_CONFIG_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_RAIL_CONFIG", X_RAIL_BATCH, "Set configuration", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 2);
-		if (X_RAIL_CONFIG_PROPERTY == NULL)
+		if (X_RAIL_CONFIG_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_RAIL_CONFIG_BACK_ITEM, "BACK", "Return back when done", false);
 		indigo_init_switch_item(X_RAIL_CONFIG_BEEP_ITEM, "BEEP", "Beep when done", false);
 		// -------------------------------------------------------------------------------- X_RAIL_SHUTTER
 		X_RAIL_SHUTTER_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_RAIL_SHUTTER", X_RAIL_BATCH, "Fire shutter", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 1);
-		if (X_RAIL_SHUTTER_PROPERTY == NULL)
+		if (X_RAIL_SHUTTER_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_RAIL_SHUTTER_ITEM, "SHUTTER", "Fire shutter", false);
 		// -------------------------------------------------------------------------------- X_RAIL_EXECUTE
 		X_RAIL_EXECUTE_PROPERTY = indigo_init_number_property(NULL, device->name, "X_RAIL_EXECUTE", X_RAIL_BATCH, "Execute batch", INDIGO_OK_STATE, INDIGO_RW_PERM, 5);
-		if (X_RAIL_EXECUTE_PROPERTY == NULL)
+		if (X_RAIL_EXECUTE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_RAIL_EXECUTE_SETTLE_TIME_ITEM, "SETTLE_TIME", "Settle time", 0, 99, 1, 1);
 		indigo_init_number_item(X_RAIL_EXECUTE_PER_STEP_ITEM, "SHUTTER_PER_STEP", "Shutter per step", 1, 9, 1, 1);
 		indigo_init_number_item(X_RAIL_EXECUTE_INTERVAL_ITEM, "SHUTTER_INTERVAL", "Shutter interval", 1, 99, 1, 1);
@@ -212,11 +221,11 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_RAIL_CONFIG_PROPERTY);
-		indigo_define_matching_property(X_RAIL_SHUTTER_PROPERTY);
-		indigo_define_matching_property(X_RAIL_EXECUTE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_RAIL_CONFIG_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_RAIL_SHUTTER_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_RAIL_EXECUTE_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static void focuser_connect_callback(indigo_device *device) {
@@ -325,7 +334,7 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 		X_RAIL_EXECUTE_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, X_RAIL_EXECUTE_PROPERTY, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, X_RAIL_CONFIG_PROPERTY);
@@ -372,8 +381,9 @@ indigo_result indigo_focuser_wemacro(indigo_driver_action action, indigo_driver_
 
 	SET_DRIVER_INFO(info, FOCUSER_WEMACRO_NAME, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

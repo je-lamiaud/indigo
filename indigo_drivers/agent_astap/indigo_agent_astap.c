@@ -1,4 +1,4 @@
-// Copyright (c) 2021 CloudMakers, s. r. o.
+// Copyright (c) 2021-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_agent_astap.c
  */
 
-#define DRIVER_VERSION 0x0009
+#define DRIVER_VERSION 0x0200000A
 #define DRIVER_NAME	"indigo_agent_astap"
 
 #include <stdio.h>
@@ -266,8 +266,9 @@ extern char **environ;
 
 static void parse_line(indigo_device *device, char *line) {
 	char *s = strchr(line, '\n');
-	if (s)
+	if (s) {
 		*s = 0;
+	}
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "< %s", line);
 	if ((s = strstr(line, "PLTSOLVD="))) {
 		INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->failed = s[9] != 'T';
@@ -300,16 +301,14 @@ static void parse_line(indigo_device *device, char *line) {
 		AGENT_PLATESOLVER_WCS_HEIGHT_ITEM->number.value = ASTAP_DEVICE_PRIVATE_DATA->frame_height * AGENT_PLATESOLVER_WCS_SCALE_ITEM->number.value;
 		AGENT_PLATESOLVER_WCS_PARITY_ITEM->number.value = AGENT_PLATESOLVER_WCS_PARITY_ITEM->number.value * (d >= 0 ? 1 : -1);
 	} else if ((s = strstr(line, "ERROR="))) {
-		indigo_send_message(device, s + 6);
-		indigo_error("ASTAP Error: %s", s + 8);
+		indigo_send_message(device, ALERT_PROPERTY, "%s", s + 6);
 	} else if ((s = strstr(line, "WARNING="))) {
-		indigo_send_message(device, s + 8);
-		indigo_error("ASTAP Warning: %s", s + 8);
+		indigo_send_message(device, BUSY_PROPERTY, "%s", s + 8);
 	} else if ((s = strstr(line, "COMMENT="))) {
-		indigo_log("ASTAP Comment: %s", s + 8);
+		indigo_send_message(device, IDLE_PROPERTY, "%s", s + 8);
 	}
 	if ((s = strstr(line, "Solved in "))) {
-		indigo_send_message(device, "Solved in %gs", atof(s + 10));
+		indigo_send_message(device, OK_PROPERTY, "Solved in %gs", atof(s + 10));
 	}
 }
 
@@ -317,7 +316,7 @@ static void time_limit_timer(indigo_device *device) {
 	kill(-ASTAP_DEVICE_PRIVATE_DATA->pid, SIGTERM);
 	ASTAP_DEVICE_PRIVATE_DATA->pid = 0;
 	INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->failed = true;
-	indigo_send_message(device, "Time limit reached!");
+	indigo_send_message(device, ALERT_PROPERTY, "Time limit reached!");
 }
 
 static bool execute_command(indigo_device *device, char *command, ...) {
@@ -329,7 +328,7 @@ static bool execute_command(indigo_device *device, char *command, ...) {
 	
 	ASTAP_DEVICE_PRIVATE_DATA->abort_requested = false;
 	char command_buf[8 * 1024];
-	sprintf(command_buf, "%s 2>&1", buffer);
+	snprintf(command_buf, sizeof(command_buf), "%s 2>&1", buffer);
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "> %s", buffer);
 	int pipe_stdout[2];
 	if (pipe(pipe_stdout)) {
@@ -339,7 +338,7 @@ static bool execute_command(indigo_device *device, char *command, ...) {
 		case -1: {
 			close(pipe_stdout[0]);
 			close(pipe_stdout[1]);
-			indigo_send_message(device, "Failed to execute %s (%s)", command_buf, strerror(errno));
+			indigo_send_message(device, ALERT_PROPERTY, "Failed to execute %s (%s)", command_buf, strerror(errno));
 			return false;
 		}
 		case 0: {
@@ -373,7 +372,7 @@ static bool execute_command(indigo_device *device, char *command, ...) {
 	if (ASTAP_DEVICE_PRIVATE_DATA->abort_requested) {
 		res = false;
 		ASTAP_DEVICE_PRIVATE_DATA->abort_requested = false;
-		indigo_send_message(device, "Aborted");
+		indigo_send_message(device, ALERT_PROPERTY, "Aborted");
 	}
 	return res;
 }
@@ -388,8 +387,10 @@ static void astap_abort(indigo_device *device) {
 	}
 }
 
-static bool astap_solve(indigo_device *device, void *image, unsigned long image_size) {
+static bool astap_solve(indigo_device *device, indigo_platesolver_task *task) {
 	if (pthread_mutex_trylock(&DEVICE_CONTEXT->config_mutex) == 0) {
+		void *image = task->image;
+		unsigned long image_size = task->size;
 		char *ext = "raw";
 		bool use_stdin = false;
 		char *message = "";
@@ -428,9 +429,9 @@ static bool astap_solve(indigo_device *device, void *image, unsigned long image_
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 		char base[512], file[512], ini[512];
-		sprintf(base, "%s/%s_%lX", base_dir, "image", time(0));
-		sprintf(file, "%s.%s", base, ext);
-		sprintf(ini, "%s.ini", base);
+		snprintf(base, sizeof(base), "%s/%s_%lX", base_dir, "image", time(0));
+		snprintf(file, sizeof(file), "%s.%s", base, ext);
+		snprintf(ini, sizeof(ini), "%s.ini", base);
 #pragma clang diagnostic pop
 		int handle = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 		if (handle < 0) {
@@ -443,28 +444,40 @@ static bool astap_solve(indigo_device *device, void *image, unsigned long image_
 		// execute astap plate solver
 		char params[512] = "";
 		int params_index = 0;
-		params_index = sprintf(params, "-z %d", (int)AGENT_PLATESOLVER_HINTS_DOWNSAMPLE_ITEM->number.value);
-		if (AGENT_PLATESOLVER_HINTS_RADIUS_ITEM->number.value > 0) {
-			params_index += sprintf(params + params_index, " -r %g", AGENT_PLATESOLVER_HINTS_RADIUS_ITEM->number.value);
+		int params_avail = (int)sizeof(params);
+		int params_n;
+		params_n = snprintf(params, params_avail, "-z %d", (int)AGENT_PLATESOLVER_HINTS_DOWNSAMPLE_ITEM->number.value);
+		if (params_n > 0 && params_n < params_avail) { params_index += params_n; params_avail -= params_n; }
+		if (AGENT_PLATESOLVER_HINTS_RADIUS_ITEM->number.value > 0 && params_avail > 1) {
+			params_n = snprintf(params + params_index, params_avail, " -r %g", AGENT_PLATESOLVER_HINTS_RADIUS_ITEM->number.value);
+			if (params_n > 0 && params_n < params_avail) { params_index += params_n; params_avail -= params_n; }
 		}
-		if (AGENT_PLATESOLVER_HINTS_RA_ITEM->number.value > 0) {
-			params_index += sprintf(params + params_index, " -ra %g", AGENT_PLATESOLVER_HINTS_RA_ITEM->number.value);
+		if (AGENT_PLATESOLVER_HINTS_RA_ITEM->number.value > 0 && params_avail > 1) {
+			params_n = snprintf(params + params_index, params_avail, " -ra %g", AGENT_PLATESOLVER_HINTS_RA_ITEM->number.value);
+			if (params_n > 0 && params_n < params_avail) { params_index += params_n; params_avail -= params_n; }
 		}
-		if (AGENT_PLATESOLVER_HINTS_DEC_ITEM->number.value > 0) {
-			params_index += sprintf(params + params_index, " -spd %g", AGENT_PLATESOLVER_HINTS_DEC_ITEM->number.value + 90);
+		if (AGENT_PLATESOLVER_HINTS_DEC_ITEM->number.value > 0 && params_avail > 1) {
+			params_n = snprintf(params + params_index, params_avail, " -spd %g", AGENT_PLATESOLVER_HINTS_DEC_ITEM->number.value + 90);
+			if (params_n > 0 && params_n < params_avail) { params_index += params_n; params_avail -= params_n; }
 		}
-		if (AGENT_PLATESOLVER_HINTS_DEPTH_ITEM->number.value > 0) {
-			params_index += sprintf(params + params_index, " -s %d", (int)AGENT_PLATESOLVER_HINTS_DEPTH_ITEM->number.value);
+		if (AGENT_PLATESOLVER_HINTS_DEPTH_ITEM->number.value > 0 && params_avail > 1) {
+			params_n = snprintf(params + params_index, params_avail, " -s %d", (int)AGENT_PLATESOLVER_HINTS_DEPTH_ITEM->number.value);
+			if (params_n > 0 && params_n < params_avail) { params_index += params_n; params_avail -= params_n; }
 		}
-		if (AGENT_PLATESOLVER_HINTS_SCALE_ITEM->number.value > 0 && ASTAP_DEVICE_PRIVATE_DATA->frame_height > 0) {
-			params_index += sprintf(params + params_index, " -fov %.1f", AGENT_PLATESOLVER_HINTS_SCALE_ITEM->number.value * ASTAP_DEVICE_PRIVATE_DATA->frame_height);
-		} else if (AGENT_PLATESOLVER_HINTS_SCALE_ITEM->number.value < 0 && ASTAP_DEVICE_PRIVATE_DATA->frame_height > 0 && INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->pixel_scale > 0) {
-			params_index += sprintf(params + params_index, " -fov %.1f", INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->pixel_scale * ASTAP_DEVICE_PRIVATE_DATA->frame_height);
+		if (AGENT_PLATESOLVER_HINTS_SCALE_ITEM->number.value > 0 && ASTAP_DEVICE_PRIVATE_DATA->frame_height > 0 && params_avail > 1) {
+			params_n = snprintf(params + params_index, params_avail, " -fov %.1f", AGENT_PLATESOLVER_HINTS_SCALE_ITEM->number.value * ASTAP_DEVICE_PRIVATE_DATA->frame_height);
+			if (params_n > 0 && params_n < params_avail) { params_index += params_n; params_avail -= params_n; }
+		} else if (AGENT_PLATESOLVER_HINTS_SCALE_ITEM->number.value < 0 && ASTAP_DEVICE_PRIVATE_DATA->frame_height > 0 && INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->pixel_scale > 0 && params_avail > 1) {
+			params_n = snprintf(params + params_index, params_avail, " -fov %.1f", INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->pixel_scale * ASTAP_DEVICE_PRIVATE_DATA->frame_height);
+			if (params_n > 0 && params_n < params_avail) { params_index += params_n; params_avail -= params_n; }
 		}
 		for (int k = 0; k < AGENT_PLATESOLVER_USE_INDEX_PROPERTY->count; k++) {
 			indigo_item *item = AGENT_PLATESOLVER_USE_INDEX_PROPERTY->items + k;
 			if (item->sw.value) {
-				params_index += sprintf(params + params_index, " -d \"%s/%s\"", base_dir, item->name);
+				if (params_avail > 1) {
+					params_n = snprintf(params + params_index, params_avail, " -d \"%s/%s\"", base_dir, item->name);
+					if (params_n > 0 && params_n < params_avail) { params_index += params_n; params_avail -= params_n; }
+				}
 				AGENT_PLATESOLVER_WCS_INDEX_ITEM->number.value = k;
 				break;
 			}
@@ -498,10 +511,11 @@ static bool astap_solve(indigo_device *device, void *image, unsigned long image_
 	cleanup:
 		/* globs do not work in quotes */
 		execute_command(device, "rm -rf \"%s\"/image_*", base_dir);
-		if (message[0] == '\0')
+		if (message[0] == '\0') {
 			indigo_update_property(device, AGENT_PLATESOLVER_WCS_PROPERTY, NULL);
-		else
+		} else {
 			indigo_update_property(device, AGENT_PLATESOLVER_WCS_PROPERTY, message);
+		}
 		pthread_mutex_unlock(&DEVICE_CONTEXT->config_mutex);
 		return !INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->failed;
 	}
@@ -522,7 +536,7 @@ static void sync_installed_indexes(indigo_device *device, char *dir, indigo_prop
 		for (int j = 0; (name = astap_index[j].name); j++) {
 			if (!strncmp(name, item->name, 4)) {
 				if (item->sw.value) {
-					sprintf(path, "%s/%s", base_dir, astap_index[j].name);
+					snprintf(path, sizeof(path), "%s/%s", base_dir, astap_index[j].name);
 					bool first_one = true;
 					if (access(path, F_OK) != 0) {
 						execute_command(device, "mkdir \"%s\"", path);
@@ -534,7 +548,7 @@ static void sync_installed_indexes(indigo_device *device, char *dir, indigo_prop
 							continue;
 						if (first_one) {
 							first_one = false;
-							indigo_send_message(device, "Downloading %s...", astap_index[j].name);
+							indigo_send_message(device, IDLE_PROPERTY, "Downloading %s...", astap_index[j].name);
 						}
 						snprintf(url, sizeof((path)), astap_index[j].path, INDEX_BASE_URL, files[k]);
 						if (!execute_command(device, "curl -L -s --compressed -o \"%s\" \"%s\"", path, url)) {
@@ -552,16 +566,16 @@ static void sync_installed_indexes(indigo_device *device, char *dir, indigo_prop
 							return;
 						}
 					}
-					indigo_send_message(device, "Done");
+					indigo_send_message(device, OK_PROPERTY, "Done");
 					add = true;
 					continue;
 				} else {
-					sprintf(path, "%s/%s", base_dir, astap_index[j].name);
+					snprintf(path, sizeof(path), "%s/%s", base_dir, astap_index[j].name);
 					if (access(path, F_OK) == 0) {
-						indigo_send_message(device, "Removing %s...", astap_index[j].name);
+						indigo_send_message(device, IDLE_PROPERTY, "Removing %s...", astap_index[j].name);
 						execute_command(device, "rm -rf \"%s\"", path);
 						remove = true;
-						indigo_send_message(device, "Done");
+						indigo_send_message(device, OK_PROPERTY, "Done");
 					}
 				}
 			}
@@ -593,8 +607,9 @@ static void index_handler(indigo_device *device) {
 	instances++;
 	sync_installed_indexes(device, "index", AGENT_ASTAP_INDEX_PROPERTY);
 	instances--;
-	if (AGENT_ASTAP_INDEX_PROPERTY->state == INDIGO_BUSY_STATE)
+	if (AGENT_ASTAP_INDEX_PROPERTY->state == INDIGO_BUSY_STATE) {
 		AGENT_ASTAP_INDEX_PROPERTY->state = instances ? INDIGO_BUSY_STATE : INDIGO_OK_STATE;
+	}
 	indigo_update_property(device, AGENT_ASTAP_INDEX_PROPERTY, NULL);
 }
 
@@ -612,8 +627,9 @@ static indigo_result agent_device_attach(indigo_device *device) {
 		char *name, label[INDIGO_VALUE_SIZE], path[INDIGO_VALUE_SIZE];
 		bool present;
 		AGENT_ASTAP_INDEX_PROPERTY = indigo_init_switch_property(NULL, device->name, AGENT_ASTAP_INDEX_PROPERTY_NAME, "Index managememt", "Installed ASTAP indexes", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 10);
-		if (AGENT_ASTAP_INDEX_PROPERTY == NULL)
+		if (AGENT_ASTAP_INDEX_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		AGENT_ASTAP_INDEX_PROPERTY->count = 0;
 		for (int i = 0; (name = astap_index[i].name); i++) {
 			sprintf(label, "Index %s (FOV %g-%g°, size %sB)", name, astap_index[i].fov_min, astap_index[i].fov_max, astap_index[i].size);
@@ -627,8 +643,9 @@ static indigo_result agent_device_attach(indigo_device *device) {
 				}
 			}
 			indigo_init_switch_item(AGENT_ASTAP_INDEX_PROPERTY->items + i, name, label, present);
-			if (present)
+			if (present) {
 				indigo_init_switch_item(AGENT_PLATESOLVER_USE_INDEX_PROPERTY->items + AGENT_PLATESOLVER_USE_INDEX_PROPERTY->count++, name, label, false);
+			}
 			AGENT_ASTAP_INDEX_PROPERTY->count++;
 		}
 		indigo_property_sort_items(AGENT_PLATESOLVER_USE_INDEX_PROPERTY, 0);
@@ -644,9 +661,10 @@ static indigo_result agent_device_attach(indigo_device *device) {
 }
 
 static indigo_result agent_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
-	if (client != NULL && client == FILTER_DEVICE_CONTEXT->client)
+	if (client != NULL && client == FILTER_DEVICE_CONTEXT->client) {
 		return INDIGO_OK;
-	indigo_define_matching_property(AGENT_ASTAP_INDEX_PROPERTY);
+	}
+	INDIGO_DEFINE_MATCHING_PROPERTY(AGENT_ASTAP_INDEX_PROPERTY);
 	return indigo_platesolver_enumerate_properties(device, client, property);
 }
 
@@ -654,14 +672,12 @@ static indigo_result agent_change_property(indigo_device *device, indigo_client 
 	assert(device != NULL);
 	assert(DEVICE_CONTEXT != NULL);
 	assert(property != NULL);
-	if (client == FILTER_DEVICE_CONTEXT->client)
+	if (client == FILTER_DEVICE_CONTEXT->client) {
 		return INDIGO_OK;
+	}
 	if (indigo_property_match(AGENT_ASTAP_INDEX_PROPERTY, property)) {
 	// -------------------------------------------------------------------------------- AGENT_ASTAP_INDEX
-		indigo_property_copy_values(AGENT_ASTAP_INDEX_PROPERTY, property, false);
-		AGENT_ASTAP_INDEX_PROPERTY->state = INDIGO_BUSY_STATE;
-		indigo_update_property(device, AGENT_ASTAP_INDEX_PROPERTY, NULL);
-		indigo_set_timer(device, 0, index_handler, NULL);
+		INDIGO_COPY_VALUES_PROCESS_CHANGE(AGENT_ASTAP_INDEX_PROPERTY, index_handler);
 		return INDIGO_OK;
 	}
 	return indigo_platesolver_change_property(device, client, property);
@@ -669,7 +685,10 @@ static indigo_result agent_change_property(indigo_device *device, indigo_client 
 
 static indigo_result agent_device_detach(indigo_device *device) {
 	assert(device != NULL);
+	indigo_cancel_pending_handlers(device);
+	indigo_cancel_all_timers(device);
 	indigo_release_property(AGENT_ASTAP_INDEX_PROPERTY);
+	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_platesolver_device_detach(device);
 }
 
@@ -681,14 +700,16 @@ static indigo_client *agent_client = NULL;
 static void kill_children() {
 	indigo_device *device = agent_device;
 	if (device && device->private_data) {
-		if (ASTAP_DEVICE_PRIVATE_DATA->pid)
+		if (ASTAP_DEVICE_PRIVATE_DATA->pid) {
 			kill(-ASTAP_DEVICE_PRIVATE_DATA->pid, SIGTERM);
+		}
 		indigo_device **additional_devices = DEVICE_CONTEXT->additional_device_instances;
 		if (additional_devices) {
 			for (int i = 0; i < MAX_ADDITIONAL_INSTANCES; i++) {
 				device = additional_devices[i];
-				if (device && device->private_data && ASTAP_DEVICE_PRIVATE_DATA->pid)
+				if (device && device->private_data && ASTAP_DEVICE_PRIVATE_DATA->pid) {
 					kill(-ASTAP_DEVICE_PRIVATE_DATA->pid, SIGTERM);
+				}
 			}
 		}
 	}
@@ -718,8 +739,9 @@ indigo_result indigo_agent_astap(indigo_driver_action action, indigo_driver_info
 
 	SET_DRIVER_INFO(info, ASTAP_AGENT_NAME, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT:

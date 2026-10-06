@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Rumen G. Bogdanovski
+// Copyright (c) 2024-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen Bogdanovski <rumenastro@gmail.com>
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** INDIGO USB-Serial Utilities
  \file indigo_usbserial_utils.h
@@ -55,20 +55,27 @@ typedef struct {
 
 #define INDIGO_REGISER_MATCH_PATTERNS(device, patterns, count) \
 	device.match_patterns = patterns; \
-	device.match_patterns_count = count;
+	device.match_patterns_count = count; \
+	device.matched_pattern_index = -1;
+
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern int indigo_enumerate_usbserial_devices(indigo_serial_info *serial_info, int num_serial_info);
-extern void indigo_usbserial_label(indigo_serial_info *serial_info, char *label);
-extern indigo_serial_info *indigo_usbserial_match (
-	indigo_serial_info *serial_info,
-	const int num_serial_info,
-	indigo_device_match_pattern *patterns,
-	const int num_patterns
-);
+INDIGO_EXTERN int indigo_enumerate_usbserial_devices(indigo_serial_info *serial_info, int num_serial_info);
+INDIGO_EXTERN void indigo_usbserial_label(indigo_serial_info *serial_info, char *label);
+INDIGO_EXTERN indigo_serial_info *indigo_usbserial_match_index(indigo_serial_info *serial_info, const int num_serial_info, indigo_device_match_pattern *patterns, const int num_patterns, int *matched_pattern_index);
+INDIGO_EXTERN indigo_serial_info *indigo_usbserial_match(indigo_serial_info *serial_info, const int num_serial_info, indigo_device_match_pattern *patterns, const int num_patterns);
 
 #ifdef __cplusplus
 }

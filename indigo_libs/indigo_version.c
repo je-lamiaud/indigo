@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -66,17 +66,6 @@ static struct property_mapping legacy[] = {
 			{ "DRIVER_NAME", INFO_DEVICE_NAME_ITEM_NAME },
 			{ "DRIVER_VERSION", INFO_DEVICE_VERSION_ITEM_NAME },
 			{ "DRIVER_INTERFACE", INFO_DEVICE_INTERFACE_ITEM_NAME },
-			NULL
-		}
-	},
-	{	"ACTIVE_DEVICES", SNOOP_DEVICES_PROPERTY_NAME, {
-			{ "ACTIVE_TELESCOPE", SNOOP_MOUNT_ITEM_NAME },
-			{ "ACTIVE_CCD", SNOOP_CCD_ITEM_NAME },
-			{ "ACTIVE_FILTER", SNOOP_WHEEL_ITEM_NAME },
-			{ "ACTIVE_FOCUSER", SNOOP_FOCUSER_ITEM_NAME },
-			{ "ACTIVE_DOME", SNOOP_DOME_ITEM_NAME },
-			{ "ACTIVE_GPS", SNOOP_GPS_ITEM_NAME },
-			{ "ACTIVE_JOYSTICK", SNOOP_JOYSTICK_ITEM_NAME },
 			NULL
 		}
 	},
@@ -387,12 +376,6 @@ static struct property_mapping legacy[] = {
 			NULL
 		}
 	},
-	{	"DOME_AUTOSYNC", DOME_SLAVING_PROPERTY_NAME, {
-			{ "DOME_AUTOSYNC_ENABLE", DOME_SLAVING_ENABLE_ITEM_NAME },
-			{ "DOME_AUTOSYNC_DISABLE", DOME_SLAVING_DISABLE_ITEM_NAME },
-			NULL
-		}
-	},
 	{	"DOME_PARAMS", DOME_SLAVING_PARAMETERS_PROPERTY_NAME, {
 			{ "AUTOSYNC_THRESHOLD", DOME_SLAVING_THRESHOLD_ITEM_NAME },
 			NULL
@@ -451,7 +434,7 @@ void indigo_copy_property_name(indigo_version version, indigo_property *property
 			property_mapping++;
 		}
 	}
-	indigo_copy_name(property->name, name);
+	INDIGO_COPY_NAME(property->name, name);
 }
 
 void indigo_copy_item_name(indigo_version version, indigo_property *property, indigo_item *item, const char *name) {
@@ -463,18 +446,18 @@ void indigo_copy_item_name(indigo_version version, indigo_property *property, in
 				while (item_mapping->legacy) {
 					if (!strcmp(name, item_mapping->legacy)) {
 						INDIGO_TRACE(indigo_trace("version: %s.%s -> %s.%s (current)", property_mapping->legacy, item_mapping->legacy, property_mapping->current, item_mapping->current));
-						indigo_copy_name(item->name, item_mapping->current);
+						INDIGO_COPY_NAME(item->name, item_mapping->current);
 						return;
 					}
 					item_mapping++;
 				}
-				indigo_copy_name(item->name, name);
+				INDIGO_COPY_NAME(item->name, name);
 				return;
 			}
 			property_mapping++;
 		}
 	}
-	indigo_copy_name(item->name, name);
+	INDIGO_COPY_NAME(item->name, name);
 }
 
 const char *indigo_property_name(indigo_version version, indigo_property *property) {

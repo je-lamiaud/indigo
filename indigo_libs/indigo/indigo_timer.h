@@ -1,4 +1,4 @@
-// Copyright (c) 2017 CloudMakers, s. r. o.
+// Copyright (c) 2017-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -25,11 +25,19 @@
 
 #ifndef indigo_timer_h
 #define indigo_timer_h
-
 #include <stdio.h>
 #include <pthread.h>
-
 #include <indigo/indigo_bus.h>
+
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,7 +46,7 @@ extern "C" {
 /** Timer callback function prototype.
  */
 typedef void (*indigo_timer_callback)(indigo_device *device);
-typedef void (*indigo_timer_with_data_callback)(indigo_device *device, void *data);
+typedef void (*indigo_timer_with_data_callback)(indigo_device *device, void *timer_data);
 
 /** Timer structure.
  */
@@ -52,77 +60,100 @@ typedef struct indigo_timer {
 	bool wake;
 	int timer_id;
 	pthread_cond_t cond;
-	pthread_mutex_t mutex;
-	pthread_mutex_t callback_mutex;
+	pthread_mutex_t cond_mutex;
 	pthread_t thread;
 	struct indigo_timer **reference;
 	struct indigo_timer *next;
-	void *data;
+	void *timer_data;
+	pthread_mutex_t thread_mutex;
+	pthread_mutex_t *timer_mutex;
 } indigo_timer;
 
-/* fix timespec so that abs(tv_nsec) < 1s */
-#define SEC_NS    1000000000LL       /* 1 sec in nanoseconds */
-static inline void normalize_timespec(struct timespec *ts) {
-	if ((1 <= ts->tv_sec ) || ((0 == ts->tv_sec) && (0 <= ts->tv_nsec))) {
-		/* timespec is non-negative, so ns >= 1s and ns < 0s are not ok */
-		if (SEC_NS <= ts->tv_nsec) {
-			ts->tv_nsec -= SEC_NS;
-			ts->tv_sec++;
-		} else if (0 > (ts)->tv_nsec) {
-			ts->tv_nsec += SEC_NS;
-			ts->tv_sec--;
-		}
-	} else {
-		/* timespec is negative, so ns <= -1s and ns > 0s are not ok */
-		if ((-1 * SEC_NS) >= ts->tv_nsec) {
-			ts->tv_nsec += SEC_NS;
-			ts->tv_sec--;
-		} else if (0 < ts->tv_nsec) {
-			ts->tv_nsec -= SEC_NS;
-			ts->tv_sec++;
-		}
-	}
-}
+/** Queue structure.
+ */
+
+#define INDIGO_TASK_PRIORITY_NORMAL   0
+#define INDIGO_TASK_PRIORITY_HIGH     5
+#define INDIGO_TASK_PRIORITY_TIME    10 // time critical tasks (e.g. guiding)
+#define INDIGO_TASK_PRIORITY_URGENT  20 // urgent tasks (more urgent than time critical)
+
+typedef struct indigo_queue_task {
+	indigo_device *device;
+	int priority;
+	struct timespec at;
+	indigo_timer_callback callback;
+	void *data;
+	pthread_mutex_t *task_mutex;
+	struct indigo_queue_task *next;
+} indigo_queue_task;
+
+typedef struct indigo_queue {
+	indigo_device *device;
+	pthread_cond_t cond;
+	pthread_mutex_t cond_mutex;
+	pthread_t thread;
+	indigo_queue_task *task;
+	int queue_id;
+	bool abort;
+	bool ready; // guard against a lost wakeup race condition
+	pthread_mutex_t thread_mutex;
+} indigo_queue;
+
+/** Translate delay into absolute time.
+ */
+INDIGO_EXTERN struct timespec indigo_delay_to_time(double delay);
 
 /** Set timer.
  */
-extern bool indigo_set_timer(indigo_device *device, double delay, indigo_timer_callback callback, indigo_timer **timer);
-
-/** difftime to specified UTC time as string (yyyy-mm-dd hh:mm:ss or yyyy-mm-dd hh:mm).
- */
-extern bool indigo_utc_diff(char *time_str, double *delay);
-
-/** Set timer at specific UTC time as string (yyyy-mm-dd hh:mm:ss or yyyy-mm-dd hh:mm).
- */
-extern bool indigo_set_timer_at_utc(indigo_device *device, char *time_str, indigo_timer_with_data_callback callback, indigo_timer **timer, void *data);
-
-/** Set timer at specific UTC time as unix timestamp.
- */
-extern bool indigo_set_timer_at(indigo_device *device, long start_at, indigo_timer_with_data_callback callback, indigo_timer **timer, void *data);
+INDIGO_EXTERN bool indigo_set_timer(indigo_device *device, double delay, indigo_timer_callback callback, indigo_timer **timer);
 
 /** Set timer with arbitrary data.
  */
-extern bool indigo_set_timer_with_data(indigo_device *device, double delay, indigo_timer_with_data_callback callback, indigo_timer **timer, void *data);
+INDIGO_EXTERN bool indigo_set_timer_with_data(indigo_device *device, double delay, indigo_timer_with_data_callback callback, indigo_timer **timer, void *timer_data);
+
+/** Set timer with arbitrary mutex.
+ */
+INDIGO_EXTERN bool indigo_set_timer_with_mutex(indigo_device *device, double delay, indigo_timer_callback callback, indigo_timer **timer, pthread_mutex_t *timer_mutex);
 
 /** Rescheduled timer (if not null).
  */
-extern bool indigo_reschedule_timer(indigo_device *device, double delay, indigo_timer **timer);
+INDIGO_EXTERN bool indigo_reschedule_timer(indigo_device *device, double delay, indigo_timer **timer);
 
 /** Rescheduled timer (if not null) with different handler.
  */
-extern bool indigo_reschedule_timer_with_callback(indigo_device *device, double delay, indigo_timer_callback callback, indigo_timer **timer);
+INDIGO_EXTERN bool indigo_reschedule_timer_with_callback(indigo_device *device, double delay, indigo_timer_callback callback, indigo_timer **timer);
 
 /** Cancel timer.
  */
-extern bool indigo_cancel_timer(indigo_device *device, indigo_timer **timer);
+INDIGO_EXTERN bool indigo_cancel_timer(indigo_device *device, indigo_timer **timer);
 
 /** Cancel timer and wait to cancel.
  */
-extern bool indigo_cancel_timer_sync(indigo_device *device, indigo_timer **timer);
+INDIGO_EXTERN bool indigo_cancel_timer_sync(indigo_device *device, indigo_timer **timer);
 
 /** Cancel all timers for given device.
  */
-extern void indigo_cancel_all_timers(indigo_device *device);
+INDIGO_EXTERN void indigo_cancel_all_timers(indigo_device *device);
+
+/** Create queue
+ */
+INDIGO_EXTERN indigo_queue *indigo_queue_create(indigo_device *device);
+
+/** Add task to queue
+ */
+INDIGO_EXTERN void indigo_queue_add(indigo_queue *queue, indigo_device *device, int priority, double delay, indigo_timer_callback callback, pthread_mutex_t *task_mutex);
+
+/** Add task with data to queue
+ */
+INDIGO_EXTERN void indigo_queue_add_with_data(indigo_queue *queue, indigo_device *device, int priority, double delay, indigo_timer_with_data_callback callback, void *data, pthread_mutex_t *task_mutex);
+
+/** Remove tasks from queue for given device and handler
+ */
+INDIGO_EXTERN void indigo_queue_remove(indigo_queue *queue, indigo_device *device, indigo_timer_callback callback);
+
+/** Remove all tasks, abort queue and free associated structure
+ */
+INDIGO_EXTERN void indigo_queue_delete(indigo_queue **queue);
 
 #ifdef __cplusplus
 }

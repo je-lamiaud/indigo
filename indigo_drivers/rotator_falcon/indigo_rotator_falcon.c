@@ -1,9 +1,9 @@
-// Copyright (c) 2023 CloudMakers, s. r. o.
+// Copyright (c) 2023-2026 CloudMakers, s. r. o.
 // All rights reserved.
-//
-// You can use this software under the terms of 'INDIGO Astronomy
+
+// You may use this software under the terms of 'INDIGO Astronomy
 // open-source license' (see LICENSE.md).
-//
+
 // THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
 // OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
 // WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -16,211 +16,140 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// version history
-// 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// This file generated from indigo_rotator_falcon.driver
 
-/** INDIGO PegasusAstro Falcon field rotator driver
- \file indigo_rotator_falcon.c
- */
-
-#define DRIVER_VERSION 0x0004
-#define DRIVER_NAME	"indigo_rotator_falcon"
+#pragma mark - Includes
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <pthread.h>
-#include <sys/termios.h>
-
-#include <indigo/indigo_io.h>
+#include <indigo/indigo_driver_xml.h>
+#include <indigo/indigo_rotator_driver.h>
+#include <indigo/indigo_uni_io.h>
 
 #include "indigo_rotator_falcon.h"
 
-#define PRIVATE_DATA								((falcon_private_data *)device->private_data)
+#pragma mark - Common definitions
+
+#define DRIVER_VERSION       0x03000006
+#define DRIVER_NAME          "indigo_rotator_falcon"
+#define DRIVER_LABEL         "PegasusAstro Falcon rotator"
+#define ROTATOR_DEVICE_NAME  "Pegasus Falcon rotator"
+#define PRIVATE_DATA         ((falcon_private_data *)device->private_data)
+
+#pragma mark - Private data definition
 
 typedef struct {
-	int handle;
-	pthread_mutex_t mutex;
-	indigo_timer *position_handler_timer, *direction_handler_timer, *abort_motion_handler_timer, *relative_move_handler_timer;
-	int version;
+	indigo_uni_handle *handle;
+	//+ data
+	char response[128];
+	bool abort;
+	//- data
 } falcon_private_data;
 
-static bool falcon_command(indigo_device *device, char *command, char *response, int max) {
-	tcflush(PRIVATE_DATA->handle, TCIOFLUSH);
-	indigo_write(PRIVATE_DATA->handle, command, strlen(command));
-	indigo_write(PRIVATE_DATA->handle, "\n", 1);
-	if (response != NULL) {
-		if (indigo_read_line(PRIVATE_DATA->handle, response, max) <= 0) {
-			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command %s -> no response", command);
-			return false;
+#pragma mark - Low level code
+
+//+ code
+
+static bool falcon_command(indigo_device *device, char *command, ...) {
+	long result = indigo_uni_discard(PRIVATE_DATA->handle);
+	if (result >= 0) {
+		va_list args;
+		va_start(args, command);
+		result = indigo_uni_vtprintf(PRIVATE_DATA->handle, command, args, "\n");
+		va_end(args);
+		if (result > 0) {
+			result = indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response), "\n", "\r\n", INDIGO_DELAY(1));
 		}
 	}
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command %s -> %s", command, response != NULL ? response : "NULL");
-	return true;
+	return result > 0;
 }
 
-static void rotator_connection_handler(indigo_device *device) {
-	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	char response[64];
-	if (CONNECTION_CONNECTED_ITEM->sw.value) {
-		PRIVATE_DATA->handle = indigo_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 9600);
-		if (PRIVATE_DATA->handle > 0) {
-			if (falcon_command(device, "F#", response, sizeof(response)) && !strcmp(response, "FR_OK")) {
-				strcpy(INFO_DEVICE_MODEL_ITEM->text.value ,"Falcon Rotator");
-			} else {
-				close(PRIVATE_DATA->handle);
-				PRIVATE_DATA->handle = indigo_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 115200);
-				if (PRIVATE_DATA->handle > 0) {
-					if (falcon_command(device, "F#", response, sizeof(response)) && !strncmp(response, "F2R_", 4)) {
-						strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "Falcon Rotator v2");
-					} else {
-						INDIGO_DRIVER_ERROR(DRIVER_NAME, "Rotator not detected");
-						close(PRIVATE_DATA->handle);
-						PRIVATE_DATA->handle = 0;
-					}
-				}
+static bool falcon_open(indigo_device *device) {
+	PRIVATE_DATA->handle = indigo_uni_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 9600, INDIGO_LOG_DEBUG);
+	if (PRIVATE_DATA->handle != NULL) {
+		if (falcon_command(device, "F#") && !strncmp(PRIVATE_DATA->response, "FR_OK", 5)) {
+			INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value ,"Falcon Rotator");
+			if (falcon_command(device, "FV") && !strncmp(PRIVATE_DATA->response, "FV:", 3)) {
+				INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, PRIVATE_DATA->response + 3);
 			}
-		}
-		if (PRIVATE_DATA->handle > 0) {
-			if (falcon_command(device, "FV", response, sizeof(response)) && !strncmp(response, "FV:", 3)) {
-				strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, response + 3);
-			} else {
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read 'FV' response");
-				close(PRIVATE_DATA->handle);
-				PRIVATE_DATA->handle = 0;
-			}
-		}
-		if (PRIVATE_DATA->handle > 0) {
-			if (!(falcon_command(device, "FH", response, sizeof(response)) && !strcmp(response, "FH:1"))) {
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read 'FH' response");
-				close(PRIVATE_DATA->handle);
-				PRIVATE_DATA->handle = 0;
-			}
-		}
-		if (PRIVATE_DATA->handle > 0) {
-			if (!(falcon_command(device, "DR:0", response, sizeof(response)) && !strncmp(response, "DR:", 3))) {
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read 'DR' response");
-				close(PRIVATE_DATA->handle);
-				PRIVATE_DATA->handle = 0;
-			}
-		}
-		if (PRIVATE_DATA->handle > 0) {
-			if (falcon_command(device, "FA", response, sizeof(response))) {
-				if (!strncmp(response, "FR_OK", 5)) {
-					char *pnt, *token = strtok_r(response, ":", &pnt);
-					token = strtok_r(NULL, ":", &pnt); // position_in_deg
-					if (token) {
-						ROTATOR_POSITION_ITEM->number.target = ROTATOR_POSITION_ITEM->number.value = indigo_atod(token);
-					}
-					token = strtok_r(NULL, ":", &pnt); // is_running
-					token = strtok_r(NULL, ":", &pnt); // limit_detect
-					token = strtok_r(NULL, ":", &pnt); // do_derotation
-					token = strtok_r(NULL, ":", &pnt); // motor_reverse
-					if (token) {
-						if (*token == '0')
-							indigo_set_switch(ROTATOR_DIRECTION_PROPERTY, ROTATOR_DIRECTION_NORMAL_ITEM, true);
-						else
-							indigo_set_switch(ROTATOR_DIRECTION_PROPERTY, ROTATOR_DIRECTION_REVERSED_ITEM, true);
-					} else {
-						INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to parse 'FA' response");
-						close(PRIVATE_DATA->handle);
-						PRIVATE_DATA->handle = 0;
-					}
-				} else if (!strncmp(response, "F2R:", 4)) {
-					char *pnt, *token = strtok_r(response, ":", &pnt); // position_in_deg
-					token = strtok_r(NULL, ":", &pnt); // position_in_deg
-					if (token) {
-						ROTATOR_POSITION_ITEM->number.target = ROTATOR_POSITION_ITEM->number.value = indigo_atod(token);
-					}
-					token = strtok_r(NULL, ":", &pnt); // is_running
-					token = strtok_r(NULL, ":", &pnt); // speed
-					token = strtok_r(NULL, ":", &pnt); // microsteps
-					token = strtok_r(NULL, ":", &pnt); // direction
-					if (token) {
-						if (*token == '0')
-							indigo_set_switch(ROTATOR_DIRECTION_PROPERTY, ROTATOR_DIRECTION_NORMAL_ITEM, true);
-						else
-							indigo_set_switch(ROTATOR_DIRECTION_PROPERTY, ROTATOR_DIRECTION_REVERSED_ITEM, true);
-					} else {
-						INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to parse 'FA' response");
-						close(PRIVATE_DATA->handle);
-						PRIVATE_DATA->handle = 0;
-					}
-				}
-			} else {
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read 'FA' response");
-				close(PRIVATE_DATA->handle);
-				PRIVATE_DATA->handle = 0;
-			}
-		}
-		if (PRIVATE_DATA->handle > 0) {
-			INDIGO_DRIVER_LOG(DRIVER_NAME, "Connected to %s", DEVICE_PORT_ITEM->text.value);
-			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+			indigo_update_property(device, INFO_PROPERTY, NULL);
+			return true;
 		} else {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to connect to %s", DEVICE_PORT_ITEM->text.value);
-			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
-			indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
+			indigo_uni_close(&PRIVATE_DATA->handle);
+			PRIVATE_DATA->handle = indigo_uni_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 115200, INDIGO_LOG_DEBUG);
+			if (falcon_command(device, "F#") && !strncmp(PRIVATE_DATA->response, "F2R_", 4)) {
+				INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Falcon Rotator v2");
+				if (falcon_command(device, "FV") && !strncmp(PRIVATE_DATA->response, "FV:", 3)) {
+					INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, PRIVATE_DATA->response + 3);
+				}
+				indigo_update_property(device, INFO_PROPERTY, NULL);
+				return true;
+			}
 		}
-	} else {
-		indigo_cancel_timer_sync(device, &PRIVATE_DATA->position_handler_timer);
-		indigo_cancel_timer_sync(device, &PRIVATE_DATA->direction_handler_timer);
-		indigo_cancel_timer_sync(device, &PRIVATE_DATA->abort_motion_handler_timer);
-		indigo_cancel_timer_sync(device, &PRIVATE_DATA->relative_move_handler_timer);
-		strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Unknown");
-		strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
-		if (PRIVATE_DATA->handle > 0) {
-			INDIGO_DRIVER_LOG(DRIVER_NAME, "Disconnected");
-			close(PRIVATE_DATA->handle);
-			PRIVATE_DATA->handle = 0;
-		}
-		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_uni_close(&PRIVATE_DATA->handle);
 	}
-	indigo_update_property(device, INFO_PROPERTY, NULL);
-	indigo_rotator_change_property(device, NULL, CONNECTION_PROPERTY);
-	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
+	return false;
 }
+
+static void falcon_close(indigo_device *device) {
+	INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
+	INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Unknown");
+	indigo_update_property(device, INFO_PROPERTY, NULL);
+	indigo_uni_close(&PRIVATE_DATA->handle);
+}
+
+//- code
+
+//+ rotator.code
+
+// FR reports the motor state, FR:1 means the rotator is rotating and FR:0 that it is
+// idle, so the move is complete on FR:0. SETTLE_DELAY gives the rotator time to start
+// after MD:, otherwise the first poll would still see it idle and report the move as
+// finished. A lost or malformed reply is retried, only MOVE_TIMEOUT fails the move.
+#define SETTLE_DELAY         0.5
+#define POLL_DELAY           0.1
+#define MOVE_TIMEOUT         120
 
 static void falcon_move(indigo_device *device) {
-	char command[16], response[64];
-	sprintf(command, "MD:%0.2f", ROTATOR_POSITION_ITEM->number.target);
-	if (falcon_command(device, command, response, sizeof(response)) && !strncmp(response, "MD:", 3)) {
-		while (true) {
-			if (falcon_command(device, "FD", response, sizeof(response)) && !strncmp(response, "FD:", 3)) {
-				ROTATOR_POSITION_ITEM->number.value = indigo_atod(response + 3);
-				indigo_update_property(device, ROTATOR_POSITION_PROPERTY, NULL);
-			} else {
-				ROTATOR_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
-				break;
-			}
-			if (falcon_command(device, "FR", response, sizeof(response)) && !strncmp(response, "FR:", 3)) {
-				if (!strcmp(response, "FR:1")) {
-					pthread_mutex_unlock(&PRIVATE_DATA->mutex);
-					indigo_usleep(0.1 * ONE_SECOND_DELAY);
-					pthread_mutex_lock(&PRIVATE_DATA->mutex);
-					continue;
-				}
-			}
+	PRIVATE_DATA->abort = false;
+	if (!(falcon_command(device, "MD:%0.2f", ROTATOR_POSITION_ITEM->number.target) && !strncmp(PRIVATE_DATA->response, "MD:", 3))) {
+		ROTATOR_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		return;
+	}
+	indigo_sleep(SETTLE_DELAY);
+	ROTATOR_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+	time_t deadline = time(NULL) + MOVE_TIMEOUT;
+	while (true) {
+		if (PRIVATE_DATA->abort) {
+			falcon_command(device, "FH");
+			break;
+		}
+		if (falcon_command(device, "FD") && !strncmp(PRIVATE_DATA->response, "FD:", 3)) {
+			ROTATOR_POSITION_ITEM->number.value = indigo_atod(PRIVATE_DATA->response + 3);
+			indigo_update_property(device, ROTATOR_POSITION_PROPERTY, NULL);
+		}
+		if (falcon_command(device, "FR") && !strcmp(PRIVATE_DATA->response, "FR:0")) {
 			ROTATOR_POSITION_PROPERTY->state = INDIGO_OK_STATE;
 			break;
 		}
-		if (falcon_command(device, "FD", response, sizeof(response)) && !strncmp(response, "FD:", 3)) {
-			ROTATOR_POSITION_ITEM->number.value = indigo_atod(response + 3);
-		} else {
-			ROTATOR_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		if (time(NULL) >= deadline) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Rotator failed to reach %.2f in %d seconds", ROTATOR_POSITION_ITEM->number.target, MOVE_TIMEOUT);
+			break;
 		}
-	} else {
-		ROTATOR_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_sleep(POLL_DELAY);
+	}
+	if (falcon_command(device, "FD") && !strncmp(PRIVATE_DATA->response, "FD:", 3)) {
+		ROTATOR_POSITION_ITEM->number.value = indigo_atod(PRIVATE_DATA->response + 3);
 	}
 }
 
 static void falcon_sync(indigo_device *device) {
-	char command[16], response[64];
-	sprintf(command, "SD:%0.2f", ROTATOR_POSITION_ITEM->number.target);
-	if (falcon_command(device, command, response, sizeof(response)) && !strncmp(response, "SD:", 3)) {
-		if (falcon_command(device, "FD", response, sizeof(response)) && !strncmp(response, "FD:", 3)) {
-			ROTATOR_POSITION_ITEM->number.value = indigo_atod(response + 3);
+	if (falcon_command(device, "SD:%0.2f", ROTATOR_POSITION_ITEM->number.target) && !strncmp(PRIVATE_DATA->response, "SD:", 3)) {
+		if (falcon_command(device, "FD") && !strncmp(PRIVATE_DATA->response, "FD:", 3)) {
+			ROTATOR_POSITION_ITEM->number.value = indigo_atod(PRIVATE_DATA->response + 3);
 			ROTATOR_POSITION_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
 			ROTATOR_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -230,22 +159,112 @@ static void falcon_sync(indigo_device *device) {
 	}
 }
 
+//- rotator.code
+
+#pragma mark - High level code (rotator)
+
+static void rotator_connection_handler(indigo_device *device) {
+	if (CONNECTION_CONNECTED_ITEM->sw.value) {
+		bool connection_result = true;
+		connection_result = falcon_open(device);
+		if (connection_result) {
+			//+ rotator.on_connect
+			falcon_command(device, "FH");
+			falcon_command(device, "DR:0");
+			if (falcon_command(device, "FA")) {
+				if (!strncmp(PRIVATE_DATA->response, "FR_OK", 5)) {
+					// FR_OK:position_in_steps:position_in_deg:is_moving:limit_detect:do_derotation:motor_reverse
+					char *pnt, *token = strtok_r(PRIVATE_DATA->response, ":", &pnt); // status
+					token = strtok_r(NULL, ":", &pnt); // position_in_steps
+					token = strtok_r(NULL, ":", &pnt); // position_in_deg
+					if (token) {
+						ROTATOR_POSITION_ITEM->number.target = ROTATOR_POSITION_ITEM->number.value = indigo_atod(token);
+					}
+					token = strtok_r(NULL, ":", &pnt); // is_moving
+					token = strtok_r(NULL, ":", &pnt); // limit_detect
+					token = strtok_r(NULL, ":", &pnt); // do_derotation
+					token = strtok_r(NULL, ":", &pnt); // motor_reverse
+					if (token) {
+						if (*token == '0') {
+							indigo_set_switch(ROTATOR_DIRECTION_PROPERTY, ROTATOR_DIRECTION_NORMAL_ITEM, true);
+						} else {
+							indigo_set_switch(ROTATOR_DIRECTION_PROPERTY, ROTATOR_DIRECTION_REVERSED_ITEM, true);
+						}
+					}
+				} else if (!strncmp(PRIVATE_DATA->response, "F2R:", 4)) {
+					// F2R:position_in_deg:is_moving:speed:microsteps:direction
+					char *pnt, *token = strtok_r(PRIVATE_DATA->response, ":", &pnt); // status
+					token = strtok_r(NULL, ":", &pnt); // position_in_deg
+					if (token) {
+						ROTATOR_POSITION_ITEM->number.target = ROTATOR_POSITION_ITEM->number.value = indigo_atod(token);
+					}
+					token = strtok_r(NULL, ":", &pnt); // is_moving
+					token = strtok_r(NULL, ":", &pnt); // speed
+					token = strtok_r(NULL, ":", &pnt); // microsteps
+					token = strtok_r(NULL, ":", &pnt); // direction
+					if (token) {
+						if (*token == '0') {
+							indigo_set_switch(ROTATOR_DIRECTION_PROPERTY, ROTATOR_DIRECTION_NORMAL_ITEM, true);
+						} else {
+							indigo_set_switch(ROTATOR_DIRECTION_PROPERTY, ROTATOR_DIRECTION_REVERSED_ITEM, true);
+						}
+					}
+				}
+			}
+			//- rotator.on_connect
+		}
+		if (connection_result) {
+			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+			indigo_send_message(device, OK_PROPERTY, "Connected to %s on %s", ROTATOR_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
+		} else {
+			indigo_send_message(device, ALERT_PROPERTY, "Failed to connect to %s on %s", ROTATOR_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
+			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
+			indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
+		}
+	} else {
+		indigo_cancel_pending_handlers(device);
+		falcon_close(device);
+		indigo_send_message(device, OK_PROPERTY, "Disconnected from %s", device->name);
+		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+	}
+	indigo_rotator_change_property(device, NULL, CONNECTION_PROPERTY);
+}
+
 static void rotator_position_handler(indigo_device *device) {
-	pthread_mutex_lock(&PRIVATE_DATA->mutex);
+	//+ rotator.ROTATOR_POSITION.on_change
 	ROTATOR_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
 	if (ROTATOR_ON_POSITION_SET_GOTO_ITEM->sw.value) {
 		falcon_move(device);
 	} else {
 		falcon_sync(device);
 	}
+	//- rotator.ROTATOR_POSITION.on_change
 	indigo_update_property(device, ROTATOR_POSITION_PROPERTY, NULL);
-	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
+}
+
+static void rotator_direction_handler(indigo_device *device) {
+	ROTATOR_DIRECTION_PROPERTY->state = INDIGO_OK_STATE;
+	//+ rotator.ROTATOR_DIRECTION.on_change
+	if (!falcon_command(device, "FN:%d", ROTATOR_DIRECTION_NORMAL_ITEM->sw.value ? 0 : 1) && !strncmp(PRIVATE_DATA->response, "FN:", 3)) {
+		ROTATOR_DIRECTION_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	//- rotator.ROTATOR_DIRECTION.on_change
+	indigo_update_property(device, ROTATOR_DIRECTION_PROPERTY, NULL);
+}
+
+static void rotator_abort_motion_handler(indigo_device *device) {
+	ROTATOR_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
+	//+ rotator.ROTATOR_ABORT_MOTION.on_change
+	PRIVATE_DATA->abort = true;
+	ROTATOR_ABORT_MOTION_ITEM->sw.value = false;
+	//- rotator.ROTATOR_ABORT_MOTION.on_change
+	indigo_update_property(device, ROTATOR_ABORT_MOTION_PROPERTY, NULL);
 }
 
 static void rotator_relative_move_handler(indigo_device *device) {
-	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	ROTATOR_RELATIVE_MOVE_PROPERTY->state = INDIGO_BUSY_STATE;
-	indigo_update_property(device, ROTATOR_RELATIVE_MOVE_PROPERTY, NULL);
+	ROTATOR_RELATIVE_MOVE_PROPERTY->state = INDIGO_OK_STATE;
+	//+ rotator.ROTATOR_RELATIVE_MOVE.on_change
+	INDIGO_UPDATE_PROPERTY_STATE(ROTATOR_RELATIVE_MOVE_PROPERTY, INDIGO_BUSY_STATE, NULL);
 	ROTATOR_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
 	double position = ROTATOR_POSITION_ITEM->number.value + ROTATOR_RELATIVE_MOVE_ITEM->number.value;
 	if (position < 0) {
@@ -258,114 +277,68 @@ static void rotator_relative_move_handler(indigo_device *device) {
 	falcon_move(device);
 	indigo_update_property(device, ROTATOR_POSITION_PROPERTY, NULL);
 	ROTATOR_RELATIVE_MOVE_PROPERTY->state = ROTATOR_POSITION_PROPERTY->state;
+	//- rotator.ROTATOR_RELATIVE_MOVE.on_change
 	indigo_update_property(device, ROTATOR_RELATIVE_MOVE_PROPERTY, NULL);
-	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 }
 
-static void rotator_abort_handler(indigo_device *device) {
-	char response[64];
-	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	ROTATOR_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
-	ROTATOR_ABORT_MOTION_ITEM->sw.value = false;
-	if (!falcon_command(device, "FH", response, sizeof(response)) && !strncmp(response, "FH:", 3)) {
-		ROTATOR_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
-	}
-	indigo_update_property(device, ROTATOR_ABORT_MOTION_PROPERTY, NULL);
-	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
-}
+#pragma mark - Device API (rotator)
 
-static void rotator_direction_handler(indigo_device *device) {
-	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	char response[64];
-	if (falcon_command(device, ROTATOR_DIRECTION_NORMAL_ITEM->sw.value ? "FN:0" : "FN:1", response, sizeof(response)) && !strncmp(response, "FN:", 3)) {
-		ROTATOR_DIRECTION_PROPERTY->state = INDIGO_OK_STATE;
-	} else {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read 'FN' response");
-		ROTATOR_DIRECTION_PROPERTY->state = INDIGO_ALERT_STATE;
-	}
-	indigo_update_property(device, ROTATOR_DIRECTION_PROPERTY, NULL);
-	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
-}
-
-// -------------------------------------------------------------------------------- INDIGO rotator device implementation
+static indigo_result rotator_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
 
 static indigo_result rotator_attach(indigo_device *device) {
-	assert(device != NULL);
-	assert(PRIVATE_DATA != NULL);
 	if (indigo_rotator_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
-		// --------------------------------------------------------------------------------
-		ROTATOR_ON_POSITION_SET_PROPERTY->hidden = false;
-		ROTATOR_ABORT_MOTION_PROPERTY->hidden = false;
-		ROTATOR_DIRECTION_PROPERTY->hidden = false;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
+		DEVICE_PORT_PROPERTY->hidden = false;
+		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
+		//+ rotator.on_attach
+		INFO_PROPERTY->count = 6;
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Unknown");
+		//- rotator.on_attach
+		ROTATOR_POSITION_PROPERTY->hidden = false;
+		//+ rotator.ROTATOR_POSITION.on_attach
 		ROTATOR_POSITION_ITEM->number.min = 0;
 		ROTATOR_POSITION_ITEM->number.max = 359.99;
-		DEVICE_PORTS_PROPERTY->hidden = false;
-		DEVICE_PORT_PROPERTY->hidden = false;
+		//- rotator.ROTATOR_POSITION.on_attach
+		ROTATOR_DIRECTION_PROPERTY->hidden = false;
+		ROTATOR_ABORT_MOTION_PROPERTY->hidden = false;
 		ROTATOR_RELATIVE_MOVE_PROPERTY->hidden = false;
-		INFO_PROPERTY->count = 6;
-		strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
-		strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Unknown");
-		// --------------------------------------------------------------------------------
-		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
-		return indigo_rotator_enumerate_properties(device, NULL, NULL);
+		return rotator_enumerate_properties(device, NULL, NULL);
 	}
 	return INDIGO_FAILED;
 }
 
+static indigo_result rotator_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
+	return indigo_rotator_enumerate_properties(device, client, property);
+}
+
 static indigo_result rotator_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
-	assert(device != NULL);
-	assert(DEVICE_CONTEXT != NULL);
-	assert(property != NULL);
 	if (indigo_property_match_changeable(CONNECTION_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- CONNECTION
-		if (indigo_ignore_connection_change(device, property))
-			return INDIGO_OK;
-		indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
-		CONNECTION_PROPERTY->state = INDIGO_BUSY_STATE;
-		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
-		indigo_set_timer(device, 0, rotator_connection_handler, NULL);
-		return INDIGO_OK;		
-	} else if (indigo_property_match_changeable(ROTATOR_DIRECTION_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- ROTATOR_DIRECTION
-		indigo_property_copy_values(ROTATOR_DIRECTION_PROPERTY, property, false);
-		ROTATOR_DIRECTION_PROPERTY->state = INDIGO_BUSY_STATE;
-		indigo_update_property(device, ROTATOR_DIRECTION_PROPERTY, NULL);
-		indigo_set_timer(device, 0, rotator_direction_handler, &PRIVATE_DATA->direction_handler_timer);
+		if (!indigo_ignore_connection_change(device, property)) {
+			indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
+			INDIGO_UPDATE_PROPERTY_STATE(CONNECTION_PROPERTY, INDIGO_BUSY_STATE, NULL);
+			indigo_execute_handler(device, rotator_connection_handler);
+		}
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(ROTATOR_POSITION_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- ROTATOR_POSITION
-		if (ROTATOR_POSITION_PROPERTY->state == INDIGO_BUSY_STATE)
-			return INDIGO_OK;
-		indigo_property_copy_values(ROTATOR_POSITION_PROPERTY, property, false);
-		ROTATOR_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
-		indigo_update_property(device, ROTATOR_POSITION_PROPERTY, NULL);
-		indigo_set_timer(device, 0, rotator_position_handler, &PRIVATE_DATA->position_handler_timer);
+		INDIGO_COPY_TARGETS_PROCESS_CHANGE(ROTATOR_POSITION_PROPERTY, rotator_position_handler);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(ROTATOR_RELATIVE_MOVE_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- ROTATOR_RELATIVE_MOVE
-		if (ROTATOR_RELATIVE_MOVE_PROPERTY->state == INDIGO_BUSY_STATE)
-			return INDIGO_OK;
-		indigo_property_copy_values(ROTATOR_RELATIVE_MOVE_PROPERTY, property, false);
-		ROTATOR_RELATIVE_MOVE_PROPERTY->state = INDIGO_BUSY_STATE;
-		indigo_update_property(device, ROTATOR_RELATIVE_MOVE_PROPERTY, NULL);
-		indigo_set_timer(device, 0, rotator_relative_move_handler, &PRIVATE_DATA->relative_move_handler_timer);
+	} else if (indigo_property_match_changeable(ROTATOR_DIRECTION_PROPERTY, property)) {
+		INDIGO_COPY_VALUES_PROCESS_CHANGE(ROTATOR_DIRECTION_PROPERTY, rotator_direction_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(ROTATOR_ABORT_MOTION_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- ROTATOR_ABORT_MOTION
-		indigo_property_copy_values(ROTATOR_ABORT_MOTION_PROPERTY, property, false);
-		ROTATOR_ABORT_MOTION_PROPERTY->state = INDIGO_BUSY_STATE;
-		indigo_update_property(device, ROTATOR_ABORT_MOTION_PROPERTY, NULL);
-		indigo_set_timer(device, 0, rotator_abort_handler, &PRIVATE_DATA->abort_motion_handler_timer);
+		INDIGO_COPY_VALUES_PROCESS_SYNC_CHANGE(ROTATOR_ABORT_MOTION_PROPERTY, rotator_abort_motion_handler);
 		return INDIGO_OK;
-		// --------------------------------------------------------------------------------
+	} else if (indigo_property_match_changeable(ROTATOR_RELATIVE_MOVE_PROPERTY, property)) {
+		INDIGO_COPY_VALUES_PROCESS_CHANGE(ROTATOR_RELATIVE_MOVE_PROPERTY, rotator_relative_move_handler);
+		return INDIGO_OK;
 	}
 	return indigo_rotator_change_property(device, client, property);
 }
 
 static indigo_result rotator_detach(indigo_device *device) {
-	assert(device != NULL);
 	if (IS_CONNECTED) {
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		rotator_connection_handler(device);
@@ -374,36 +347,30 @@ static indigo_result rotator_detach(indigo_device *device) {
 	return indigo_rotator_detach(device);
 }
 
-// --------------------------------------------------------------------------------
+#pragma mark - Device templates
 
-static falcon_private_data *private_data = NULL;
-static indigo_device *rotator = NULL;
+static indigo_device rotator_template = INDIGO_DEVICE_INITIALIZER(ROTATOR_DEVICE_NAME, rotator_attach, rotator_enumerate_properties, rotator_change_property, NULL, rotator_detach);
+
+#pragma mark - Main code
 
 indigo_result indigo_rotator_falcon(indigo_driver_action action, indigo_driver_info *info) {
-	static indigo_device rotator_template = INDIGO_DEVICE_INITIALIZER(
-		"Pegasus Falcon rotator",
-		rotator_attach,
-		indigo_rotator_enumerate_properties,
-		rotator_change_property,
-		NULL,
-		rotator_detach
-	);
-
 	static indigo_driver_action last_action = INDIGO_DRIVER_SHUTDOWN;
+	static falcon_private_data *private_data = NULL;
+	static indigo_device *rotator = NULL;
 
-	static indigo_device_match_pattern patterns[1] = { 0 };
-	strcpy(patterns[0].vendor_string, "Pegasus Astro");
-	strcpy(patterns[0].product_string, "FalconRotator");
-	INDIGO_REGISER_MATCH_PATTERNS(rotator_template, patterns, 1);
+	SET_DRIVER_INFO(info, DRIVER_LABEL, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	SET_DRIVER_INFO(info, "PegasusAstro Falcon rotator", __FUNCTION__, DRIVER_VERSION, true, last_action);
-
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
-	switch(action) {
+	switch (action) {
 		case INDIGO_DRIVER_INIT:
 			last_action = action;
+			static indigo_device_match_pattern patterns[1] = { 0 };
+			strcpy(patterns[0].product_string, "FalconRotator");
+			strcpy(patterns[0].vendor_string, "Pegasus Astro");
+			INDIGO_REGISER_MATCH_PATTERNS(rotator_template, patterns, 1);
 			private_data = indigo_safe_malloc(sizeof(falcon_private_data));
 			rotator = indigo_safe_malloc_copy(sizeof(indigo_device), &rotator_template);
 			rotator->private_data = private_data;
@@ -427,5 +394,6 @@ indigo_result indigo_rotator_falcon(indigo_driver_action action, indigo_driver_i
 		case INDIGO_DRIVER_INFO:
 			break;
 	}
+
 	return INDIGO_OK;
 }

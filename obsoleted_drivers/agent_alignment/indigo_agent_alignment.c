@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_agent_alignment.c
  */
 
-#define DRIVER_VERSION 0x0001
+#define DRIVER_VERSION 0x02000001
 #define DRIVER_NAME	"indigo_agent_alignment"
 
 #include <stdlib.h>
@@ -70,20 +70,21 @@ static indigo_result agent_device_attach(indigo_device *device) {
 		CONFIG_PROPERTY->hidden = true;
 		PROFILE_PROPERTY->hidden = true;
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
-		return agent_enumerate_properties(device, NULL, NULL);
+		return agent_enumerate_properties(device, client, property);
 	}
 	return INDIGO_FAILED;
 }
 
 static indigo_result agent_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
-	if (client != NULL && client == FILTER_DEVICE_CONTEXT->client)
+	if (client != NULL && client == FILTER_DEVICE_CONTEXT->client) {
 		return INDIGO_OK;
+	}
 	int alignment_point_count = DEVICE_PRIVATE_DATA->alignment_point_count;
 	indigo_property **alignment_properties = DEVICE_PRIVATE_DATA->alignment_point_properties;
 	if (alignment_properties) {
-		for (int i = 0; i < alignment_point_count; i++)
-			if (indigo_property_match(alignment_properties[i], property))
-				indigo_define_property(device, alignment_properties[i], NULL);
+		for (int i = 0; i < alignment_point_count; i++) {
+			INDIGO_DEFINE_MATCHING_PROPERTY(alignment_properties[i]);
+		}
 	}
 	return indigo_filter_enumerate_properties(device, client, property);
 }
@@ -92,8 +93,9 @@ static indigo_result agent_change_property(indigo_device *device, indigo_client 
 	assert(device != NULL);
 	assert(DEVICE_CONTEXT != NULL);
 	assert(property != NULL);
-	if (client == FILTER_DEVICE_CONTEXT->client)
+	if (client == FILTER_DEVICE_CONTEXT->client) {
 		return INDIGO_OK;
+	}
 	int alignment_point_count = DEVICE_PRIVATE_DATA->alignment_point_count;
 	indigo_property **alignment_properties = DEVICE_PRIVATE_DATA->alignment_point_properties;
 	indigo_device *mount = DEVICE_PRIVATE_DATA->mount;
@@ -159,7 +161,7 @@ static void process_connection_change(indigo_client *client, indigo_device *devi
 			indigo_alignment_point *points = MOUNT_CONTEXT->alignment_points;
 			for (int j = 0; j < alignment_point_count; j++) {
 				char name[INDIGO_NAME_SIZE], label[INDIGO_NAME_SIZE];
-				sprintf(name, AGENT_ALIGNMENT_POINT_PROPERY_NAME, j);
+				sprintf(name, AGENT_ALIGNMENT_POINT_PROPERTY_NAME, j);
 				sprintf(label, "Alignment point #%d", j);
 				indigo_property *alignment_property = indigo_init_number_property(NULL, agent_device->name, name, "Alignment points", label, INDIGO_OK_STATE, INDIGO_RW_PERM, 6);
 				indigo_init_number_item(AGENT_ALIGNMENT_POINT_RA_ITEM(alignment_property), AGENT_ALIGNMENT_POINT_RA_ITEM_NAME, "Right ascension (0 to 24 hrs)", 0, 24, 0, points[j].ra);
@@ -218,8 +220,9 @@ indigo_result indigo_agent_alignment(indigo_driver_action action, indigo_driver_
 
 	SET_DRIVER_INFO(info, ALIGNMENT_AGENT_NAME, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT:

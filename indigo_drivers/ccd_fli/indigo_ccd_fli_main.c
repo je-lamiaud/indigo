@@ -1,4 +1,4 @@
-// Copyright (c) 2016 Rumen G. Bogdanovski
+// Copyright (c) 2016-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,8 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen Bogdanovski <rumenastro@gmail.com>
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 /** INDIGO CCD FLI driver main
  \file indigo_ccd_fli_main.c
@@ -35,7 +36,7 @@ int main(int argc, const char * argv[]) {
 	indigo_main_argv = argv;
 	/* Executable drivers use pipes - no HTTP */
 	indigo_use_blob_urls = false;
-	indigo_client *protocol_adapter = indigo_xml_device_adapter(0, 1);
+	indigo_client *protocol_adapter = indigo_xml_device_adapter(indigo_stdin_handle, indigo_stdout_handle);
 	indigo_enable_blob_mode_record *record = (indigo_enable_blob_mode_record *)malloc(sizeof(indigo_enable_blob_mode_record));
 	memset(record, 0, sizeof(indigo_enable_blob_mode_record));
 	record->mode = INDIGO_ENABLE_BLOB_ALSO;

@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Rumen G. Bogdanovski
+// Copyright (C) 2020-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** INDIGO DSD Lunatico Armadillo, Platypus etc. focuser main
  \file lunatico_main_shared.c
@@ -31,7 +31,7 @@
 int main(int argc, const char * argv[]) {
 	indigo_main_argc = argc;
 	indigo_main_argv = argv;
-	indigo_client *protocol_adapter = indigo_xml_device_adapter(0, 1);
+	indigo_client *protocol_adapter = indigo_xml_device_adapter(indigo_stdin_handle, indigo_stdout_handle);
 	indigo_start();
 	DRIVER_ENTRY_POINT(INDIGO_DRIVER_INIT, NULL);
 	indigo_attach_client(protocol_adapter);

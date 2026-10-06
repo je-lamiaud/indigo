@@ -1,4 +1,4 @@
-// Copyright (c) 2021 CloudMakers, s. r. o.
+// Copyright (c) 2021-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -30,6 +30,16 @@
 #include <indigo/indigo_driver.h>
 #include <indigo/indigo_align.h>
 #include <indigo/indigo_names.h>
+
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,6 +89,7 @@ extern "C" {
 #define AGENT_PLATESOLVER_START_PRECISE_GOTO_ITEM		(AGENT_START_PROCESS_PROPERTY->items+3)
 #define AGENT_PLATESOLVER_START_CALCULATE_PA_ERROR_ITEM		(AGENT_START_PROCESS_PROPERTY->items+4)
 #define AGENT_PLATESOLVER_START_RECALCULATE_PA_ERROR_ITEM	(AGENT_START_PROCESS_PROPERTY->items+5)
+#define AGENT_RESET_ITEM											(AGENT_START_PROCESS_PROPERTY->items+6)
 
 #define AGENT_ABORT_PROCESS_PROPERTY					(INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->agent_abort_process_property)
 #define AGENT_ABORT_PROCESS_ITEM      				(AGENT_ABORT_PROCESS_PROPERTY->items+0)
@@ -126,6 +137,26 @@ extern "C" {
 #define AGENT_PLATESOLVER_IMAGE_OUTPUT_PROPERTY	(INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->image_output_property)
 #define AGENT_PLATESOLVER_IMAGE_OUTPUT_ITEM			(AGENT_PLATESOLVER_IMAGE_OUTPUT_PROPERTY->items+0)
 
+#define AGENT_PLATESOLVER_CCD_PREVIEW_PROPERTY											(INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->ccd_preview_property)
+#define AGENT_PLATESOLVER_CCD_PREVIEW_DISABLED_ITEM								(AGENT_PLATESOLVER_CCD_PREVIEW_PROPERTY->items+0)
+#define AGENT_PLATESOLVER_CCD_PREVIEW_ENABLED_ITEM									(AGENT_PLATESOLVER_CCD_PREVIEW_PROPERTY->items+1)
+#define AGENT_PLATESOLVER_CCD_PREVIEW_ENABLED_WITH_HISTOGRAM_ITEM	(AGENT_PLATESOLVER_CCD_PREVIEW_PROPERTY->items+2)
+
+#define AGENT_PLATESOLVER_CCD_PREVIEW_IMAGE_PROPERTY	(INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->ccd_preview_image_property)
+#define AGENT_PLATESOLVER_CCD_PREVIEW_IMAGE_ITEM			(AGENT_PLATESOLVER_CCD_PREVIEW_IMAGE_PROPERTY->items+0)
+
+#define AGENT_PLATESOLVER_CCD_JPEG_SETTINGS_PROPERTY							(INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->ccd_jpeg_settings)
+#define AGENT_PLATESOLVER_CCD_JPEG_SETTINGS_QUALITY_ITEM					(AGENT_PLATESOLVER_CCD_JPEG_SETTINGS_PROPERTY->items+0)
+#define AGENT_PLATESOLVER_CCD_JPEG_SETTINGS_TARGET_BACKGROUND_ITEM	(AGENT_PLATESOLVER_CCD_JPEG_SETTINGS_PROPERTY->items+1)
+#define AGENT_PLATESOLVER_CCD_JPEG_SETTINGS_CLIPPING_POINT_ITEM		(AGENT_PLATESOLVER_CCD_JPEG_SETTINGS_PROPERTY->items+2)
+#define AGENT_PLATESOLVER_CCD_JPEG_SETTINGS_REF_CHANNEL_ITEM				(AGENT_PLATESOLVER_CCD_JPEG_SETTINGS_PROPERTY->items+3)
+
+#define AGENT_PLATESOLVER_CCD_JPEG_STRETCH_PRESETS_PROPERTY				(INDIGO_PLATESOLVER_DEVICE_PRIVATE_DATA->ccd_jpeg_stretch_presets)
+#define AGENT_PLATESOLVER_CCD_JPEG_STRETCH_PRESETS_SLIGHT_ITEM		(AGENT_PLATESOLVER_CCD_JPEG_STRETCH_PRESETS_PROPERTY->items+0)
+#define AGENT_PLATESOLVER_CCD_JPEG_STRETCH_PRESETS_MODERATE_ITEM	(AGENT_PLATESOLVER_CCD_JPEG_STRETCH_PRESETS_PROPERTY->items+1)
+#define AGENT_PLATESOLVER_CCD_JPEG_STRETCH_PRESETS_NORMAL_ITEM		(AGENT_PLATESOLVER_CCD_JPEG_STRETCH_PRESETS_PROPERTY->items+2)
+#define AGENT_PLATESOLVER_CCD_JPEG_STRETCH_PRESETS_HARD_ITEM			(AGENT_PLATESOLVER_CCD_JPEG_STRETCH_PRESETS_PROPERTY->items+3)
+
 /** Plate solver  structure.
  */
 typedef struct {
@@ -154,7 +185,12 @@ typedef struct {
 	indigo_property *precise_goto_settings_property;
 	indigo_property *mount_settle_time_property;
 	indigo_property *solve_images_property;
-	indigo_property_state mount_process_state;
+	indigo_property *ccd_preview_property;
+	indigo_property *ccd_preview_image_property;
+	indigo_property *ccd_jpeg_settings;
+	indigo_property *ccd_jpeg_stretch_presets;
+	void *preview_image;
+	unsigned long preview_image_size;
 	indigo_spherical_point_t eq_coordinates;
 	indigo_spherical_point_t eq_start_coordinates;
 	indigo_spherical_point_t geo_coordinates;
@@ -168,10 +204,14 @@ typedef struct {
 	double pa_alt_error;
 	double pa_az_error;
 	double pa_initial_error;
+	bool copy_solution_to_target;
+	indigo_property_state mount_process_state;
+	indigo_property_state imager_process_state;
+	indigo_property_state imager_pause_state;
 	indigo_property_state imager_capture_state;
 	indigo_property_state guider_process_state;
 	void (*save_config)(indigo_device *);
-	bool (*solve)(indigo_device *, void *image, unsigned long size);
+	bool (*solve)(indigo_device *, indigo_platesolver_task *task);
 	void (*abort)(indigo_device *);
 	pthread_mutex_t mutex;
 	double pixel_scale;
@@ -180,22 +220,22 @@ typedef struct {
 	int saved_sync_mode;
 } platesolver_private_data;
 
-extern bool indigo_platesolver_validate_executable(const char *executable);
-extern void indigo_platesolver_save_config(indigo_device *device);
-extern void indigo_platesolver_sync(indigo_device *device);
+INDIGO_EXTERN bool indigo_platesolver_validate_executable(const char *executable);
+INDIGO_EXTERN void indigo_platesolver_save_config(indigo_device *device);
+INDIGO_EXTERN void indigo_platesolver_sync(indigo_device *device);
 
 /** Device attach callback function.
  */
-extern indigo_result indigo_platesolver_device_attach(indigo_device *device, const char* driver_name, unsigned version, indigo_device_interface device_interface);
+INDIGO_EXTERN indigo_result indigo_platesolver_device_attach(indigo_device *device, const char* driver_name, unsigned version, indigo_device_interface device_interface);
 /** Enumerate properties callback function.
  */
-extern indigo_result indigo_platesolver_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
+INDIGO_EXTERN indigo_result indigo_platesolver_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
 /** Change property callback function.
  */
-extern indigo_result indigo_platesolver_change_property(indigo_device *device, indigo_client *client, indigo_property *property);
+INDIGO_EXTERN indigo_result indigo_platesolver_change_property(indigo_device *device, indigo_client *client, indigo_property *property);
 /** Detach callback function.
  */
-extern indigo_result indigo_platesolver_device_detach(indigo_device *device);
+INDIGO_EXTERN indigo_result indigo_platesolver_device_detach(indigo_device *device);
 
 #define indigo_platesolver_client_attach indigo_filter_client_attach
 #define indigo_platesolver_delete_property indigo_filter_delete_property
@@ -203,11 +243,11 @@ extern indigo_result indigo_platesolver_device_detach(indigo_device *device);
 
 /** Client define property callback function.
  */
-extern indigo_result indigo_platesolver_define_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
+INDIGO_EXTERN indigo_result indigo_platesolver_define_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
 
 /** Client update property callback function.
  */
-extern indigo_result indigo_platesolver_update_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
+INDIGO_EXTERN indigo_result indigo_platesolver_update_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
 
 #ifdef __cplusplus
 }

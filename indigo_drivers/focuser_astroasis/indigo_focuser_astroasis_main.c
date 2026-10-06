@@ -18,6 +18,7 @@
 
 // version history
 // 2.0 by Frank Chen <frank.chen@astroasis.com>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 /** INDIGO Astroasis Oasis focuser driver main
  \file indigo_focuser_astroasis_main.c
@@ -33,7 +34,7 @@
 int main(int argc, const char * argv[]) {
 	indigo_main_argc = argc;
 	indigo_main_argv = argv;
-	indigo_client *protocol_adapter = indigo_xml_device_adapter(0, 1);
+	indigo_client *protocol_adapter = indigo_xml_device_adapter(indigo_stdin_handle, indigo_stdout_handle);
 	indigo_start();
 	indigo_focuser_astroasis(INDIGO_DRIVER_INIT, NULL);
 	indigo_attach_client(protocol_adapter);

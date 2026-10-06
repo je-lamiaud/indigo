@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Copyright (c) 2023-2024 Rumen G.Bogdanovski <rumenastro@gmail.com>
+# Copyright (c) 2023-2024 Rumen G. Bogdanovski <rumenastro@gmail.com>
 # All rights reserved.
 #
 # This scrpt is based on the original version by
-# Thomas Stibor <thomas@stibor.net> & Rumen G.Bogdanovski <rumenastro@gmail.com>
+# Thomas Stibor <thomas@stibor.net> & Rumen G. Bogdanovski <rumenastro@gmail.com>
 #
 # You can use this software under the terms of 'INDIGO Astronomy open-source license'
 # (see https://github.com/indigo-astronomy/indigo/blob/master/LICENSE.md).
@@ -139,10 +139,10 @@ __usage() {
 	 "\t--poweroff\n" \
 	 "\t--reboot\n" \
 	 "\t--verbose"
-    echo "version: ${VERSION}, written by Rumen G.Bogdanovski <rumen@skyarchive.oer>"
+    echo "version: ${VERSION}, written by Rumen G. Bogdanovski <rumen@skyarchive.oer>"
     echo ""
     echo "Based ot the original script by Thomas Stibor <thomas@stibor.net>"
-    echo "and Rumen G.Bogdanovski <rumen@skyarchive.oer>"
+    echo "and Rumen G. Bogdanovski <rumen@skyarchive.oer>"
     exit 1
 }
 
@@ -525,8 +525,16 @@ __list-available-versions() {
     ${APT_GET_EXE} update >/dev/null 2>&1
     sleep 1;
     # List current installed version and candidate version or older versions. In total 3 versions are listed.
-    echo $(${APT_CACHE_EXE} policy indigo | ${GREP_EXE} -oPm1 "(?<=Installed:\s).*") \
-	 $(${APT_CACHE_EXE} policy indigo | ${GREP_EXE} -E -oe '\s\s[0-9]+.[0-9]+\-[0-9]+(\-[0-9]+)?' | tr -d '[:blank:]' | head -n 2)
+		INSTALLED_2=$(${APT_CACHE_EXE} policy indigo | ${GREP_EXE} -oPm1 "(?<=Installed:\s)2.*")
+		if [ ${#INSTALLED_2} -gt 0 ]; then
+				echo ${INSTALLED_2} \
+				$(${APT_CACHE_EXE} policy indigo | ${SED_EXE} '/\*\*\*/d' | ${GREP_EXE} -oPe '\s\s[0-9]+\.[0-9]+\-[0-9]+(\-[0-9]+)?(?!\S)' | tr -d '[:blank:]' | head -n 2)
+		fi
+		INSTALLED_3=$(${APT_CACHE_EXE} policy indigo3 | ${GREP_EXE} -oPm1 "(?<=Installed:\s)3.*")
+		if [ ${#INSTALLED_3} -gt 0 ]; then
+				echo ${INSTALLED_3} \
+				$(${APT_CACHE_EXE} policy indigo3 | ${SED_EXE} '/\*\*\*/d' | ${GREP_EXE} -oPe '\s\s[0-9]+\.[0-9]+\-[0-9]+(\-[0-9]+)?(?!\S)' | tr -d '[:blank:]' | head -n 2)
+		fi
 }
 
 ###############################################

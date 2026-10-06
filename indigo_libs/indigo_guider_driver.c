@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -25,19 +25,16 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <assert.h>
 #include <string.h>
 #include <errno.h>
 #include <time.h>
 #include <math.h>
-#include <fcntl.h>
 #include <sys/stat.h>
 
 #include <indigo/indigo_guider_driver.h>
 
 indigo_result indigo_guider_attach(indigo_device *device, const char* driver_name, unsigned version) {
-	assert(device != NULL);
 	assert(device != NULL);
 	if (GUIDER_CONTEXT == NULL) {
 		device->device_context = indigo_safe_malloc(sizeof(indigo_guider_context));
@@ -46,20 +43,23 @@ indigo_result indigo_guider_attach(indigo_device *device, const char* driver_nam
 		if (indigo_device_attach(device, driver_name, version, INDIGO_INTERFACE_GUIDER) == INDIGO_OK) {
 			// -------------------------------------------------------------------------------- GUIDER_GUIDE_DEC
 			GUIDER_GUIDE_DEC_PROPERTY = indigo_init_number_property(NULL, device->name, GUIDER_GUIDE_DEC_PROPERTY_NAME, GUIDER_MAIN_GROUP, "DEC guiding", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-			if (GUIDER_GUIDE_DEC_PROPERTY == NULL)
+			if (GUIDER_GUIDE_DEC_PROPERTY == NULL) {
 				return INDIGO_FAILED;
+			}
 			indigo_init_number_item(GUIDER_GUIDE_NORTH_ITEM, GUIDER_GUIDE_NORTH_ITEM_NAME, "Guide north", 0, 10000, 0, 0);
 			indigo_init_number_item(GUIDER_GUIDE_SOUTH_ITEM, GUIDER_GUIDE_SOUTH_ITEM_NAME, "Guide south", 0, 10000, 0, 0);
 			// -------------------------------------------------------------------------------- GUIDER_GUIDE_RA
 			GUIDER_GUIDE_RA_PROPERTY = indigo_init_number_property(NULL, device->name, GUIDER_GUIDE_RA_PROPERTY_NAME, GUIDER_MAIN_GROUP, "RA guiding", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-			if (GUIDER_GUIDE_RA_PROPERTY == NULL)
+			if (GUIDER_GUIDE_RA_PROPERTY == NULL) {
 				return INDIGO_FAILED;
+			}
 			indigo_init_number_item(GUIDER_GUIDE_EAST_ITEM, GUIDER_GUIDE_EAST_ITEM_NAME, "Guide east", 0, 10000, 0, 0);
 			indigo_init_number_item(GUIDER_GUIDE_WEST_ITEM, GUIDER_GUIDE_WEST_ITEM_NAME, "Guide west", 0, 10000, 0, 0);
 			// -------------------------------------------------------------------------------- GUIDER_RATE
 			GUIDER_RATE_PROPERTY = indigo_init_number_property(NULL, device->name, GUIDER_RATE_PROPERTY_NAME, GUIDER_MAIN_GROUP, "Guiding rate", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-			if (GUIDER_RATE_PROPERTY == NULL)
+			if (GUIDER_RATE_PROPERTY == NULL) {
 				return INDIGO_FAILED;
+			}
 			GUIDER_RATE_PROPERTY->hidden = true;
 			GUIDER_RATE_PROPERTY->count = 1;
 			indigo_init_number_item(GUIDER_RATE_ITEM, GUIDER_RATE_ITEM_NAME, "Guiding rate (% of sidereal)", 10, 90, 0, 50);
@@ -75,9 +75,9 @@ indigo_result indigo_guider_enumerate_properties(indigo_device *device, indigo_c
 	assert(device != NULL);
 	assert(DEVICE_CONTEXT != NULL);
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(GUIDER_GUIDE_DEC_PROPERTY);
-		indigo_define_matching_property(GUIDER_GUIDE_RA_PROPERTY);
-		indigo_define_matching_property(GUIDER_RATE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(GUIDER_GUIDE_DEC_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(GUIDER_GUIDE_RA_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(GUIDER_RATE_PROPERTY);
 	}
 	return indigo_device_enumerate_properties(device, client, property);
 }

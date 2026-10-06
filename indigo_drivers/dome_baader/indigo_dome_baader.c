@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Rumen G. Bgdanovski
+// Copyright (c) 2020-2025 Rumen G. Bgdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_dome_baader.c
  */
 
-#define DRIVER_VERSION 0x00005
+#define DRIVER_VERSION 0x020000005
 #define DRIVER_NAME	"indigo_dome_baader"
 
 #include <stdlib.h>
@@ -403,7 +403,7 @@ static void dome_timer_callback(indigo_device *device) {
 			DOME_PARK_PROPERTY->state = INDIGO_OK_STATE;
 			PRIVATE_DATA->park_requested = false;
 			indigo_set_switch(DOME_PARK_PROPERTY, DOME_PARK_PARKED_ITEM, true);
-			indigo_update_property(device, DOME_PARK_PROPERTY, "Dome parked");
+			indigo_update_property(device, DOME_PARK_PROPERTY, NULL);
 		}
 	}
 
@@ -455,29 +455,6 @@ static void dome_timer_callback(indigo_device *device) {
 		prev_flap_state = PRIVATE_DATA->flap_state;
 	}
 
-	/* Keep the dome in sync if needed */
-	if (DOME_SLAVING_ENABLE_ITEM->sw.value) {
-		double az;
-		if (indigo_fix_dome_azimuth(device, DOME_EQUATORIAL_COORDINATES_RA_ITEM->number.value, DOME_EQUATORIAL_COORDINATES_DEC_ITEM->number.value, DOME_HORIZONTAL_COORDINATES_AZ_ITEM->number.value, &az) &&
-		   (DOME_HORIZONTAL_COORDINATES_PROPERTY->state != INDIGO_BUSY_STATE)) {
-			PRIVATE_DATA->target_position = DOME_HORIZONTAL_COORDINATES_AZ_ITEM->number.target = az;
-			if ((rc = baader_goto_azimuth(device, PRIVATE_DATA->target_position)) != BD_SUCCESS) {
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "baader_goto_azimuth(%d): returned error %d", PRIVATE_DATA->handle, rc);
-				DOME_HORIZONTAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
-				if (rc == BD_DOME_ERROR) {
-					indigo_update_property(device, DOME_HORIZONTAL_COORDINATES_PROPERTY, "Dome sync failed with DOME_ERROR. Please inspect the dome!");
-				} else {
-					indigo_update_property(device, DOME_HORIZONTAL_COORDINATES_PROPERTY, NULL);
-				}
-				return;
-			}
-			DOME_HORIZONTAL_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
-			indigo_update_property(device, DOME_HORIZONTAL_COORDINATES_PROPERTY, NULL);
-			DOME_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
-			indigo_update_property(device, DOME_EQUATORIAL_COORDINATES_PROPERTY, NULL);
-		}
-	}
-
 	if (PRIVATE_DATA->aborted) {
 		DOME_HORIZONTAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
 		DOME_HORIZONTAL_COORDINATES_AZ_ITEM->number.value = PRIVATE_DATA->target_position = PRIVATE_DATA->current_position;
@@ -505,8 +482,7 @@ static void dome_timer_callback(indigo_device *device) {
 		    PRIVATE_DATA->rain != rain ||
 		    PRIVATE_DATA->wind != wind ||
 		    PRIVATE_DATA->timeout != timeout ||
-		    PRIVATE_DATA->powercut != powercut)
-		{
+		    PRIVATE_DATA->powercut != powercut) {
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Updating X_EMERGENCY_CLOSE");
 			X_EMERGENCY_CLOSE_PROPERTY->state = INDIGO_OK_STATE;
 			X_EMERGENCY_RAIN_ITEM->light.value = rain ? INDIGO_ALERT_STATE : INDIGO_OK_STATE;
@@ -527,9 +503,9 @@ static void dome_timer_callback(indigo_device *device) {
 
 static indigo_result baader_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_EMERGENCY_CLOSE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_EMERGENCY_CLOSE_PROPERTY);
 	}
-	return indigo_dome_enumerate_properties(device, NULL, NULL);
+	return indigo_dome_enumerate_properties(device, client, property);
 }
 
 
@@ -541,31 +517,33 @@ static indigo_result dome_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DOME_SPEED
 		DOME_SPEED_PROPERTY->hidden = true;
 		// -------------------------------------------------------------------------------- DOME_STEPS_PROPERTY
-		indigo_copy_value(DOME_STEPS_ITEM->label, "Relative move (°)");
+		INDIGO_COPY_VALUE(DOME_STEPS_ITEM->label, "Relative move (°)");
 		// -------------------------------------------------------------------------------- DEVICE_PORT
 		DEVICE_PORT_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- DEVICE_PORTS
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 		// --------------------------------------------------------------------------------
 		INFO_PROPERTY->count = 8;
 		// -------------------------------------------------------------------------------- DOME_FLAP
 		DOME_FLAP_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- DOME_ON_HORIZONTAL_COORDINATES_SET
-		DOME_ON_HORIZONTAL_COORDINATES_SET_PROPERTY->hidden = true;
+		DOME_ON_COORDINATES_SET_PROPERTY->hidden = true;
 		// -------------------------------------------------------------------------------- DOME_HORIZONTAL_COORDINATES
 		DOME_HORIZONTAL_COORDINATES_PROPERTY->perm = INDIGO_RW_PERM;
 		// -------------------------------------------------------------------------------- DOME_SLAVING_PARAMETERS
 		DOME_SLAVING_PARAMETERS_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- X_EMERGENCY_CLOSE_PROPERTY
 		X_EMERGENCY_CLOSE_PROPERTY = indigo_init_light_property(NULL, device->name, X_EMERGENCY_CLOSE_PROPERTY_NAME, DOME_MAIN_GROUP, "Energency close flags", INDIGO_IDLE_STATE, 4);
-		if (X_EMERGENCY_CLOSE_PROPERTY == NULL)
+		if (X_EMERGENCY_CLOSE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_light_item(X_EMERGENCY_RAIN_ITEM, X_EMERGENCY_RAIN_ITEM_NAME, "Rain alert", INDIGO_IDLE_STATE);
 		indigo_init_light_item(X_EMERGENCY_WIND_ITEM, X_EMERGENCY_WIND_ITEM_NAME, "Wind alert", INDIGO_IDLE_STATE);
 		indigo_init_light_item(X_EMERGENCY_OPERATION_TIMEOUT_ITEM, X_EMERGENCY_OPERATION_TIMEOUT_ITEM_NAME, "Operation timeout alert", INDIGO_IDLE_STATE);
 		indigo_init_light_item(X_EMERGENCY_POWERCUT_ITEM, X_EMERGENCY_POWERCUT_ITEM_NAME, "Power coutage alert", INDIGO_IDLE_STATE);
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return baader_enumerate_properties(device, NULL, NULL);
 	}
@@ -617,7 +595,7 @@ static void dome_connect_callback(indigo_device *device) {
 					indigo_update_property(device, CONNECTION_PROPERTY, "Baader dome did not respond");
 					return;
 				} else { // Successfully connected
-					indigo_copy_value(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, serial_number);
+					INDIGO_COPY_VALUE(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, serial_number);
 					indigo_update_property(device, INFO_PROPERTY, NULL);
 					INDIGO_DRIVER_LOG(DRIVER_NAME, "%s with serial No.%s connected", INFO_DEVICE_MODEL_ITEM->text.value, serial_number);
 
@@ -772,20 +750,6 @@ static indigo_result dome_change_property(indigo_device *device, indigo_client *
 		indigo_update_property(device, DOME_STEPS_PROPERTY, NULL);
 		DOME_HORIZONTAL_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, DOME_HORIZONTAL_COORDINATES_PROPERTY, NULL);
-		DOME_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
-		indigo_update_property(device, DOME_EQUATORIAL_COORDINATES_PROPERTY, NULL);
-		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(DOME_EQUATORIAL_COORDINATES_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- DOME_EQUATORIAL_COORDINATES
-		indigo_property_copy_values(DOME_EQUATORIAL_COORDINATES_PROPERTY, property, false);
-
-		if (DOME_PARK_PARKED_ITEM->sw.value) {
-			DOME_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
-			indigo_update_property(device, DOME_EQUATORIAL_COORDINATES_PROPERTY, "Dome is parked");
-			return INDIGO_OK;
-		}
-		DOME_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
-		indigo_update_property(device, DOME_EQUATORIAL_COORDINATES_PROPERTY, NULL);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(DOME_ABORT_MOTION_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- DOME_ABORT_MOTION
@@ -886,7 +850,7 @@ static indigo_result dome_change_property(indigo_device *device, indigo_client *
 		if (DOME_PARK_UNPARKED_ITEM->sw.value) {
 			DOME_PARK_PROPERTY->state = INDIGO_OK_STATE;
 			PRIVATE_DATA->park_requested = false;
-			indigo_update_property(device, DOME_PARK_PROPERTY, "Dome unparked");
+			indigo_update_property(device, DOME_PARK_PROPERTY, NULL);
 		} else if (DOME_PARK_PARKED_ITEM->sw.value) {
 			indigo_set_switch(DOME_PARK_PROPERTY, DOME_PARK_UNPARKED_ITEM, true);
 
@@ -901,7 +865,7 @@ static indigo_result dome_change_property(indigo_device *device, indigo_client *
 			indigo_update_property(device, DOME_STEPS_PROPERTY, NULL);
 			DOME_HORIZONTAL_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
 			indigo_update_property(device, DOME_HORIZONTAL_COORDINATES_PROPERTY, NULL);
-			indigo_update_property(device, DOME_PARK_PROPERTY, "Dome parking...");
+			indigo_update_property(device, DOME_PARK_PROPERTY, NULL);
 		} else {
 			indigo_update_property(device, DOME_PARK_PROPERTY, NULL);
 		}
@@ -943,8 +907,9 @@ indigo_result indigo_dome_baader(indigo_driver_action action, indigo_driver_info
 
 	SET_DRIVER_INFO(info, DOME_BAADER_NAME, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT:

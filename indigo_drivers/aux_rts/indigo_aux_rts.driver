@@ -1,0 +1,113 @@
+// Copyright (c) 2018-2026 CloudMakers, s. r. o.
+// All rights reserved.
+//
+// You can use this software under the terms of 'INDIGO Astronomy
+// open-source license' (see LICENSE.md).
+//
+// THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
+// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+// GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+// NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// RTS-on-COM shutter release driver definition
+
+// version history
+// 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+
+driver rts {
+	label = "RTS-on-COM shutter release";
+	author = "Peter Polakovic <peter.polakovic@cloudmakers.eu>";
+	copyright = "Copyright (c) 2018-2026 CloudMakers, s. r. o.";
+	version = 8;
+	serial;
+	code {
+		static void rts_on(indigo_device *device) {
+			indigo_uni_set_rts(PRIVATE_DATA->handle, true);
+		}
+
+		static void rts_off(indigo_device *device) {
+			indigo_uni_set_rts(PRIVATE_DATA->handle, false);
+		}
+
+		static bool rts_open(indigo_device *device) {
+			PRIVATE_DATA->handle = indigo_uni_open_serial(DEVICE_PORT_ITEM->text.value, INDIGO_LOG_DEBUG);
+			return PRIVATE_DATA->handle != NULL;
+		}
+
+		static void rts_close(indigo_device *device) {
+			indigo_uni_close(&PRIVATE_DATA->handle);
+		}
+	}
+	aux {
+		name = "RTS-on-COM shutter";
+		interface = INDIGO_INTERFACE_AUX_SHUTTER;
+		additional_instances = true;
+		on_timer {
+			if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE) {
+				CCD_EXPOSURE_ITEM->number.value--;
+				if (CCD_EXPOSURE_ITEM->number.value <= 0) {
+					CCD_EXPOSURE_ITEM->number.value = 0;
+					CCD_EXPOSURE_PROPERTY->state = INDIGO_OK_STATE;
+					rts_off(device);
+				}
+				indigo_update_property(device, CCD_EXPOSURE_PROPERTY, NULL);
+				if (CCD_EXPOSURE_ITEM->number.value > 0) {
+					indigo_execute_priority_handler_in(device, 100, CCD_EXPOSURE_ITEM->number.value < 1 ? CCD_EXPOSURE_ITEM->number.value : 1, aux_timer_callback);
+				}
+			}
+		}
+		on_connect {
+			CCD_EXPOSURE_ITEM->number.value = CCD_EXPOSURE_ITEM->number.target = 0;
+			CCD_EXPOSURE_PROPERTY->state = INDIGO_OK_STATE;
+		}
+		on_disconnect {
+			rts_off(device);
+		}
+		switch CCD_ABORT_EXPOSURE {
+			name = CCD_ABORT_EXPOSURE_PROPERTY_NAME;
+			group = AUX_MAIN_GROUP;
+			label = "Abort exposure";
+			rule = INDIGO_ANY_OF_MANY_RULE;
+			on_change {
+				if (CCD_ABORT_EXPOSURE_ITEM->sw.value && CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE) {
+					indigo_cancel_pending_handler(device, aux_timer_callback);
+					rts_off(device);
+					INDIGO_UPDATE_PROPERTY_STATE(CCD_EXPOSURE_PROPERTY, INDIGO_ALERT_STATE, NULL);
+				}
+				CCD_ABORT_EXPOSURE_ITEM->sw.value = false;
+				CCD_ABORT_EXPOSURE_PROPERTY->state = INDIGO_OK_STATE;
+			}
+			item CCD_ABORT_EXPOSURE {
+				name = CCD_ABORT_EXPOSURE_ITEM_NAME;
+				label = "Abort exposure";
+				value = false;
+			}
+		}
+		number CCD_EXPOSURE {
+			name = CCD_EXPOSURE_PROPERTY_NAME;
+			group = AUX_MAIN_GROUP;
+			label = "Start exposure";
+			on_change {
+				CCD_EXPOSURE_PROPERTY->state = INDIGO_BUSY_STATE;
+				rts_on(device);
+				CCD_EXPOSURE_PROPERTY->state = INDIGO_BUSY_STATE;
+				indigo_execute_priority_handler_in(device, 100, CCD_EXPOSURE_ITEM->number.value < 1 ? CCD_EXPOSURE_ITEM->number.value : 1, aux_timer_callback);
+			}
+			item CCD_EXPOSURE {
+				name = CCD_EXPOSURE_ITEM_NAME;
+				label = "Start exposure";
+				max = 1000;
+				step = 1;
+				format = "%f";
+			}
+		}
+	}
+}

@@ -1,9 +1,9 @@
-// Copyright (c) 2021 CloudMakers, s. r. o.
+// Copyright (c) 2021-2026 CloudMakers, s. r. o.
 // All rights reserved.
-//
-// You can use this software under the terms of 'INDIGO Astronomy
+
+// You may use this software under the terms of 'INDIGO Astronomy
 // open-source license' (see LICENSE.md).
-//
+
 // THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
 // OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
 // WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -16,230 +16,173 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// version history
-// 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// This file generated from indigo_aux_skyalert.driver
 
-/** INDIGO SkyAlert driver
- \file indigo_aux_skyalert.c
- */
-
-#define DRIVER_VERSION 0x0002
-#define DRIVER_NAME "indigo_aux_skyalert"
+#pragma mark - Includes
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <pthread.h>
-#include <termios.h>
-#include <errno.h>
-#include <sys/time.h>
-#include <sys/ioctl.h>
-
 #include <indigo/indigo_driver_xml.h>
-#include <indigo/indigo_io.h>
+#include <indigo/indigo_aux_driver.h>
+#include <indigo/indigo_uni_io.h>
 
 #include "indigo_aux_skyalert.h"
 
-#define PRIVATE_DATA                               ((skyalert_private_data *)device->private_data)
+#pragma mark - Common definitions
 
-#define AUX_WEATHER_PROPERTY                       (PRIVATE_DATA->weather_property)
-#define AUX_WEATHER_TEMPERATURE_ITEM               (AUX_WEATHER_PROPERTY->items + 0)
-#define AUX_WEATHER_HUMIDITY_ITEM                  (AUX_WEATHER_PROPERTY->items + 1)
-#define AUX_WEATHER_RAIN_ITEM                      (AUX_WEATHER_PROPERTY->items + 2)
-#define AUX_WEATHER_WIND_SPEED_ITEM                (AUX_WEATHER_PROPERTY->items + 3)
-#define AUX_WEATHER_PRESSURE_ITEM                  (AUX_WEATHER_PROPERTY->items + 4)
-#define AUX_WEATHER_SKY_TEMPERATURE_ITEM           (AUX_WEATHER_PROPERTY->items + 5)
+#define DRIVER_VERSION       0x03000004
+#define DRIVER_NAME          "indigo_aux_skyalert"
+#define DRIVER_LABEL         "Interactive Astronomy SkyAlert"
+#define AUX_DEVICE_NAME      "Interactive Astronomy SkyAlert"
+#define PRIVATE_DATA         ((skyalert_private_data *)device->private_data)
 
-#define AUX_INFO_PROPERTY                          (PRIVATE_DATA->info_property)
-#define AUX_INFO_SKY_BRIGHTNESS_ITEM               (AUX_INFO_PROPERTY->items + 0)
-#define AUX_INFO_POWER_ITEM                        (AUX_INFO_PROPERTY->items + 1)
+#pragma mark - Property definitions
 
+#define AUX_INFO_PROPERTY              (PRIVATE_DATA->aux_info_property)
+#define AUX_INFO_SKY_BRIGHTNESS_ITEM   (AUX_INFO_PROPERTY->items + 0)
+#define AUX_INFO_POWER_ITEM            (AUX_INFO_PROPERTY->items + 1)
 
-#define RESPONSE_LENGTH 256
+#define AUX_WEATHER_PROPERTY             (PRIVATE_DATA->aux_weather_property)
+#define AUX_WEATHER_TEMPERATURE_ITEM     (AUX_WEATHER_PROPERTY->items + 0)
+#define AUX_WEATHER_HUMIDITY_ITEM        (AUX_WEATHER_PROPERTY->items + 1)
+#define AUX_WEATHER_PRESSURE_ITEM        (AUX_WEATHER_PROPERTY->items + 2)
+#define AUX_WEATHER_WIND_SPEED_ITEM      (AUX_WEATHER_PROPERTY->items + 3)
+#define AUX_WEATHER_RAIN_ITEM            (AUX_WEATHER_PROPERTY->items + 4)
+#define AUX_WEATHER_SKY_TEMPERATURE_ITEM (AUX_WEATHER_PROPERTY->items + 5)
+
+#pragma mark - Private data definition
 
 typedef struct {
-	int handle;
-	indigo_property *weather_property;
-	indigo_property *info_property;
-	indigo_timer *timer_callback;
-	pthread_mutex_t mutex;
+	indigo_uni_handle *handle;
+	indigo_property *aux_info_property;
+	indigo_property *aux_weather_property;
+	//+ data
+	char response[32];
+	//- data
 } skyalert_private_data;
 
+#pragma mark - Low level code
 
-// -------------------------------------------------------------------------------- serial interface
+//+ code
 
-static bool skyalert_open(indigo_device *device) {
-	PRIVATE_DATA->handle = indigo_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 115200);
-	if (PRIVATE_DATA->handle < 0) {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to connect to %s", DEVICE_PORT_ITEM->text.value);
-		return false;
+static double skyalert_read_value(indigo_device *device) {
+	if (indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response), "\r", "\r", INDIGO_DELAY(1))) {
+		return indigo_atod(PRIVATE_DATA->response);
 	}
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Connected to %s", DEVICE_PORT_ITEM->text.value);
-	return true;
+	return -1;
 }
 
-static bool skyalert_command(indigo_device *device, const char *command, char *response) {
-	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	int result = indigo_write(PRIVATE_DATA->handle, command, strlen(command));
-	result |= indigo_write(PRIVATE_DATA->handle, "\r", 1);
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "%d <- \"%s\" (%s)", PRIVATE_DATA->handle, command, result ? "OK" : strerror(errno));
-	if (result && response) {
-		char c, *pnt = response;
-		*pnt = 0;
-		result = false;
-		int i = 0;
-		while (pnt - response < RESPONSE_LENGTH) {
-			if (indigo_read(PRIVATE_DATA->handle, &c, 1) < 1) {
-				*pnt = 0;
-				break;
-			}
-			if (c == '\r') {
-				if (i == 9) {
-					*pnt = 0;
-					result = true;
-					break;
-				} else {
-					*pnt++ = ' ';
-					i++;
-					continue;
-				}
-			}
-			*pnt++ = c;
+static bool skyalert_read_record(indigo_device *device) {
+	long result = indigo_uni_discard(PRIVATE_DATA->handle);
+	if (result >= 0) {
+		result = indigo_uni_printf(PRIVATE_DATA->handle, "send\r");
+	}
+	if (result > 0) {
+		result = indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response), "\r", "\r", INDIGO_DELAY(1));
+	}
+	if (result && !strcmp(PRIVATE_DATA->response, "Data")) {
+		AUX_WEATHER_TEMPERATURE_ITEM->number.value = skyalert_read_value(device);
+		AUX_WEATHER_SKY_TEMPERATURE_ITEM->number.value = skyalert_read_value(device);
+		AUX_WEATHER_RAIN_ITEM->number.value = skyalert_read_value(device);
+		AUX_INFO_SKY_BRIGHTNESS_ITEM->number.value = skyalert_read_value(device);
+		AUX_WEATHER_HUMIDITY_ITEM->number.value = skyalert_read_value(device);
+		AUX_WEATHER_WIND_SPEED_ITEM->number.value = skyalert_read_value(device);
+		AUX_INFO_POWER_ITEM->number.value = skyalert_read_value(device);
+		if (indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response), "\r", "\r", INDIGO_DELAY(1))) {
+			INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, PRIVATE_DATA->response);
 		}
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "%d -> \"%s\" (%s)", PRIVATE_DATA->handle, response, result ? "OK" : strerror(errno));
-	}
-	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
-	return result;
-}
-
-static void skyalert_close(indigo_device *device) {
-	if (PRIVATE_DATA->handle >= 0) {
-		close(PRIVATE_DATA->handle);
-		PRIVATE_DATA->handle = -1;
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Disconnected");
-	}
-}
-
-// -------------------------------------------------------------------------------- async handlers
-
-static void aux_timer_callback(indigo_device *device) {
-	if (!IS_CONNECTED) {
-		return;
-	}
-	char response[RESPONSE_LENGTH] = { 0 }, *pnt;
-	if (skyalert_command(device, "send", response)) {
-		char *tok = strtok_r(response, " ", &pnt);
-		if (tok == NULL) {
-			AUX_INFO_PROPERTY->state = INDIGO_ALERT_STATE;
-		} else if (!strcmp(tok, "Data")) {
-			AUX_WEATHER_TEMPERATURE_ITEM->number.value = indigo_atod(strtok_r(NULL, " ", &pnt));
-			AUX_WEATHER_SKY_TEMPERATURE_ITEM->number.value = indigo_atod(strtok_r(NULL, " ", &pnt));
-			AUX_WEATHER_RAIN_ITEM->number.value = indigo_atod(strtok_r(NULL, " ", &pnt));
-			AUX_INFO_SKY_BRIGHTNESS_ITEM->number.value = indigo_atod(strtok_r(NULL, " ", &pnt));
-			AUX_WEATHER_HUMIDITY_ITEM->number.value = indigo_atod(strtok_r(NULL, " ", &pnt));
-//			double therm_ad_units = 0.2 * (8431 - (sqrt(2.57048e7 + 500000 * AUX_WEATHER_TEMPERATURE_ITEM->number.value * 100)));
-//			double wind_speed_volts = indigo_atod(strtok_r(NULL, " ", &pnt)) * 0.0048828125;
-//			double zero_wind_ad_units = -0.0006 * (therm_ad_units * therm_ad_units) + 1.0727 * therm_ad_units + 47.172;
-//			double zero_wind_volts = (zero_wind_ad_units * 0.0048828125) - 0.2;
-//			double wind_speed = pow(((wind_speed_volts - zero_wind_volts) / 0.23), 2.7265) * 0.609 / 0.621;
-			AUX_WEATHER_WIND_SPEED_ITEM->number.value = indigo_atod(strtok_r(NULL, " ", &pnt));
-			AUX_INFO_POWER_ITEM->number.value = indigo_atod(strtok_r(NULL, " ", &pnt));
-			strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, strtok_r(NULL, " ", &pnt));
-			AUX_WEATHER_PRESSURE_ITEM->number.value = indigo_atod(strtok_r(NULL, " ", &pnt));
-			AUX_WEATHER_PROPERTY->state = INDIGO_OK_STATE;
-			AUX_INFO_PROPERTY->state = INDIGO_OK_STATE;
-		} else {
-			AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
-			AUX_INFO_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
+		AUX_WEATHER_PRESSURE_ITEM->number.value = skyalert_read_value(device);
+		return true;
 	} else {
 		AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
 		AUX_INFO_PROPERTY->state = INDIGO_ALERT_STATE;
+		return false;
 	}
-	indigo_update_property(device, AUX_WEATHER_PROPERTY, NULL);
-	indigo_update_property(device, AUX_INFO_PROPERTY, NULL);
-	if (PRIVATE_DATA->timer_callback)
-		indigo_reschedule_timer(device, 10, &PRIVATE_DATA->timer_callback);
-	else
-		indigo_set_timer(device, 0, aux_timer_callback, &PRIVATE_DATA->timer_callback);
 }
+
+static bool skyalert_open(indigo_device *device) {
+	PRIVATE_DATA->handle = indigo_uni_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 115200, INDIGO_LOG_DEBUG);
+	if (PRIVATE_DATA->handle) {
+		if (skyalert_read_record(device)) {
+			INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Interactive Astronomy SkyAlert");
+			indigo_update_property(device, INFO_PROPERTY, NULL);
+			return true;
+		}
+		indigo_uni_close(&PRIVATE_DATA->handle);
+	}
+	return false;
+}
+
+static void skyalert_close(indigo_device *device) {
+	INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Unknown");
+	INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
+	indigo_update_property(device, INFO_PROPERTY, NULL);
+	indigo_uni_close(&PRIVATE_DATA->handle);
+}
+
+//- code
+
+#pragma mark - High level code (aux)
 
 static void aux_connection_handler(indigo_device *device) {
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
-		if (!skyalert_open(device)) {
-			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
-		if (CONNECTION_PROPERTY->state == INDIGO_BUSY_STATE) {
-			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+		bool connection_result = true;
+		connection_result = skyalert_open(device);
+		if (connection_result) {
 			indigo_define_property(device, AUX_INFO_PROPERTY, NULL);
 			indigo_define_property(device, AUX_WEATHER_PROPERTY, NULL);
-			indigo_delete_property(device, INFO_PROPERTY, NULL);
-			aux_timer_callback(device);
-			indigo_define_property(device, INFO_PROPERTY, NULL);
+			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+			indigo_send_message(device, OK_PROPERTY, "Connected to %s on %s", AUX_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
 		} else {
-			skyalert_close(device);
+			indigo_send_message(device, ALERT_PROPERTY, "Failed to connect to %s on %s", AUX_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
+			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 			indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		}
 	} else {
-		indigo_cancel_timer_sync(device, &PRIVATE_DATA->timer_callback);
-		skyalert_close(device);
+		indigo_cancel_pending_handlers(device);
 		indigo_delete_property(device, AUX_INFO_PROPERTY, NULL);
 		indigo_delete_property(device, AUX_WEATHER_PROPERTY, NULL);
+		skyalert_close(device);
+		indigo_send_message(device, OK_PROPERTY, "Disconnected from %s", device->name);
 		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 	}
 	indigo_aux_change_property(device, NULL, CONNECTION_PROPERTY);
 }
 
-// -------------------------------------------------------------------------------- INDIGO aux device implementation
+#pragma mark - Device API (aux)
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
 
 static indigo_result aux_attach(indigo_device *device) {
-	assert(device != NULL);
-	assert(PRIVATE_DATA != NULL);
 	if (indigo_aux_attach(device, DRIVER_NAME, DRIVER_VERSION, INDIGO_INTERFACE_AUX_SQM) == INDIGO_OK) {
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
+		DEVICE_PORT_PROPERTY->hidden = false;
+		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
+		//+ aux.on_attach
 		INFO_PROPERTY->count = 6;
-		strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "Interactive Astronomy SkyAlert");
-		// -------------------------------------------------------------------------------- INFO
+		INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Unknown");
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
+		//- aux.on_attach
 		AUX_INFO_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_INFO_PROPERTY_NAME, "Info", "Info", INDIGO_OK_STATE, INDIGO_RO_PERM, 2);
-		if (AUX_INFO_PROPERTY == NULL)
+		if (AUX_INFO_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(AUX_INFO_SKY_BRIGHTNESS_ITEM, AUX_WEATHER_SKY_BRIGHTNESS_ITEM_NAME, "Sky brightness [raw]", 0, 0, 0, 0);
-		indigo_init_number_item(AUX_INFO_POWER_ITEM, AUX_INFO_POWER_ITEM_NAME, "Power [1 = ok, 0 = failure]", 0, 1, 0, 0);
-		// -------------------------------------------------------------------------------- WEATHER
+		indigo_init_number_item(AUX_INFO_POWER_ITEM, AUX_INFO_POWER_ITEM_NAME, "Power [1 = ok, 0 = failure]", 0, 0, 0, 0);
 		AUX_WEATHER_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_WEATHER_PROPERTY_NAME, "Info", "Weather conditions", INDIGO_OK_STATE, INDIGO_RO_PERM, 6);
-		if (AUX_WEATHER_PROPERTY == NULL)
+		if (AUX_WEATHER_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(AUX_WEATHER_TEMPERATURE_ITEM, AUX_WEATHER_TEMPERATURE_ITEM_NAME, "Temperature [C]", 0, 0, 0, 0);
 		indigo_init_number_item(AUX_WEATHER_HUMIDITY_ITEM, AUX_WEATHER_HUMIDITY_ITEM_NAME, "Humidity [%]", 0, 0, 0, 0);
 		indigo_init_number_item(AUX_WEATHER_PRESSURE_ITEM, AUX_WEATHER_PRESSURE_ITEM_NAME, "Pressure [hPa]", 0, 0, 0, 0);
 		indigo_init_number_item(AUX_WEATHER_WIND_SPEED_ITEM, AUX_WEATHER_WIND_SPEED_ITEM_NAME, "Wind speed [raw]", 0, 0, 0, 0);
 		indigo_init_number_item(AUX_WEATHER_RAIN_ITEM, AUX_WEATHER_RAIN_ITEM_NAME, "Dampness [raw]", 0, 0, 0, 0);
 		indigo_init_number_item(AUX_WEATHER_SKY_TEMPERATURE_ITEM, AUX_WEATHER_SKY_TEMPERATURE_ITEM_NAME, "Sky temperature [\u00B0C]", 0, 0, 0, 0);
-		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
-		DEVICE_PORT_PROPERTY->hidden = false;
-		DEVICE_PORTS_PROPERTY->hidden = false;
-#ifdef INDIGO_MACOS
-		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
-			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
-				break;
-			}
-		}
-#endif
-#ifdef INDIGO_LINUX
-	if (DEVICE_PORTS_PROPERTY->count > 1) {
-		/* 0 is refresh button */
-		indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[1].name);
-	} else {
-		strcpy(DEVICE_PORT_ITEM->text.value, "/dev/ttyUSB0");
-	}
-#endif
-		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
-		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return aux_enumerate_properties(device, NULL, NULL);
 	}
@@ -248,63 +191,51 @@ static indigo_result aux_attach(indigo_device *device) {
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(AUX_INFO_PROPERTY);
-		indigo_define_matching_property(AUX_WEATHER_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_INFO_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_WEATHER_PROPERTY);
 	}
-	return indigo_aux_enumerate_properties(device, NULL, NULL);
+	return indigo_aux_enumerate_properties(device, client, property);
 }
 
 static indigo_result aux_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
-	assert(device != NULL);
-	assert(DEVICE_CONTEXT != NULL);
-	assert(property != NULL);
 	if (indigo_property_match_changeable(CONNECTION_PROPERTY, property)) {
-	// -------------------------------------------------------------------------------- CONNECTION
-		if (indigo_ignore_connection_change(device, property))
-			return INDIGO_OK;
-		indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
-		CONNECTION_PROPERTY->state = INDIGO_BUSY_STATE;
-		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
-		indigo_set_timer(device, 0, aux_connection_handler, NULL);
+		if (!indigo_ignore_connection_change(device, property)) {
+			indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
+			INDIGO_UPDATE_PROPERTY_STATE(CONNECTION_PROPERTY, INDIGO_BUSY_STATE, NULL);
+			indigo_execute_handler(device, aux_connection_handler);
+		}
 		return INDIGO_OK;
-		// --------------------------------------------------------------------------------
 	}
 	return indigo_aux_change_property(device, client, property);
 }
 
 static indigo_result aux_detach(indigo_device *device) {
-	assert(device != NULL);
 	if (IS_CONNECTED) {
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		aux_connection_handler(device);
 	}
 	indigo_release_property(AUX_INFO_PROPERTY);
 	indigo_release_property(AUX_WEATHER_PROPERTY);
-	pthread_mutex_destroy(&PRIVATE_DATA->mutex);
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_aux_detach(device);
 }
 
-// -------------------------------------------------------------------------------- INDIGO driver implementation
+#pragma mark - Device templates
+
+static indigo_device aux_template = INDIGO_DEVICE_INITIALIZER(AUX_DEVICE_NAME, aux_attach, aux_enumerate_properties, aux_change_property, NULL, aux_detach);
+
+#pragma mark - Main code
 
 indigo_result indigo_aux_skyalert(indigo_driver_action action, indigo_driver_info *info) {
 	static indigo_driver_action last_action = INDIGO_DRIVER_SHUTDOWN;
 	static skyalert_private_data *private_data = NULL;
 	static indigo_device *aux = NULL;
 
-	static indigo_device aux_template = INDIGO_DEVICE_INITIALIZER(
-		"Interactive Astronomy SkyAlert",
-		aux_attach,
-		aux_enumerate_properties,
-		aux_change_property,
-		NULL,
-		aux_detach
-		);
+	SET_DRIVER_INFO(info, DRIVER_LABEL, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	SET_DRIVER_INFO(info, "Interactive Astronomy SkyAlert", __FUNCTION__, DRIVER_VERSION, false, last_action);
-
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

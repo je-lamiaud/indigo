@@ -1,4 +1,4 @@
-// Copyright (c) 2022 CloudMakers, s. r. o.
+// Copyright (c) 2022-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_rotator_optec.c
  */
 
-#define DRIVER_VERSION 0x0001
+#define DRIVER_VERSION 0x02000001
 #define DRIVER_NAME	"indigo_rotator_optec"
 
 #include <stdlib.h>
@@ -119,18 +119,21 @@ static indigo_result rotator_attach(indigo_device *device) {
 	if (indigo_rotator_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		// -------------------------------------------------------------------------------- X_HOME
 		X_HOME_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_HOME", ROTATOR_MAIN_GROUP, "Home", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 1);
-		if (X_HOME_PROPERTY == NULL)
+		if (X_HOME_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_HOME_ITEM, "HOME", "Find home", false);
 		// -------------------------------------------------------------------------------- X_RATE
 		X_RATE_PROPERTY = indigo_init_number_property(NULL, device->name, "X_RATE", ROTATOR_MAIN_GROUP, "Rate", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (X_RATE_PROPERTY == NULL)
+		if (X_RATE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_RATE_ITEM, "RATE", "Rotational rate", 0, 99, 1, 8);
 		// -------------------------------------------------------------------------------- X_RATE
 		X_ROTATE_PROPERTY = indigo_init_number_property(NULL, device->name, "X_ROTATE", ROTATOR_MAIN_GROUP, "Rotate", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (X_ROTATE_PROPERTY == NULL)
+		if (X_ROTATE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_ROTATE_ITEM, "ROTATE", "Steps", -9, 9, 1, 0);
 		// --------------------------------------------------------------------------------
 		ROTATOR_ON_POSITION_SET_PROPERTY->hidden = true;
@@ -139,10 +142,11 @@ static indigo_result rotator_attach(indigo_device *device) {
 		ROTATOR_POSITION_ITEM->number.min = -359;
 		ROTATOR_POSITION_ITEM->number.max = 359;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 		DEVICE_PORT_PROPERTY->hidden = false;
 		// --------------------------------------------------------------------------------
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return rotator_enumerate_properties(device, NULL, NULL);
 	}
@@ -151,11 +155,11 @@ static indigo_result rotator_attach(indigo_device *device) {
 
 static indigo_result rotator_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_HOME_PROPERTY);
-		indigo_define_matching_property(X_RATE_PROPERTY);
-		indigo_define_matching_property(X_ROTATE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_HOME_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_RATE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_ROTATE_PROPERTY);
 	}
-	return indigo_rotator_enumerate_properties(device, NULL, NULL);
+	return indigo_rotator_enumerate_properties(device, client, property);
 }
 
 
@@ -179,10 +183,11 @@ static void rotator_connect_callback(indigo_device *device) {
 			}
 			indigo_define_property(device, X_HOME_PROPERTY, NULL);
 			indigo_define_property(device, X_RATE_PROPERTY, NULL);
-			if (indigo_printf(PRIVATE_DATA->handle, "CTxx%02d", (int)X_RATE_ITEM->number.target) && read(PRIVATE_DATA->handle, response, 15) == 1 && *response == '!')
+			if (indigo_printf(PRIVATE_DATA->handle, "CTxx%02d", (int)X_RATE_ITEM->number.target) && read(PRIVATE_DATA->handle, response, 15) == 1 && *response == '!') {
 				X_RATE_PROPERTY->state = INDIGO_OK_STATE;
-			else
+			} else {
 				X_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
 			INDIGO_TRACE_PROTOCOL(indigo_trace("%d -> %s", PRIVATE_DATA->handle, response));
 			tcflush(PRIVATE_DATA->handle, TCIOFLUSH);
 			optec_sleep(device);
@@ -205,10 +210,11 @@ static void rotator_connect_callback(indigo_device *device) {
 
 static void rotator_direction_callback(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	if (optec_wakeup(device) && indigo_printf(PRIVATE_DATA->handle, "CD%dxxx", ROTATOR_DIRECTION_NORMAL_ITEM->sw.value ? 0 : 1))
+	if (optec_wakeup(device) && indigo_printf(PRIVATE_DATA->handle, "CD%dxxx", ROTATOR_DIRECTION_NORMAL_ITEM->sw.value ? 0 : 1)) {
 		ROTATOR_DIRECTION_PROPERTY->state = INDIGO_OK_STATE;
-	else
+	} else {
 		ROTATOR_DIRECTION_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
 	tcflush(PRIVATE_DATA->handle, TCIOFLUSH);
 	optec_sleep(device);
 	indigo_update_property(device, ROTATOR_DIRECTION_PROPERTY, NULL);
@@ -290,10 +296,11 @@ static void rotator_home_callback(indigo_device *device) {
 static void rotator_rate_callback(indigo_device *device) {
 	char response[16] = { 0 };
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	if (optec_wakeup(device) && indigo_printf(PRIVATE_DATA->handle, "CTxx%02d", (int)X_RATE_ITEM->number.target) && read(PRIVATE_DATA->handle, response, 15) == 1 && *response == '!')
+	if (optec_wakeup(device) && indigo_printf(PRIVATE_DATA->handle, "CTxx%02d", (int)X_RATE_ITEM->number.target) && read(PRIVATE_DATA->handle, response, 15) == 1 && *response == '!') {
 		X_RATE_PROPERTY->state = INDIGO_OK_STATE;
-	else
+	} else {
 		X_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
 	INDIGO_TRACE_PROTOCOL(indigo_trace("%d -> %s", PRIVATE_DATA->handle, response));
 	tcflush(PRIVATE_DATA->handle, TCIOFLUSH);
 	optec_sleep(device);
@@ -305,10 +312,11 @@ static void rotator_rotate_callback(indigo_device *device) {
 	char response[16] = { 0 };
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	int value = X_ROTATE_ITEM->number.target > 0 ? (int)X_ROTATE_ITEM->number.target : 10 - (int)X_ROTATE_ITEM->number.target;
-	if (optec_wakeup(device) && indigo_printf(PRIVATE_DATA->handle, "CXxx%02d", value) && read(PRIVATE_DATA->handle, response, 15) == 1 && *response == '!')
+	if (optec_wakeup(device) && indigo_printf(PRIVATE_DATA->handle, "CXxx%02d", value) && read(PRIVATE_DATA->handle, response, 15) == 1 && *response == '!') {
 		X_ROTATE_PROPERTY->state = INDIGO_OK_STATE;
-	else
+	} else {
 		X_ROTATE_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
 	INDIGO_TRACE_PROTOCOL(indigo_trace("%d -> %s", PRIVATE_DATA->handle, response));
 	tcflush(PRIVATE_DATA->handle, TCIOFLUSH);
 	optec_sleep(device);
@@ -374,7 +382,7 @@ static indigo_result rotator_change_property(indigo_device *device, indigo_clien
 			indigo_set_timer(device, 0, rotator_rotate_callback, NULL);
 		}
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, X_RATE_PROPERTY);
@@ -418,8 +426,9 @@ indigo_result indigo_rotator_optec(indigo_driver_action action, indigo_driver_in
 
 	SET_DRIVER_INFO(info, "Optec Pyxis Rotator", __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT:

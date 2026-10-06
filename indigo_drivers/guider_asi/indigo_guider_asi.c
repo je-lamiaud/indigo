@@ -1,4 +1,4 @@
-// Copyright (c) 2017 Rumen G. Bogdanovski
+// Copyright (c) 2017-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,14 +17,14 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 Build 0 - PoC by Rumen G. Bogdanovski
+// 2.0 Build 0 - PoC by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 
 /** INDIGO ZWO ASI USB2ST4 guider driver
  \file indigo_guider_asi.c
  */
 
-#define DRIVER_VERSION 0x0006
+#define DRIVER_VERSION 0x02000006
 #define DRIVER_NAME "indigo_guider_asi"
 
 #include <stdlib.h>
@@ -73,6 +73,7 @@ typedef struct {
 	pthread_mutex_t usb_mutex;
 } asi_private_data;
 
+static pthread_mutex_t indigo_device_enumeration_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static bool asi_open(indigo_device *device) {
 	int id = PRIVATE_DATA->dev_id;
@@ -80,20 +81,25 @@ static bool asi_open(indigo_device *device) {
 
 	if (device->is_connected) return false;
 
+	pthread_mutex_lock(&indigo_device_enumeration_mutex);
 	pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 	if (indigo_try_global_lock(device) != INDIGO_OK) {
 		pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+		pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
 		return false;
 	}
 	res = USB2ST4Open(id);
 	if (res) {
 		pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+		pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "USB2ST4Open(%d) = %d", id, res);
+		indigo_global_unlock(device);
 		return false;
 	}
 
 	pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 	return true;
 }
 
@@ -104,10 +110,12 @@ static void asi_close(indigo_device *device) {
 		return;
 	}
 
+	pthread_mutex_lock(&indigo_device_enumeration_mutex);
 	pthread_mutex_lock(&PRIVATE_DATA->usb_mutex);
 	USB2ST4Close(PRIVATE_DATA->dev_id);
 	indigo_global_unlock(device);
 	pthread_mutex_unlock(&PRIVATE_DATA->usb_mutex);
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 }
 
 
@@ -237,10 +245,11 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 			}
 		}
 
-		if (PRIVATE_DATA->guide_relays[USB2ST4_SOUTH] || PRIVATE_DATA->guide_relays[USB2ST4_NORTH])
+		if (PRIVATE_DATA->guide_relays[USB2ST4_SOUTH] || PRIVATE_DATA->guide_relays[USB2ST4_NORTH]) {
 			GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_BUSY_STATE;
-		else
+		} else {
 			GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_OK_STATE;
+		}
 
 		indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
 		return INDIGO_OK;
@@ -270,10 +279,11 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 			}
 		}
 
-		if (PRIVATE_DATA->guide_relays[USB2ST4_EAST] || PRIVATE_DATA->guide_relays[USB2ST4_WEST])
+		if (PRIVATE_DATA->guide_relays[USB2ST4_EAST] || PRIVATE_DATA->guide_relays[USB2ST4_WEST]) {
 			GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_BUSY_STATE;
-		else
+		} else {
 			GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_OK_STATE;
+		}
 
 		indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, NULL);
 		return INDIGO_OK;
@@ -409,6 +419,7 @@ static void process_plug_event(indigo_device *unused) {
 	device->private_data = private_data;
 	indigo_attach_device(device);
 	devices[slot]=device;
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 }
 
 static void process_unplug_event(indigo_device *unused) {
@@ -424,12 +435,15 @@ static void process_unplug_event(indigo_device *unused) {
 				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				return;
 			}
-			indigo_detach_device(*device);
-			if ((*device)->private_data) {
-				private_data = (*device)->private_data;
+			indigo_device *device_to_detach = *device;
+			if (device_to_detach->private_data) {
+				private_data = device_to_detach->private_data;
 			}
-			free(*device);
 			*device = NULL;
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
+			indigo_detach_device(device_to_detach);
+			free(device_to_detach);
+			pthread_mutex_lock(&indigo_device_enumeration_mutex);
 			removed = true;
 			slot = find_device_slot(id);
 		}
@@ -487,8 +501,9 @@ static void remove_all_devices() {
 			free(pds[i]);
 		}
 	}
-	for(i = 0; i < USB2ST4_ID_MAX; i++)
+	for (i = 0; i < USB2ST4_ID_MAX; i++) {
 		connected_ids[i] = false;
+	}
 }
 
 static libusb_hotplug_callback_handle callback_handle;
@@ -498,8 +513,9 @@ indigo_result indigo_guider_asi(indigo_driver_action action, indigo_driver_info 
 
 	SET_DRIVER_INFO(info, "ZWO ASI USB-St4 Guider", __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:
@@ -515,8 +531,9 @@ indigo_result indigo_guider_asi(indigo_driver_action action, indigo_driver_info 
 			return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
 
 		case INDIGO_DRIVER_SHUTDOWN:
-			for (int i = 0; i < MAX_DEVICES; i++)
+			for (int i = 0; i < MAX_DEVICES; i++) {
 				VERIFY_NOT_CONNECTED(devices[i]);
+			}
 			last_action = action;
 			libusb_hotplug_deregister_callback(NULL, callback_handle);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");

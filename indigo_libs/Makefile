@@ -1,6 +1,6 @@
 #---------------------------------------------------------------------
 #
-# Copyright (c) 2018 CloudMakers, s. r. o.
+# Copyright (c) 2018-2025 CloudMakers, s. r. o.
 # All rights reserved.
 #
 # You can use this software under the terms of 'INDIGO Astronomy
@@ -38,14 +38,7 @@ endif
 
 BIN_EXTERNALS = $(INDIGO_ROOT)/bin_externals
 
-ifeq ($(INDIGO_CUDA),)
-	LIBINDIGO_FILES = $(addsuffix .o, $(basename $(wildcard *.c))) $(addsuffix .o, $(basename $(wildcard *.cpp))) indigo_build.o
-else
-	LIBINDIGO_FILES = $(addsuffix .o, $(basename $(wildcard *.c))) $(addsuffix .o, $(basename $(wildcard *.cpp))) $(addsuffix .o, $(basename $(wildcard *.cu))) indigo_build.o
-endif
-
-%.o: %.cu
-	nvcc $(NVCCFLAGS) -c $< -o $@
+LIBINDIGO_FILES = $(addsuffix .o, $(basename $(wildcard *.c))) $(addsuffix .o, $(basename $(wildcard *.cpp))) indigo_build.o
 
 .PHONY: all clean
 
@@ -65,6 +58,7 @@ endif
 	install -d $(INSTALL_INCLUDE)/indigo
 	cp indigo/*.h $(INSTALL_INCLUDE)/indigo
 	@$(MAKE)	-C indigocat install
+	@$(MAKE)	-C indigo_client install
 
 uninstall: status
 	rm -f $(INSTALL_LIB)/libindigo.$(SOEXT)
@@ -74,9 +68,11 @@ ifeq ($(OS_DETECTED),Darwin)
 endif
 	rm -rf $(INSTALL_INCLUDE)/indigo
 	@$(MAKE)	-C indigocat uninstall
+	@$(MAKE)	-C indigo_client uninstall
 
 clean: status
 	@$(MAKE)	-C indigocat clean
+	@$(MAKE)	-C indigo_client clean
 	rm -f *.o *.orig $(BUILD_LIB)/libindigo.* $(BUILD_LIB)/libraw.* $(BUILD_LIB)/libjpeg.* $(BUILD_LIB)/libtiff.* $(BUILD_LIB)/libtiffxx.* $(BUILD_LIB)/libusb-1.0.* $(LIBHIDAPI).* $(BUILD_LIB)/libftd2xx.*
 
 clean-all: status
@@ -92,9 +88,8 @@ indigo_build_c:
 	sh ../tools/make_indigo_build.sh >indigo_build.c
 	$(CC) $(CFLAGS) -c indigo_build.c -o indigo_build.o
 
-indigo/indigo_config.h:	../Makefile.inc
-	cp indigo/indigo_config.h indigo/indigo_config.h.orig
-	sed 's/INDIGO_BUILD ".*"/INDIGO_BUILD "$(INDIGO_BUILD)"/' indigo/indigo_config.h.orig >indigo/indigo_config.h
+# indigo/indigo_config.h is kept in sync with INDIGO_BUILD / INDIGO_VERSION
+# by the top-level Makefile's indigo_version_sync target (idempotent).
 
 #---------------------------------------------------------------------
 #
@@ -102,16 +97,16 @@ indigo/indigo_config.h:	../Makefile.inc
 #
 #---------------------------------------------------------------------
 
-libindigo: indigo_build_c indigo/indigo_config.h libusb libhidapi libjpeg libtiff libftd2xx libraw libindigocat $(BUILD_LIB)/libindigo.a $(BUILD_LIB)/libindigo.$(SOEXT)
+libindigo: indigo_build_c libusb libhidapi libjpeg libtiff libftd2xx libraw libindigocat $(BUILD_LIB)/libindigo.a $(BUILD_LIB)/libindigo.$(SOEXT) libindigo_client
 
 $(BUILD_LIB)/libindigo.a: $(LIBINDIGO_FILES)
 	$(AR) $(ARFLAGS) $@ $^
 
 $(BUILD_LIB)/libindigo.$(SOEXT): $(LIBINDIGO_FILES)
 ifeq ($(OS_DETECTED),Darwin)
-	$(CC) -shared -o $@ $^ $(LDFLAGS) $(FORCE_ALL_ON) $(BUILD_LIB)/libjpeg.a $(FORCE_ALL_OFF) $(BUILD_LIB)/libtiff.a $(BUILD_LIB)/libtiffxx.a $(BUILD_LIB)/libraw.a $(FORCE_ALL_ON) $(LIBHIDAPI).a $(FORCE_ALL_OFF) -ldl -lusb-1.0 -lz -lstdc++
+	$(CC) -shared -o $@ $^ $(LDFLAGS) $(FORCE_ALL_ON) $(BUILD_LIB)/libjpeg.a $(FORCE_ALL_OFF) $(BUILD_LIB)/libtiff.a $(BUILD_LIB)/libtiffxx.a $(BUILD_LIB)/libraw.a $(FORCE_ALL_ON) $(LIBHIDAPI).a $(FORCE_ALL_OFF) -ldl -lusb-1.0 -lhidapi -lz -lstdc++
 else
-	$(CC) -shared -o $@ $^ $(LDFLAGS) $(FORCE_ALL_ON) $(BUILD_LIB)/libjpeg.a $(FORCE_ALL_OFF) $(BUILD_LIB)/libtiff.a $(BUILD_LIB)/libtiffxx.a $(BUILD_LIB)/libraw.a $(FORCE_ALL_ON) $(LIBHIDAPI).a $(FORCE_ALL_OFF) -ldl -lusb-1.0 -ldns_sd -lz -lstdc++
+	$(CC) -shared -o $@ $^ $(LDFLAGS) $(FORCE_ALL_ON) $(BUILD_LIB)/libjpeg.a $(FORCE_ALL_OFF) $(BUILD_LIB)/libtiff.a $(BUILD_LIB)/libtiffxx.a $(BUILD_LIB)/libraw.a $(FORCE_ALL_ON) $(LIBHIDAPI).a $(FORCE_ALL_OFF) -ldl -lusb-1.0 -ldns_sd -lavahi-client -lavahi-common -lz -lstdc++
 endif
 
 #---------------------------------------------------------------------
@@ -229,3 +224,17 @@ ifeq ($(ARCH_DETECTED),x64)
 endif
 endif
 	ar -d $(BUILD_LIB)/libftd2xx.a core.o descriptor.o io.o hotplug.o sync.o darwin_usb.o poll_posix.o threads_posix.o
+
+#---------------------------------------------------------------------
+#
+#	Build libindigo_client
+#
+#---------------------------------------------------------------------
+
+libindigo_client: $(BUILD_LIB)/libindigo_client.a $(BUILD_LIB)/libindigo_client.$(SOEXT)
+
+$(BUILD_LIB)/libindigo_client.a:
+	@$(MAKE)	-C indigo_client $(BUILD_LIB)/libindigo_client.a
+
+$(BUILD_LIB)/libindigo_client.$(SOEXT):
+	@$(MAKE)	-C indigo_client $(BUILD_LIB)/libindigo_client.$(SOEXT)

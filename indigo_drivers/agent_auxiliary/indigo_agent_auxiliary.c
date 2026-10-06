@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -18,33 +18,38 @@
 
 // version history
 // 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 /** INDIGO Auxiliary devices control agent
  \file indigo_agent_auxiliary.c
  */
 
-#define DRIVER_VERSION 0x0003
+#define DRIVER_VERSION 0x03000004
 #define DRIVER_NAME	"indigo_agent_auxiliary"
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <pthread.h>
 #include <errno.h>
 #include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <netinet/in.h>
 
 #include <indigo/indigo_driver_xml.h>
 #include <indigo/indigo_filter.h>
-#include <indigo/indigo_io.h>
 
 #include "indigo_agent_auxiliary.h"
 
 // -------------------------------------------------------------------------------- INDIGO agent device implementation
+
+static bool validate_related_agent(indigo_device *device, indigo_property *info_property, int mask) {
+	if (!strncmp(info_property->device, "Imager Agent", 12)) {
+		return true;
+	}
+	return false;
+}
+
+
 
 static indigo_result agent_device_attach(indigo_device *device) {
 	assert(device != NULL);
@@ -54,6 +59,7 @@ static indigo_result agent_device_attach(indigo_device *device) {
 		FILTER_AUX_2_LIST_PROPERTY->hidden = false;
 		FILTER_AUX_3_LIST_PROPERTY->hidden = false;
 		FILTER_AUX_4_LIST_PROPERTY->hidden = false;
+		FILTER_DEVICE_CONTEXT->validate_related_agent = validate_related_agent;
 		FILTER_RELATED_AGENT_LIST_PROPERTY->hidden = false;
 		// --------------------------------------------------------------------------------
 		CONFIG_PROPERTY->hidden = true;
@@ -61,10 +67,19 @@ static indigo_result agent_device_attach(indigo_device *device) {
 		CONNECTION_PROPERTY->hidden = true;
 		// --------------------------------------------------------------------------------
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
-		return indigo_agent_enumerate_properties(device, NULL, NULL);
+		return indigo_filter_enumerate_properties(device, NULL, NULL);
 	}
 	return INDIGO_FAILED;
 }
+
+static indigo_result agent_device_detach(indigo_device *device) {
+	assert(device != NULL);
+	indigo_cancel_pending_handlers(device);
+	indigo_cancel_all_timers(device);
+	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
+	return indigo_filter_device_detach(device);
+}
+
 
 // -------------------------------------------------------------------------------- Initialization
 
@@ -78,7 +93,7 @@ indigo_result indigo_agent_auxiliary(indigo_driver_action action, indigo_driver_
 		indigo_filter_enumerate_properties,
 		indigo_filter_change_property,
 		NULL,
-		indigo_filter_device_detach
+		agent_device_detach
 	);
 
 	static indigo_client agent_client_template = {
@@ -95,8 +110,9 @@ indigo_result indigo_agent_auxiliary(indigo_driver_action action, indigo_driver_
 
 	SET_DRIVER_INFO(info, AUX_AGENT_NAME, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT:

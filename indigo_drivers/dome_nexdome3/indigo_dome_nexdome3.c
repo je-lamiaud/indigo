@@ -1,4 +1,4 @@
-// Copyright (c) 2019 Rumen G. Bgdanovski
+// Copyright (c) 2019-2025 Rumen G. Bgdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_dome_nexdome3.c
  */
 
-#define DRIVER_VERSION 0x0000B
+#define DRIVER_VERSION 0x02000000B
 #define DRIVER_NAME    "indigo_dome_nexdome3"
 
 #define FIRMWARE_VERSION_3_2 0x0302
@@ -338,7 +338,7 @@ static void handle_rotator_status(indigo_device *device, char *message) {
 		DOME_PARK_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_set_switch(DOME_PARK_PROPERTY, DOME_PARK_PARKED_ITEM, true);
 		PROPERTY_UNLOCK();
-		indigo_update_property(device, DOME_PARK_PROPERTY, "Dome is parked.");
+		indigo_update_property(device, DOME_PARK_PROPERTY, NULL);
 		PRIVATE_DATA->park_requested = false;
 	}
 
@@ -417,13 +417,13 @@ static void handle_battery_status(indigo_device *device, char *message) {
 	double volts = 0.01465 * adc_value;
 	if (volts < VOLT_THRESHOLD) {
 		if (!low_voltage) {
-			indigo_send_message(device, "Dome power is low! (U = %.2fV)", volts);
+			indigo_send_message(device, ALERT_PROPERTY, "Dome power is low! (U = %.2fV)", volts);
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Dome power is low! (U = %.2fV", volts);
 		}
 		low_voltage = true;
 	} else {
 		if (low_voltage) {
-			indigo_send_message(device, "Dome power is normal! (U = %.2fV)", volts);
+			indigo_send_message(device, IDLE_PROPERTY, "Dome power is normal! (U = %.2fV)", volts);
 			INDIGO_DRIVER_LOG(DRIVER_NAME, "Dome power is normal! (U = %.2fV)", volts);
 		}
 		low_voltage = false;
@@ -566,7 +566,7 @@ static void handle_range(indigo_device *device, char *message) {
 static void handle_xb(indigo_device *device, char *message) {
 	char state[20];
 
-	if (sscanf(message, "XB->%s", state) != 1) {
+	if (sscanf(message, "XB->%19s", state) != 1) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Parsing message = '%s' error!", message);
 		return;
 	}
@@ -637,22 +637,22 @@ static void dome_event_handler(indigo_device *device) {
 
 static indigo_result nexdome_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(NEXDOME_FIND_HOME_PROPERTY);
-		indigo_define_matching_property(NEXDOME_HOME_POSITION_PROPERTY);
-		indigo_define_matching_property(NEXDOME_MOVE_THRESHOLD_PROPERTY);
-		indigo_define_matching_property(NEXDOME_POWER_PROPERTY);
-		indigo_define_matching_property(NEXDOME_ACCELERATION_PROPERTY);
-		indigo_define_matching_property(NEXDOME_VELOCITY_PROPERTY);
-		indigo_define_matching_property(NEXDOME_RANGE_PROPERTY);
-		indigo_define_matching_property(NEXDOME_SETTINGS_PROPERTY);
-		indigo_define_matching_property(NEXDOME_RAIN_PROPERTY);
-		indigo_define_matching_property(NEXDOME_XB_STATE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_FIND_HOME_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_HOME_POSITION_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_MOVE_THRESHOLD_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_POWER_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_ACCELERATION_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_VELOCITY_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_RANGE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_SETTINGS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_RAIN_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_XB_STATE_PROPERTY);
 
 #ifdef CMD_AID
-		indigo_define_matching_property(NEXDOME_COMMAND_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(NEXDOME_COMMAND_PROPERTY);
 #endif
 	}
-	return indigo_dome_enumerate_properties(device, NULL, NULL);
+	return indigo_dome_enumerate_properties(device, client, property);
 }
 
 
@@ -666,50 +666,56 @@ static indigo_result dome_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DOME_SPEED
 		DOME_SPEED_PROPERTY->hidden = true;
 		// -------------------------------------------------------------------------------- DOME_STEPS_PROPERTY
-		indigo_copy_value(DOME_STEPS_ITEM->label, "Relative move (°)");
+		INDIGO_COPY_VALUE(DOME_STEPS_ITEM->label, "Relative move (°)");
 		// -------------------------------------------------------------------------------- DEVICE_PORT
 		DEVICE_PORT_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- DEVICE_PORTS
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 		// --------------------------------------------------------------------------------
 		INFO_PROPERTY->count = 6;
-		// -------------------------------------------------------------------------------- DOME_ON_HORIZONTAL_COORDINATES_SET
-		DOME_ON_HORIZONTAL_COORDINATES_SET_PROPERTY->hidden = false;
+		// -------------------------------------------------------------------------------- DOME_ON_COORDINATES_SET
+		DOME_ON_COORDINATES_SET_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- DOME_HORIZONTAL_COORDINATES
 		DOME_HORIZONTAL_COORDINATES_PROPERTY->perm = INDIGO_RW_PERM;
 		// -------------------------------------------------------------------------------- DOME_SLAVING_PARAMETERS
 		DOME_SLAVING_PARAMETERS_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- NEXDOME_FIND_HOME
 		NEXDOME_FIND_HOME_PROPERTY = indigo_init_switch_property(NULL, device->name, NEXDOME_FIND_HOME_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Find home position", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 1);
-		if (NEXDOME_FIND_HOME_PROPERTY == NULL)
+		if (NEXDOME_FIND_HOME_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_FIND_HOME_PROPERTY->hidden = false;
 		indigo_init_switch_item(NEXDOME_FIND_HOME_ITEM, NEXDOME_FIND_HOME_ITEM_NAME, "Find home sensor", false);
 		// -------------------------------------------------------------------------------- NEXDOME_MOVE_THRESHOLD
 		NEXDOME_MOVE_THRESHOLD_PROPERTY = indigo_init_number_property(NULL, device->name, NEXDOME_MOVE_THRESHOLD_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Move threshold", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (NEXDOME_MOVE_THRESHOLD_PROPERTY == NULL)
+		if (NEXDOME_MOVE_THRESHOLD_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_MOVE_THRESHOLD_PROPERTY->hidden = false;
 		indigo_init_number_item(NEXDOME_MOVE_THRESHOLD_ITEM, NEXDOME_MOVE_THRESHOLD_ITEM_NAME, "Minimal move (steps, ~153 steps/°)", 0, 10000, 1, 300);
 		strcpy(NEXDOME_MOVE_THRESHOLD_ITEM->number.format, "%.0f");
 		// -------------------------------------------------------------------------------- NEXDOME_HOME_POSITION
 		NEXDOME_HOME_POSITION_PROPERTY = indigo_init_number_property(NULL, device->name, NEXDOME_HOME_POSITION_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Home position", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (NEXDOME_HOME_POSITION_PROPERTY == NULL)
+		if (NEXDOME_HOME_POSITION_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_HOME_POSITION_PROPERTY->hidden = false;
 		indigo_init_number_item(NEXDOME_HOME_POSITION_ITEM, NEXDOME_HOME_POSITION_ITEM_NAME, "Position (steps, ~153 steps/°)", 0, 100000, 1, 0);
 		strcpy(NEXDOME_HOME_POSITION_ITEM->number.format, "%.0f");
 		// -------------------------------------------------------------------------------- NEXDOME_POWER
 		NEXDOME_POWER_PROPERTY = indigo_init_number_property(NULL, device->name, NEXDOME_POWER_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Power status", INDIGO_OK_STATE, INDIGO_RO_PERM, 1);
-		if (NEXDOME_POWER_PROPERTY == NULL)
+		if (NEXDOME_POWER_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_POWER_PROPERTY->hidden = false;
 		indigo_init_number_item(NEXDOME_POWER_VOLTAGE_ITEM, NEXDOME_POWER_VOLTAGE_ITEM_NAME, "Battery charge (Volts)", 0, 500, 1, 0);
 		strcpy(NEXDOME_POWER_VOLTAGE_ITEM->number.format, "%.2f");
 		// -------------------------------------------------------------------------------- NEXDOME_ACCELERATION
 		NEXDOME_ACCELERATION_PROPERTY = indigo_init_number_property(NULL, device->name, NEXDOME_ACCELERATION_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Acceleration time", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-		if (NEXDOME_ACCELERATION_PROPERTY == NULL)
+		if (NEXDOME_ACCELERATION_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_ACCELERATION_PROPERTY->hidden = false;
 		indigo_init_number_item(NEXDOME_ACCELERATION_ROTATOR_ITEM, NEXDOME_ACCELERATION_ROTATOR_ITEM_NAME, "Rotator (ms)", 100, 10000, 1, 1500);
 		strcpy(NEXDOME_ACCELERATION_ROTATOR_ITEM->number.format, "%.0f");
@@ -717,8 +723,9 @@ static indigo_result dome_attach(indigo_device *device) {
 		strcpy(NEXDOME_ACCELERATION_SHUTTER_ITEM->number.format, "%.0f");
 		// -------------------------------------------------------------------------------- NEXDOME_VELOCITY
 		NEXDOME_VELOCITY_PROPERTY = indigo_init_number_property(NULL, device->name, NEXDOME_VELOCITY_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Movement velocity", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-		if (NEXDOME_VELOCITY_PROPERTY == NULL)
+		if (NEXDOME_VELOCITY_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_VELOCITY_PROPERTY->hidden = false;
 		indigo_init_number_item(NEXDOME_VELOCITY_ROTATOR_ITEM, NEXDOME_VELOCITY_ROTATOR_ITEM_NAME, "Rotator (steps/s)", 32, 5000, 1, 600);
 		strcpy(NEXDOME_VELOCITY_ROTATOR_ITEM->number.format, "%.0f");
@@ -726,8 +733,9 @@ static indigo_result dome_attach(indigo_device *device) {
 		strcpy(NEXDOME_VELOCITY_SHUTTER_ITEM->number.format, "%.0f");
 		// -------------------------------------------------------------------------------- NEXDOME_RANGE
 		NEXDOME_RANGE_PROPERTY = indigo_init_number_property(NULL, device->name, NEXDOME_RANGE_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Movement range", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-		if (NEXDOME_RANGE_PROPERTY == NULL)
+		if (NEXDOME_RANGE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_RANGE_PROPERTY->hidden = false;
 		indigo_init_number_item(NEXDOME_RANGE_ROTATOR_ITEM, NEXDOME_RANGE_ROTATOR_ITEM_NAME, "Dome circumference (steps)", 30000, 100000, 1, 55080);
 		strcpy(NEXDOME_RANGE_ROTATOR_ITEM->number.format, "%.0f");
@@ -735,34 +743,38 @@ static indigo_result dome_attach(indigo_device *device) {
 		strcpy(NEXDOME_RANGE_SHUTTER_ITEM->number.format, "%.0f");
 		// -------------------------------------------------------------------------------- NEXDOME_FIND_HOME
 		NEXDOME_SETTINGS_PROPERTY = indigo_init_switch_property(NULL, device->name, NEXDOME_SETTINGS_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Settings management", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
-		if (NEXDOME_SETTINGS_PROPERTY == NULL)
+		if (NEXDOME_SETTINGS_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_SETTINGS_PROPERTY->hidden = false;
 		indigo_init_switch_item(NEXDOME_SETTINGS_LOAD_ITEM, NEXDOME_SETTINGS_LOAD_ITEM_NAME, "Load from EEPROM", false);
 		indigo_init_switch_item(NEXDOME_SETTINGS_SAVE_ITEM, NEXDOME_SETTINGS_SAVE_ITEM_NAME, "Save to EEPROM", false);
 		indigo_init_switch_item(NEXDOME_SETTINGS_DEFAULT_ITEM, NEXDOME_SETTINGS_DEFAULT_ITEM_NAME, "Load factory defaults", false);
 		// -------------------------------------------------------------------------------- NEXDOME_RAIN
 		NEXDOME_RAIN_PROPERTY = indigo_init_light_property(NULL, device->name, NEXDOME_RAIN_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Rain sensor", INDIGO_OK_STATE, 1);
-		if (NEXDOME_RAIN_PROPERTY == NULL)
+		if (NEXDOME_RAIN_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_RAIN_PROPERTY->hidden = false;
 		indigo_init_light_item(NEXDOME_RAIN_ALERT_ITEM, NEXDOME_RAIN_ALERT_ITEM_NAME, "Rain alert", INDIGO_IDLE_STATE);
 		// -------------------------------------------------------------------------------- NEXDOME_XB_STATE
 		NEXDOME_XB_STATE_PROPERTY = indigo_init_text_property(NULL, device->name, NEXDOME_XB_STATE_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Shutter state", INDIGO_IDLE_STATE, INDIGO_RO_PERM, 1);
-		if (NEXDOME_XB_STATE_PROPERTY == NULL)
+		if (NEXDOME_XB_STATE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_XB_STATE_PROPERTY->hidden = false;
 		indigo_init_text_item(NEXDOME_XB_STATE_ITEM, NEXDOME_XB_STATE_ITEM_NAME, "Shutter state", "");
 #ifdef CMD_AID
 		// -------------------------------------------------------------------------------- NEXDOME_COMMAND
 		NEXDOME_COMMAND_PROPERTY = indigo_init_text_property(NULL, device->name, NEXDOME_COMMAND_PROPERTY_NAME, NEXDOME_SETTINGS_GROUP, "Custom command", INDIGO_IDLE_STATE, INDIGO_RW_PERM, 1);
-		if (NEXDOME_COMMAND_PROPERTY == NULL)
+		if (NEXDOME_COMMAND_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		NEXDOME_COMMAND_PROPERTY->hidden = false;
 		indigo_init_text_item(NEXDOME_COMMAND_ITEM, NEXDOME_COMMAND_ITEM_NAME, "Command", INDIGO_IDLE_STATE);
 #endif
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return nexdome_enumerate_properties(device, NULL, NULL);
 	}
@@ -816,8 +828,8 @@ static void dome_connect_callback(indigo_device *device) {
 					return;
 				} else { // Successfully connected
 					//uint32_t value;
-					indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, "NexDome");
-					indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
+					INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "NexDome");
+					INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
 					int version, revision;
 					char leftover[255];
 					sscanf(firmware, "%d.%d.%s", &version, &revision, leftover);
@@ -947,11 +959,10 @@ static indigo_result dome_change_property(indigo_device *device, indigo_client *
 		}
 		PROPERTY_LOCK();
 		char command[NEXDOME_CMD_LEN];
-		if (DOME_ON_HORIZONTAL_COORDINATES_SET_SYNC_ITEM->sw.value) {
+		if (DOME_ON_COORDINATES_SET_SYNC_ITEM->sw.value) {
 			sprintf(command, "PWR,%.0f", target_position * PRIVATE_DATA->steps_per_degree);
 			nexdome_command(device, command);
 			DOME_HORIZONTAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
-			DOME_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
 		} else { /* GOTO */
 			PRIVATE_DATA->park_requested = false;
 			PRIVATE_DATA->callibration_requested = false;
@@ -966,42 +977,6 @@ static indigo_result dome_change_property(indigo_device *device, indigo_client *
 		PROPERTY_UNLOCK();
 		indigo_set_timer(device, 3, dome_rotator_status_request, NULL);
 		indigo_update_property(device, DOME_HORIZONTAL_COORDINATES_PROPERTY, NULL);
-		indigo_update_property(device, DOME_EQUATORIAL_COORDINATES_PROPERTY, NULL);
-		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(DOME_EQUATORIAL_COORDINATES_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- DOME_EQUATORIAL_COORDINATES
-		indigo_property_copy_values(DOME_EQUATORIAL_COORDINATES_PROPERTY, property, false);
-		/* Keep the dome in sync if needed */
-		if (DOME_SLAVING_ENABLE_ITEM->sw.value) {
-			PROPERTY_LOCK();
-			double az;
-			char command[NEXDOME_CMD_LEN];
-			if (indigo_fix_dome_azimuth(device, DOME_EQUATORIAL_COORDINATES_RA_ITEM->number.value, DOME_EQUATORIAL_COORDINATES_DEC_ITEM->number.value, DOME_HORIZONTAL_COORDINATES_AZ_ITEM->number.value, &az) &&
-			   (DOME_PARK_PROPERTY->state != INDIGO_BUSY_STATE) && (PRIVATE_DATA->callibration_requested == false) && (DOME_HORIZONTAL_COORDINATES_PROPERTY->state != INDIGO_BUSY_STATE)) {
-				if (DOME_PARK_PARKED_ITEM->sw.value) {
-					PROPERTY_UNLOCK();
-					if (DOME_EQUATORIAL_COORDINATES_PROPERTY->state != INDIGO_ALERT_STATE) {
-						DOME_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
-						indigo_update_property(device, DOME_EQUATORIAL_COORDINATES_PROPERTY, "Can not Synchronize. Dome is parked.");
-					} else {
-						indigo_update_property(device, DOME_EQUATORIAL_COORDINATES_PROPERTY, NULL);
-					}
-					return INDIGO_OK;
-				}
-				PRIVATE_DATA->park_requested = false;
-				DOME_HORIZONTAL_COORDINATES_AZ_ITEM->number.target = az;
-				if (PRIVATE_DATA->version < FIRMWARE_VERSION_3_2) {
-					sprintf(command, "GAR,%.0f", az);
-				} else {
-					sprintf(command, "GSR,%.0f", az * PRIVATE_DATA->steps_per_degree);
-				}
-				nexdome_command(device, command);
-			}
-			nexdome_command(device, "PRR");
-			PROPERTY_UNLOCK();
-		}
-		DOME_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
-		indigo_update_property(device, DOME_EQUATORIAL_COORDINATES_PROPERTY, NULL);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(DOME_ABORT_MOTION_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- DOME_ABORT_MOTION
@@ -1009,11 +984,13 @@ static indigo_result dome_change_property(indigo_device *device, indigo_client *
 		PROPERTY_LOCK();
 		if (DOME_ABORT_MOTION_ITEM->sw.value) {
 			nexdome_command(device, "SWR");
-			if (DOME_HORIZONTAL_COORDINATES_PROPERTY->state == INDIGO_BUSY_STATE)
+			if (DOME_HORIZONTAL_COORDINATES_PROPERTY->state == INDIGO_BUSY_STATE) {
 				PRIVATE_DATA->rotator_stop_requested = true;
+			}
 			nexdome_command(device, "SWS");
-			if (DOME_SHUTTER_PROPERTY->state == INDIGO_BUSY_STATE)
+			if (DOME_SHUTTER_PROPERTY->state == INDIGO_BUSY_STATE) {
 				PRIVATE_DATA->shutter_stop_requested = true;
+			}
 		}
 		DOME_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
 		DOME_ABORT_MOTION_ITEM->sw.value = false;
@@ -1043,13 +1020,13 @@ static indigo_result dome_change_property(indigo_device *device, indigo_client *
 			DOME_PARK_PROPERTY->state = INDIGO_OK_STATE;
 			PRIVATE_DATA->park_requested = false;
 			PROPERTY_UNLOCK();
-			indigo_update_property(device, DOME_PARK_PROPERTY, "Dome is unparked.");
+			indigo_update_property(device, DOME_PARK_PROPERTY, NULL);
 			return INDIGO_OK;
 		} else if (DOME_PARK_PARKED_ITEM->sw.value) {
 			if (IN_PARK_POSITION) {
 				DOME_PARK_PROPERTY->state = INDIGO_OK_STATE;
 				PROPERTY_UNLOCK();
-				indigo_update_property(device, DOME_PARK_PROPERTY, "Dome is parked.");
+				indigo_update_property(device, DOME_PARK_PROPERTY, NULL);
 				return INDIGO_OK;
 			} else {
 				indigo_set_switch(DOME_PARK_PROPERTY, DOME_PARK_UNPARKED_ITEM, true);
@@ -1187,8 +1164,12 @@ static indigo_result dome_change_property(indigo_device *device, indigo_client *
 		indigo_property_copy_values(NEXDOME_COMMAND_PROPERTY, property, false);
 		PROPERTY_LOCK();
 		char command[NEXDOME_CMD_LEN];
-		sprintf(command, "%s\n", NEXDOME_COMMAND_ITEM->text.value);
-		nexdome_command(device, command);
+		if (snprintf(command, sizeof(command), "%s\n", NEXDOME_COMMAND_ITEM->text.value) >= (int)sizeof(command)) {
+			NEXDOME_COMMAND_PROPERTY->state = INDIGO_ALERT_STATE;
+		} else {
+			nexdome_command(device, command);
+			NEXDOME_COMMAND_PROPERTY->state = INDIGO_OK_STATE;
+		}
 		PROPERTY_UNLOCK();
 		indigo_update_property(device, NEXDOME_COMMAND_PROPERTY, NULL);
 		return INDIGO_OK;
@@ -1243,8 +1224,9 @@ indigo_result indigo_dome_nexdome3(indigo_driver_action action, indigo_driver_in
 
 	SET_DRIVER_INFO(info, DOME_NEXDOME3_NAME, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT:

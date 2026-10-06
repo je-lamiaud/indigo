@@ -48,12 +48,13 @@ enum MountType {
 static const char hexDigit[] = "0123456789ABCDEF";
 
 static inline int hexValue(char h) {
-	if (h >= '0' && h <= '9')
+	if (h >= '0' && h <= '9') {
 		return h - '0';
-	else if (h >= 'A' && h <= 'F')
+	} else if (h >= 'A' && h <= 'F') {
 		return h - 'A' + 10;
-	else
+	} else {
 		return 0;
+	}
 }
 
 static const char* longToHex(long n) {
@@ -98,7 +99,7 @@ static bool synscan_flush(indigo_device* device) {
 		FD_SET(PRIVATE_DATA->handle, &readout);
 		tv.tv_sec = 0;
 		tv.tv_usec = 10000;
-		long result = select(1, &readout, NULL, NULL, &tv);
+		long result = select(PRIVATE_DATA->handle + 1, &readout, NULL, NULL, &tv);
 		if (result == 0) {
 			break;
 		}
@@ -145,11 +146,15 @@ static bool synscan_read_response(indigo_device* device, char* r) {
 	char c;
 	char resp[20];
 	if (PRIVATE_DATA->udp) {
-		long bytes_read = recv(PRIVATE_DATA->handle, resp, sizeof(resp), 0);
+		long bytes_read = recv(PRIVATE_DATA->handle, resp, sizeof(resp) - 1, 0);
+		if (bytes_read <= 0) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Reading response failed");
+			return false;
+		}
 		resp[bytes_read] = 0;
 	} else {
 		long total_bytes = 0;
-		while (total_bytes < sizeof(resp)) {
+		while (total_bytes < (long)sizeof(resp) - 1) {
 			long bytes_read = read(PRIVATE_DATA->handle, &c, 1);
 			if (bytes_read == 0) {
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "SYNSCAN_TIMEOUT");
@@ -170,11 +175,12 @@ static bool synscan_read_response(indigo_device* device, char* r) {
 	}
 	//  Check response syntax =...<cr>, if invalid retry
 	size_t len = strlen(resp);
+	int printable_len = len > 0 ? (int)len - 1 : 0;
 	if (len < 2 || resp[0] != '=' || resp[len - 1] != '\r') {
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "RESPONSE: [%.*s] - error", len - 1, resp);
+		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "RESPONSE: [%.*s] - error", printable_len, resp);
 		return false;
 	} else {
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "RESPONSE: [%.*s]", len - 1, resp);
+		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "RESPONSE: [%.*s]", printable_len, resp);
 	}
 
 	//  Extract response payload, return
@@ -208,11 +214,6 @@ static bool synscan_command(indigo_device* device, const char* cmd, char* r) {
 		}
 	}
 
-//	if (nretries == 2 && !PRIVATE_DATA->udp && cmd[1] != 'q') {
-//		indigo_send_message(device, "Lost connection");
-//		indigo_device_disconnect(NULL, device->name);
-//	}
-
 	//  Mount command failed
 	pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
 	return false;
@@ -223,8 +224,9 @@ static bool synscan_command_with_long_result(indigo_device* device, char* cmd, l
 	if (!synscan_command(device, cmd, buffer)) {
 		return false;
 	}
-	if (val)
+	if (val) {
 		*val = hexResponseToLong(buffer);
+	}
 	return true;
 }
 
@@ -233,8 +235,9 @@ static bool synscan_command_with_code_result(indigo_device* device, char* cmd, l
 	if (!synscan_command(device, cmd, buffer)) {
 		return false;
 	}
-	if (val)
+	if (val) {
 		*val = hexToLong(buffer);
+	}
 	return true;
 }
 

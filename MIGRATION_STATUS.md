@@ -1,0 +1,229 @@
+# Migration status
+
+| Driver                   | API | Windows  | Generator | Async Queues | Retested | Comment                                                  |
+| ------------------------ | --- | -------- | --------- | ------------ | -------- | -------------------------------------------------------- |
+| agent_alpaca             | 3️⃣  | ✅ Yes   | ⛔ N/A   | ✅ Yes   | ✅ Yes   |                                                          |
+| agent_auxiliary          | 3️⃣  | ✅ Yes   | ⛔ N/A   | ✅ Yes   | ✅ Yes   |                                                          |
+| agent_config             | 3️⃣  | ✅ Yes   | ⛔ N/A   | ✅ Yes   | ✅ Yes   |                                                          |
+| agent_guider             | 3️⃣  | ✅ Yes   | ⛔ N/A   | ✅ Yes   | ✅ Yes   |                                                          |
+| agent_imager             | 3️⃣  | ✅ Yes   | ⛔ N/A   | ✅ Yes   | ✅ Yes   |                                                          |
+| agent_mount              | 3️⃣  | ✅ Yes   | ⛔ N/A   | ✅ Yes   | ✅ Yes   |                                                          |
+| agent_scripting          | 3️⃣  | ✅ Yes   | ⛔ N/A   | ✅ Yes   | ✅ Yes   |                                                          |
+| agent_astrometry         | 2️⃣  | ❌ No    | ⛔ N/A   | ✅ Yes   | ✅ Yes   | 🚧 Source ported (CreateProcess/Job Objects, WinINet download, no curl/rm dependency) + vcxproj added to indigo_windows.sln; not yet built/tested on real Windows/MSVC |
+| agent_astap              | 2️⃣  | ❌ No    | ⛔ N/A   | ❌ No    | ❌ No    | ⛔ Needs fork() & pipes                                  |
+| agent_snoop              | 2️⃣  | ❌ No    | ⛔ N/A   | ❌ No    | ❌ No    | 🚧 Obsolete                                              |
+| ao_sx                    | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| aux_arteskyflat          | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_asiair               | 2️⃣  | ⛔ N/A   | ❌ No    | ❌ No    | ❌ No    | ⛔ RPi only                                              |
+| aux_astromechanics       | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_cloudwatcher         | 3️⃣  | ✅ Yes   | ❌ No    | ✅ Yes   | ✅ HW    |                                                          |
+| aux_dragonfly            | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| aux_dsusb                | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| aux_fbc                  | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| aux_flatmaster           | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_flipflat             | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_geoptikflat          | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_joystick             | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| aux_mgbox                | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| aux_ppb                  | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_rpio                 | 2️⃣  | ⛔ N/A   | ❌ No    | ❌ No    | ❌ No    | ⛔ RPi only                                              |
+| aux_rts                  | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ❌ No    |                                                          |
+| aux_skyalert             | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_sqm                  | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_svbpowerbox          | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |
+| aux_uch                  | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_upb                  | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| aux_upb3                 | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_usbdp                | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| aux_wbplusv3             | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| aux_wbprov3              | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| aux_wcv4ec               | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| ccd_altair               | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| ccd_apogee               | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⏰ TODO - make boost_regex and libapogee for Windows     |
+| ccd_asi                  | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| ccd_atik                 | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| ccd_bresser              | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    | ➡️ Touptek                                               |
+| ccd_dsi                  | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| ccd_fli                  | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| ccd_iidc                 | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⏰ TODO - make libdc1394 for Windows                     |
+| ccd_mallin               | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    | ➡️ Touptek                                               |
+| ccd_mi                   | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⛔ Unix and Windows SDKs are not compatible              |
+| ccd_ogma                 | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    | ➡️ Touptek                                               |
+| ccd_omegonpro            | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    | ➡️ Touptek                                               |
+| ccd_pentax               | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | 🚧 Unfinished & stalled                                  |
+| ccd_playerone            | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| ccd_ptp                  | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| ccd_qhy                  | 3️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⏰ TODO - make libqhy for Windows                        |
+| ccd_qhy2                 | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| ccd_qsi                  | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⏰ TODO - find SDK for windows                           |
+| ccd_rising               | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    | ➡️ Touptek                                               |
+| ccd_sbig                 | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⏰ TODO - find SDK for windows                           |
+| ccd_simulator            | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ⛔ N/A   |                                                          |
+| ccd_ssag                 | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| ccd_ssg                  | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    | ➡️ Touptek                                               |
+| ccd_svb                  | 3️⃣  | ✅ No    | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| ccd_svb2                 | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    | ➡️ Touptek                                               |
+| ccd_sx                   | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| ccd_touptek              | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| ccd_uvc                  | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⛔ libuvc is Unix only                                   |
+| dome_baader              | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| dome_beaver              | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| dome_dragonfly           | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| dome_nexdome             | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| dome_nexdome3            | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| dome_simulator           | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ⛔ N/A   |                                                          |
+| dome_skyroof             | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Yes   |                                                          |
+| dome_talon6ror           | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_asi              | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_astroasis        | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| focuser_astromechanics   | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| focuser_dmfc             | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| focuser_dsd              | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| focuser_efa              | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_fc3              | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ❌ No    |                                                          |
+| focuser_fcusb            | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| focuser_fli              | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_focusdreampro    | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_ioptron          | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_lacerta          | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_lakeside         | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_lunatico         | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_mjkzz            | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_mjkzz_bt         | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⛔ macOS only                                            |
+| focuser_moonlite         | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_mypro2           | 3️⃣  | ✅ Yes   | ❌ No    | ✅ Yes   | ✅ NW    |                                                          |
+| focuser_nfocus           | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_nstep            | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_optec            | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_optecfl          | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_primaluce        | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| focuser_prodigy          | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_qhy              | 3️⃣  | ✅ Yes   | ❌ No    | ✅ Yes   | ❌ No    |                                                          |
+| focuser_robofocus        | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_steeldrive2      | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_usbv3            | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| focuser_wemacro          | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| focuser_wemacro_bt       | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⛔ macOS only                                            |
+| gps_gpsd                 | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⏰ TODO - make libgps for Windows                        |
+| gps_nmea                 | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ❌ No    |                                                          |
+| gps_simulator            | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ⛔ N/A   |                                                          |
+| guider_asi               | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⏰ TODO - find SDK for windows                           |
+| guider_cgusbst4          | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ❌ No    |                                                          |
+| guider_gpusb             | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| mount_asi                | 3️⃣  | ✅ Yes   | ❌ No    | ✅ Yes   | ❌ No    |                                                          |
+| mount_ioptron            | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ Sim   |                                                          |
+| mount_lx200              | 3️⃣  | ✅ Yes   | ❌ No    | ✅ Yes   | ✅ HW    |                                                          |
+| mount_nexstar            | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⏰ TODO - make libnexstar for Windows                    |
+| mount_nexstaraux         | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| mount_pmc8               | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| mount_rainbow            | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| mount_simulator          | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ⛔ N/A   |                                                          |
+| mount_starbook           | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| mount_synscan            | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| mount_temma              | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| polaralign_simulator     | 3️⃣  | ❌ No    | ❌ No    | ❌ No    | ⛔ N/A   |                                                          |
+| rotator_asi              | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| rotator_falcon           | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ HW    |                                                          |
+| rotator_lunatico         | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| rotator_optec            | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| rotator_simulator        | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ⛔ N/A   |                                                          |
+| rotator_wa               | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| system_ascol             | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| wheel_asi                | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| wheel_astroasis          | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| wheel_atik               | 3️⃣  | ❌ No    | ✅ Yes   | ✅ Yes   | ❌ No    | ⏰ TODO - make libatik for Windows                       |
+| wheel_fli                | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ❌ No    |                                                          |
+| wheel_indigo             | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Sim   |                                                          |
+| wheel_manual             | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ❌ No    |                                                          |
+| wheel_mi                 | 2️⃣  | ❌ No    | ❌ No    | ❌ No    | ❌ No    | ⛔ Unix and Windows SDKs are not compatible              |
+| wheel_optec              | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Yes   |                                                          |
+| wheel_playerone          | 3️⃣  | ✅ Yes   | ❌ No    | ❌ No    | ✅ HW    |                                                          |
+| wheel_qhy                | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Yes   |                                                          |
+| wheel_quantum            | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Yes   |                                                          |
+| wheel_sx                 | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Yes   | ⏰ TODO - make hidapi for Windows                        |
+| wheel_trutek             | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Yes   |                                                          |
+| wheel_xagyl              | 3️⃣  | ✅ Yes   | ✅ Yes   | ✅ Yes   | ✅ Yes   |                                                          |
+
+# COOKBOOK for migration to API 3.0 and Windows
+
+On Linux or macOS for files, serial ports and TCP and UDP streams can be used uniform approach: handle is int, last error is in errno, for all kinds of communication can be used select/read pattern for reading with timeout. On Windows there are different kinds of handles for files, serial ports and network sockets. Also last error must be retrieved differently. That's why indigo_io must be replaced by something more sophisticated.
+
+On Linux or macOS either ASCI or UTF-8 is used for strings, while on Windows may be used UTF-16, so special handling is necessary for communication with Windows SDKs.
+
+Use Visual Studio 2022 with Desktop C++ development option installed and MSC. Porting with various GCC clones and Linux compatibility layers may look easier, but makes no sense, don't waste time on it. You will sooner or later hit compatibility issues between such binaries and standard Windows SDKs and applications.
+
+## Serial communication drivers
+
+1. You will probably need to remove some includes which are not used anyway (<unistd.h>, <sys/time.h>, <sys/termios.h>, <libusb.h> etc.), if driver needs libusb, include <indigo/indigo_usb_utils.h> before including SDK headers.
+
+2. Replace <indigo/indigo_io.h> with <indigo/indigo_uni_io.h>.
+
+3. Replace "int handle" declaration with "indigo_uni_handle *handle".
+
+4. Replace occurences of "PRIVATE_DATA->handle = indigo_open_serial_...(...)" with "PRIVATE_DATA->handle = indigo_uni_open_serial_...(..., INDIGO_LOG_DEBUG)".
+
+5. Replace occurences of "close(PRIVATE_DATA->handle); PRIVATE_DATA->handle = 0;" with "indigo_uni_close(&PRIVATE_DATA->handle);"
+
+6. Search for "if (PRIVATE_DATA->handle > 0)...", it must be replaced by "if (PRIVATE_DATA->handle != NULL)...".
+
+7. Refactor xxx_command(...) function to the pattern like this:
+
+```
+static bool xxx_command(indigo_device *device, char *command, char *response, int max) {
+  // discard pending input with short timeout
+  if (indigo_uni_discard(PRIVATE_DATA->handle) >= 0) {
+     // write command
+    if (indigo_uni_write(PRIVATE_DATA->handle, command, (long)strlen(command)) > 0) {
+      if (response != NULL) {
+        // read input terminated with \n, don't copy \r and \n with 1 second timeout.
+        if (indigo_uni_read_section(PRIVATE_DATA->handle, response, max, "\n", "\r\n", INDIGO_DELAY(1)) > 0) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+```
+
+8. There are functions like indigo_uni_set_dtr(), indigo_uni_set_rts(), indigo_uni_set_cts() etc. defined in indigo_uni_io.h if the driver needs special handling for signal bits.
+
+9. Log level used for indigo_uni_open_serial_... or any other function creating handle will be used in all subsequent I/O operation in uniform manner so don't use any other logging for it. Use -INDIGO_LOG_DEBUG instead of INDIGO_LOG_DEBUG to make logging for "binary" protocols.
+
+10. Make Visual Studio project by copying some existing project, e.g. aux_rts/indigo_aux_rts.vcxproj, indigo_aux_rts.vcxproj.filters, indigo_aux_rts.vcxproj.user and rename these files to match the current driver name.
+
+11. Open these files with some text editor and replace all occurences of "aux_rts" with the current driver name.
+
+12. Open indigo_windows.sln in Visual Studio and add just created project.
+
+13. Try to build...
+
+14. Pls. cast double to int explicitly, don't use unsigned ints if it is not really necessary, because all this produces lots and lots of warnings in MSC.
+
+15. If the driver can be build, add project as dependency to indigo project.
+
+16. Move the driver from TODO section to ALREADY_DONE section in this file.
+
+## SDK based drivers
+
+Make sure that Windows SDK uses the same API as Linux/macOS SDK, it is not necessary true (e.g. Moravian Instruments SDK). To test the driver you will need "system driver" for Windows, if you don't have it, you may try to use Zadig (https://zadig.akeo.ie) to create a generic one.
+
+1. Copy SDK to <DRIVER_BASE>bin_external/<SDK>/lib/windows/Win32 and  <DRIVER_BASE>bin_external/<SDK>/lib/windows/x64 ("Win32" and "x64" matches architecture in Visual Studio, don't use other names), copy .DLL and .LIB files.
+
+2. Make Visual Studio project by copying some existing project, e.g. ccd_playerone/indigo_ccd_playerone.vcxproj, indigo_ccd_playerone.vcxproj.filters, indigo_ccd_playerone.vcxproj.user and rename these files to match the current driver name.
+
+3. Open these files with some text editor and replace all occurences of "indigo_ccd_playerone" with the current driver name, "bin_externals\libplayeronecamera" with the path to SDK, "PlayerOneCamera.lib" with SDK library.
+
+4. Open indigo_windows.sln in Visual Studio and add just created project.
+
+5. Try to build...
+
+6. You will probably need to remove some includes which are not used anyway (<unistd.h>, <sys/time.h>, <libusb.h> etc.), if driver needs libusb, include <indigo/indigo_usb_utils.h> before including SDK headers.
+
+7. Pls. cast double to int explicitly, don't use unsigned ints if it is not really necessary, because all this produces lots and lots of warnings in MSC.
+
+8. Make sure SDK API doesn't use wide chars. If it does, use INDIGO_WCHAR_TO_CHAR() or INDIGO_CHAR_TO_WCHAR() macros defined in <indigo/indigo_uni_io.h> to handle them correctly.
+
+9. If the driver can be build, add project as dependency to indigo project.
+
+10. Move the driver from TODO section to ALREADY_DONE section in this file.

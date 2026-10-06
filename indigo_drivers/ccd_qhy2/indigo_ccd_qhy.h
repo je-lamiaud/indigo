@@ -1,4 +1,4 @@
-// Copyright (c) 2017 Rumen G. Bogdanovski
+// Copyright (c) 2017-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,8 +17,8 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
-
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 /** INDIGO QHY CCD driver
  \file indigo_ccd_qhy.h
@@ -28,10 +28,23 @@
 #define ccd_qhy_h
 
 #include <indigo/indigo_driver.h>
-#include <indigo/indigo_client.h>
 #include <indigo/indigo_ccd_driver.h>
 #include <indigo/indigo_guider_driver.h>
 #include <indigo/indigo_wheel_driver.h>
+
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+#include <indigo/indigo_client.h>
+#endif
+
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,7 +58,7 @@ extern "C" {
 #define CONFLICTING_DRIVER "indigo_ccd_qhy"
 #define DRIVER_DESCRIPTION "QHY CMOS (modern) Camera"
 
-extern indigo_result INDIGO_CCD_QHY(indigo_driver_action action, indigo_driver_info *info);
+INDIGO_EXTERN indigo_result INDIGO_CCD_QHY(indigo_driver_action action, indigo_driver_info *info);
 
 #ifdef __cplusplus
 }

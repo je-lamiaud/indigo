@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -26,7 +26,7 @@
  \file indigo_ccd_qsi.cpp
  */
 
-#define DRIVER_VERSION    0x000D
+#define DRIVER_VERSION 0x0200000D
 #define DRIVER_NAME       "indigo_ccd_qsi"
 
 #include <stdlib.h>
@@ -39,17 +39,12 @@
 #include <sys/time.h>
 
 #include <indigo/indigo_driver_xml.h>
+#include <indigo/indigo_usb_utils.h>
+
 #include "indigo_ccd_qsi.h"
 
 #if !(defined(__APPLE__) && defined(__arm64__))
 
-#if defined(INDIGO_MACOS)
-#include <libusb-1.0/libusb.h>
-#elif defined(INDIGO_FREEBSD)
-#include <libusb.h>
-#else
-#include <libusb-1.0/libusb.h>
-#endif
 #include "qsiapi.h"
 
 #define QSI_VENDOR_ID             0x0403
@@ -98,6 +93,7 @@
 #define INDIGO_DEBUG_DRIVER(c) c
 
 static QSICamera cam;
+static pthread_mutex_t indigo_device_enumeration_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct {
 	char serial[INDIGO_NAME_SIZE];
@@ -308,12 +304,12 @@ static void ccd_exposure_callback(indigo_device *device) {
 
 static indigo_result ccd_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(QSI_READOUT_SPEED_PROPERTY);
-		indigo_define_matching_property(QSI_ANTI_BLOOM_PROPERTY);
-		indigo_define_matching_property(QSI_PRE_EXPOSURE_FLUSH_PROPERTY);
-		indigo_define_matching_property(QSI_FAN_MODE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(QSI_READOUT_SPEED_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(QSI_ANTI_BLOOM_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(QSI_PRE_EXPOSURE_FLUSH_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(QSI_FAN_MODE_PROPERTY);
 	}
-	return indigo_ccd_enumerate_properties(device, NULL, NULL);
+	return indigo_ccd_enumerate_properties(device, client, property);
 }
 
 static indigo_result ccd_attach(indigo_device *device) {
@@ -325,20 +321,23 @@ static indigo_result ccd_attach(indigo_device *device) {
 		snprintf(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, INDIGO_NAME_SIZE, "%s", PRIVATE_DATA->serial);
 		// -------------------------------------------------------------------------------- QSI_READOUT_SPEED
 		QSI_READOUT_SPEED_PROPERTY = indigo_init_switch_property(NULL, device->name, QSI_READOUT_SPEED_PROPERTY_NAME, CCD_ADVANCED_GROUP, "CCD readout speed", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 2);
-		if (QSI_READOUT_SPEED_PROPERTY == NULL)
+		if (QSI_READOUT_SPEED_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(QSI_READOUT_HQ_ITEM, QSI_READOUT_HQ_ITEM_NAME, "High Quality", false);
 		indigo_init_switch_item(QSI_READOUT_FAST_ITEM, QSI_READOUT_FAST_ITEM_NAME, "Fast Readout", false);
 		// -------------------------------------------------------------------------------- QSI_ANTI_BLOOM
 		QSI_ANTI_BLOOM_PROPERTY = indigo_init_switch_property(NULL, device->name, QSI_ANTI_BLOOM_PROPERTY_NAME, CCD_ADVANCED_GROUP, "Antiblooming", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 2);
-		if (QSI_ANTI_BLOOM_PROPERTY == NULL)
+		if (QSI_ANTI_BLOOM_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(QSI_ANTI_BLOOM_NORMAL_ITEM, QSI_ANTI_BLOOM_NORMAL_ITEM_NAME, "Normal", false);
 		indigo_init_switch_item(QSI_ANTI_BLOOM_HIGH_ITEM, QSI_ANTI_BLOOM_HIGH_ITEM_NAME, "High", false);
 		// -------------------------------------------------------------------------------- QSI_PRE_EXPOSURE_FLUSH
 		QSI_PRE_EXPOSURE_FLUSH_PROPERTY = indigo_init_switch_property(NULL, device->name, QSI_PRE_EXPOSURE_FLUSH_PROPERTY_NAME, CCD_ADVANCED_GROUP, "Pre-exposure flush", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 5);
-		if (QSI_PRE_EXPOSURE_FLUSH_PROPERTY == NULL)
+		if (QSI_PRE_EXPOSURE_FLUSH_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(QSI_PRE_EXPOSURE_FLUSH_NONE_ITEM, QSI_PRE_EXPOSURE_FLUSH_NONE_ITEM_NAME, "Off", false);
 		indigo_init_switch_item(QSI_PRE_EXPOSURE_FLUSH_MODEST_ITEM, QSI_PRE_EXPOSURE_FLUSH_MODEST_ITEM_NAME, "Modest", false);
 		indigo_init_switch_item(QSI_PRE_EXPOSURE_FLUSH_NORMAL_ITEM, QSI_PRE_EXPOSURE_FLUSH_NORMAL_ITEM_NAME, "Normal", false);
@@ -346,8 +345,9 @@ static indigo_result ccd_attach(indigo_device *device) {
 		indigo_init_switch_item(QSI_PRE_EXPOSURE_FLUSH_V_AGGRESSIVE_ITEM, QSI_PRE_EXPOSURE_FLUSH_V_AGGRESSIVE_ITEM_NAME, "Verry aggressive", false);
 		// -------------------------------------------------------------------------------- QSI_FAN_MODE
 		QSI_FAN_MODE_PROPERTY = indigo_init_switch_property(NULL, device->name, QSI_FAN_MODE_PROPERTY_NAME, CCD_COOLER_GROUP, "Fan mode", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
-		if (QSI_FAN_MODE_PROPERTY == NULL)
+		if (QSI_FAN_MODE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(QSI_FAN_MODE_OFF_ITEM, QSI_FAN_MODE_OFF_ITEM_NAME, "Off", false);
 		indigo_init_switch_item(QSI_FAN_MODE_QUIET_ITEM, QSI_FAN_MODE_QUIET_ITEM_NAME, "Quiet", false);
 		indigo_init_switch_item(QSI_FAN_MODE_FULL_ITEM, QSI_FAN_MODE_FULL_ITEM_NAME, "Full speed", false);
@@ -360,6 +360,7 @@ static indigo_result ccd_attach(indigo_device *device) {
 
 static void ccd_connect_callback(indigo_device *device) {
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
+		pthread_mutex_lock(&indigo_device_enumeration_mutex);
 		try {
 			std::string serial(PRIVATE_DATA->serial);
 			std::string selectedCamera("");
@@ -379,6 +380,7 @@ static void ccd_connect_callback(indigo_device *device) {
 				snprintf(message, INDIGO_VALUE_SIZE, "Camera #%s is already connected, to use #%s disconnect it first.", selectedCamera.c_str(), PRIVATE_DATA->serial);
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "%s", message);
 				CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				indigo_update_property(device, CONNECTION_PROPERTY, message);
 				indigo_ccd_change_property(device, NULL, CONNECTION_PROPERTY);
 				return;
@@ -568,9 +570,11 @@ static void ccd_connect_callback(indigo_device *device) {
 
 			indigo_set_timer(device, 0, ccd_temperature_callback, &PRIVATE_DATA->temperature_timer);
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 		} catch (std::runtime_error err) {
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			std::string text = err.what();
-			indigo_send_message(device, text.c_str());
+			indigo_send_message(device, ALERT_PROPERTY, text.c_str());
 			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	} else {
@@ -580,6 +584,7 @@ static void ccd_connect_callback(indigo_device *device) {
 		indigo_delete_property(device, QSI_PRE_EXPOSURE_FLUSH_PROPERTY, NULL);
 		indigo_delete_property(device, QSI_FAN_MODE_PROPERTY, NULL);
 		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE) {
+			pthread_mutex_lock(&indigo_device_enumeration_mutex);
 			try {
 				bool canAbort;
 				cam.get_CanAbortExposure(&canAbort);
@@ -587,25 +592,30 @@ static void ccd_connect_callback(indigo_device *device) {
 					indigo_cancel_timer_sync(device, &PRIVATE_DATA->exposure_timer);
 					cam.AbortExposure();
 				}
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			} catch (std::runtime_error err) {
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				std::string text = err.what();
-				indigo_send_message(device, text.c_str());
+				indigo_send_message(device, ALERT_PROPERTY, text.c_str());
 			}
 		}
-		try {
-			if (PRIVATE_DATA->wheel) {
-				if (indigo_detach_device(PRIVATE_DATA->wheel) == INDIGO_OK) {
-					free(PRIVATE_DATA->wheel);
-					PRIVATE_DATA->wheel = NULL;
-				}
+		if (PRIVATE_DATA->wheel) {
+			if (indigo_detach_device(PRIVATE_DATA->wheel) == INDIGO_OK) {
+				free(PRIVATE_DATA->wheel);
+				PRIVATE_DATA->wheel = NULL;
 			}
+		}
+		pthread_mutex_lock(&indigo_device_enumeration_mutex);
+		try {
 			cam.put_Connected(false);
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			free(PRIVATE_DATA->buffer);
 			PRIVATE_DATA->buffer = NULL;
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 		} catch (std::runtime_error err) {
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			std::string text = err.what();
-			indigo_send_message(device, "Disconnect failed: %s", text.c_str());
+			indigo_send_message(device, ALERT_PROPERTY, "Disconnect failed: %s", text.c_str());
 			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	}
@@ -627,8 +637,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		return INDIGO_OK;
 	// -------------------------------------------------------------------------------- CCD_EXPOSURE
 	} else if (indigo_property_match_changeable(CCD_EXPOSURE_PROPERTY, property)) {
-		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE) {
 			return INDIGO_OK;
+		}
 		indigo_property_copy_values(CCD_EXPOSURE_PROPERTY, property, false);
 		//cam.StartExposure() may take up to 10 secinds to return, so it should be aync
 		indigo_set_timer(device, 0, ccd_exposure_callback, NULL);
@@ -788,7 +799,7 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 			indigo_update_property(device, QSI_FAN_MODE_PROPERTY, text.c_str());
 		}
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, QSI_READOUT_SPEED_PROPERTY);
@@ -818,7 +829,6 @@ static indigo_result ccd_detach(indigo_device *device) {
 
 // -------------------------------------------------------------------------------- hot-plug support
 
-static pthread_mutex_t device_mutex = PTHREAD_MUTEX_INITIALIZER;
 static indigo_device *devices[QSICamera::MAXCAMERAS];
 
 static void process_plug_event(indigo_device *unused) {
@@ -835,19 +845,19 @@ static void process_plug_event(indigo_device *unused) {
 	char serial[INDIGO_NAME_SIZE];
 	char desc[INDIGO_NAME_SIZE];
 	int count;
-	pthread_mutex_lock(&device_mutex);
-	indigo_usleep(1 * ONE_SECOND_DELAY);
+	pthread_mutex_lock(&indigo_device_enumeration_mutex);
+	indigo_sleep(1);
 	try {
 		cam.get_AvailableCameras(camSerial, camDesc, count);
 	} catch (std::runtime_error err) {
 		std::string text = err.what();
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Hot plug failed: %s", text.c_str());
-		pthread_mutex_unlock(&device_mutex);
+		pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 		return;
 	}
 	for (int i = 0; i < count; i++) {
-		indigo_copy_name(serial, camSerial[i].c_str());
-		indigo_copy_name(desc, camDesc[i].c_str());
+		INDIGO_COPY_NAME(serial, camSerial[i].c_str());
+		INDIGO_COPY_NAME(desc, camDesc[i].c_str());
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "camera[%d]: desc = %s serial = %s", i, desc, serial);
 		bool found = false;
 		for (int j = 0; j < QSICamera::MAXCAMERAS; j++) {
@@ -863,7 +873,7 @@ static void process_plug_event(indigo_device *unused) {
 			continue;
 		}
 		qsi_private_data *private_data = (qsi_private_data *)indigo_safe_malloc(sizeof(qsi_private_data));
-		indigo_copy_name(private_data->serial, serial);
+		INDIGO_COPY_NAME(private_data->serial, serial);
 		indigo_device *device = (indigo_device *)indigo_safe_malloc_copy(sizeof(indigo_device), &ccd_template);
 		snprintf(device->name, INDIGO_NAME_SIZE, "%s #%s", desc, serial);
 		device->private_data = private_data;
@@ -874,7 +884,7 @@ static void process_plug_event(indigo_device *unused) {
 			}
 		}
 	}
-	pthread_mutex_unlock(&device_mutex);
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 }
 
 static void process_unplug_event(indigo_device *unused) {
@@ -882,14 +892,14 @@ static void process_unplug_event(indigo_device *unused) {
 	std::string camDesc[QSICamera::MAXCAMERAS];
 	char serial[INDIGO_NAME_SIZE];
 	int count;
-	pthread_mutex_lock(&device_mutex);
-	indigo_usleep(1 * ONE_SECOND_DELAY);
+	pthread_mutex_lock(&indigo_device_enumeration_mutex);
+	indigo_sleep(1);
 	try {
 		cam.get_AvailableCameras(camSerial, camDesc, count);
 	} catch (std::runtime_error err) {
 		std::string text = err.what();
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Hot unplug failed: %s", text.c_str());
-		pthread_mutex_unlock(&device_mutex);
+		pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 		return;
 	}
 	for (int j = 0; j < QSICamera::MAXCAMERAS; j++) {
@@ -899,7 +909,7 @@ static void process_unplug_event(indigo_device *unused) {
 		}
 	}
 	for (int i = 0; i < count; i++) {
-		indigo_copy_name(serial, camSerial[i].c_str());
+		INDIGO_COPY_NAME(serial, camSerial[i].c_str());
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "camera[%d]: serial = %s", i, serial);
 		for (int j = 0; j < QSICamera::MAXCAMERAS; j++) {
 			indigo_device *device = devices[j];
@@ -912,13 +922,15 @@ static void process_unplug_event(indigo_device *unused) {
 	for (int j = 0; j < QSICamera::MAXCAMERAS; j++) {
 		indigo_device *device = devices[j];
 		if (device && !PRIVATE_DATA->available) {
+			devices[j] = NULL;
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			indigo_detach_device(device);
 			free(device->private_data);
 			free(device);
-			devices[j] = NULL;
+			pthread_mutex_lock(&indigo_device_enumeration_mutex);
 		}
 	}
-	pthread_mutex_unlock(&device_mutex);
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 }
 
 static int hotplug_callback(libusb_context *ctx, libusb_device *dev, libusb_hotplug_event event, void *user_data) {
@@ -962,8 +974,9 @@ indigo_result indigo_ccd_qsi(indigo_driver_action action, indigo_driver_info *in
 
 	SET_DRIVER_INFO(info, "QSI Camera", __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT: {
@@ -976,14 +989,16 @@ indigo_result indigo_ccd_qsi(indigo_driver_action action, indigo_driver_info *in
 			last_action = action;
 			indigo_start_usb_event_handler();
 			int rc = libusb_hotplug_register_callback(NULL, (libusb_hotplug_event)(LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT), LIBUSB_HOTPLUG_ENUMERATE, QSI_VENDOR_ID, QSI_PRODUCT_ID1, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle1);
-			if (rc >= 0)
+			if (rc >= 0) {
 				rc = libusb_hotplug_register_callback(NULL, (libusb_hotplug_event)(LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT), LIBUSB_HOTPLUG_ENUMERATE, QSI_VENDOR_ID, QSI_PRODUCT_ID2, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle2);
+			}
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
 			return rc >= 0 ? INDIGO_OK : INDIGO_FAILED;
 		}
 		case INDIGO_DRIVER_SHUTDOWN: {
-			for (int i = 0; i < QSICamera::MAXCAMERAS; i++)
+			for (int i = 0; i < QSICamera::MAXCAMERAS; i++) {
 				VERIFY_NOT_CONNECTED(devices[i]);
+			}
 			last_action = action;
 			libusb_hotplug_deregister_callback(NULL, callback_handle1);
 			libusb_hotplug_deregister_callback(NULL, callback_handle2);

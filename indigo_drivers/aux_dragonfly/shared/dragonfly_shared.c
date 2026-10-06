@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Rumen G. Bogdanovski
+// Copyright (C) 2020-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** INDIGO Lunatico Dragonfly driver
  \file dragonfly_shared.c
@@ -351,7 +351,7 @@ static bool lunatico_open(indigo_device *device) {
 
 		char url[INDIGO_VALUE_SIZE];
 		if (strstr(DEVICE_PORT_ITEM->text.value, "://")) {
-			indigo_copy_value(url, DEVICE_PORT_ITEM->text.value);
+			INDIGO_COPY_VALUE(url, DEVICE_PORT_ITEM->text.value);
 		} else {
 			snprintf(url, INDIGO_VALUE_SIZE, "udp://%s", DEVICE_PORT_ITEM->text.value);
 		}
@@ -381,13 +381,13 @@ static bool lunatico_authenticate2(indigo_device *device, char *password) {
 	int access = 0;
 	result = lunatico_authenticate(device, password, &access);
 	if (access == 1) {
-		indigo_send_message(device, "Earned access level: %d (Read only)", access);
+		indigo_send_message(device, IDLE_PROPERTY, "Earned access level: %d (Read only)", access);
 	} else if (access == 2) {
-		indigo_send_message(device, "Earned access level: %d (Read / Write)", access);
+		indigo_send_message(device, IDLE_PROPERTY, "Earned access level: %d (Read / Write)", access);
 	} else if (access == 3) {
-		indigo_send_message(device, "Earned access level: %d (Full access)", access);
+		indigo_send_message(device, IDLE_PROPERTY, "Earned access level: %d (Full access)", access);
 	} else {
-		indigo_send_message(device, "Earned access level: %d (Unknown)", access);
+		indigo_send_message(device, IDLE_PROPERTY, "Earned access level: %d (Unknown)", access);
 	}
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Earned access: %d", access);
 	return result;

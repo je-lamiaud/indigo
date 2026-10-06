@@ -1,4 +1,4 @@
-// Copyright (c) 2017 CloudMakers, s. r. o.
+// Copyright (c) 2017-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_agent_snoop.c
  */
 
-#define DRIVER_VERSION 0x0002
+#define DRIVER_VERSION 0x02000002
 #define DRIVER_NAME	"indigo_agent_snoop"
 
 #include <stdlib.h>
@@ -95,12 +95,13 @@ static indigo_result forward_property(indigo_device *device, indigo_client *clie
 				break;
 			}
 		}
-		if (!any_set)
+		if (!any_set) {
 			return INDIGO_OK;
+		}
 	}
 	indigo_property *property = indigo_copy_property(NULL, source_property);
-	indigo_copy_name(property->device, r->target_device_name);
-	indigo_copy_name(property->name, r->target_property_name);
+	INDIGO_COPY_NAME(property->device, r->target_device_name);
+	INDIGO_COPY_NAME(property->name, r->target_property_name);
 	indigo_trace_property("Property set by rule", NULL, property, false, true);
 	indigo_result result = r->target_device->last_result = r->target_device->change_property(r->target_device, client, property);
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Forward: '%s'.%s > '%s'.%s", r->source_device_name, r->source_property_name, r->target_device_name, r->target_property_name);
@@ -131,22 +132,25 @@ static indigo_result agent_device_attach(indigo_device *device) {
 	assert(DEVICE_PRIVATE_DATA != NULL);
 	if (indigo_agent_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		SNOOP_ADD_RULE_PROPERTY = indigo_init_text_property(NULL, device->name, SNOOP_ADD_RULE_PROPERTY_NAME, MAIN_GROUP, "Add rule", INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
-		if (SNOOP_ADD_RULE_PROPERTY == NULL)
+		if (SNOOP_ADD_RULE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
-		indigo_init_text_item(SNOOP_ADD_RULE_SOURCE_DEVICE_ITEM, SNOOP_ADD_RULE_SOURCE_DEVICE_ITEM_NAME, "Source device", "Mount Simulator");
-		indigo_init_text_item(SNOOP_ADD_RULE_SOURCE_PROPERTY_ITEM, SNOOP_ADD_RULE_SOURCE_PROPERTY_ITEM_NAME, "Source property", "MOUNT_EQUATORIAL_COORDINATES");
-		indigo_init_text_item(SNOOP_ADD_RULE_TARGET_DEVICE_ITEM, SNOOP_ADD_RULE_TARGET_DEVICE_ITEM_NAME, "Target device", "Dome Simulator");
-		indigo_init_text_item(SNOOP_ADD_RULE_TARGET_PROPERTY_ITEM, SNOOP_ADD_RULE_TARGET_PROPERTY_ITEM_NAME, "Target property", "DOME_EQUATORIAL_COORDINATES");
+		}
+		indigo_init_text_item(SNOOP_ADD_RULE_SOURCE_DEVICE_ITEM, SNOOP_ADD_RULE_SOURCE_DEVICE_ITEM_NAME, "Source device", "");
+		indigo_init_text_item(SNOOP_ADD_RULE_SOURCE_PROPERTY_ITEM, SNOOP_ADD_RULE_SOURCE_PROPERTY_ITEM_NAME, "Source property", "");
+		indigo_init_text_item(SNOOP_ADD_RULE_TARGET_DEVICE_ITEM, SNOOP_ADD_RULE_TARGET_DEVICE_ITEM_NAME, "Target device", "");
+		indigo_init_text_item(SNOOP_ADD_RULE_TARGET_PROPERTY_ITEM, SNOOP_ADD_RULE_TARGET_PROPERTY_ITEM_NAME, "Target property", "");
 		SNOOP_REMOVE_RULE_PROPERTY = indigo_init_text_property(NULL, device->name, SNOOP_REMOVE_RULE_PROPERTY_NAME, MAIN_GROUP, "Remove rule", INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
-		if (SNOOP_REMOVE_RULE_PROPERTY == NULL)
+		if (SNOOP_REMOVE_RULE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
-		indigo_init_text_item(SNOOP_REMOVE_RULE_SOURCE_DEVICE_ITEM, SNOOP_REMOVE_RULE_SOURCE_DEVICE_ITEM_NAME, "Source device", "Mount Simulator");
-		indigo_init_text_item(SNOOP_REMOVE_RULE_SOURCE_PROPERTY_ITEM, SNOOP_REMOVE_RULE_SOURCE_PROPERTY_ITEM_NAME, "Source property", "MOUNT_EQUATORIAL_COORDINATES");
-		indigo_init_text_item(SNOOP_REMOVE_RULE_TARGET_DEVICE_ITEM, SNOOP_REMOVE_RULE_TARGET_DEVICE_ITEM_NAME, "Target device", "Dome Simulator");
-		indigo_init_text_item(SNOOP_REMOVE_RULE_TARGET_PROPERTY_ITEM, SNOOP_REMOVE_RULE_TARGET_PROPERTY_ITEM_NAME, "Target property", "DOME_EQUATORIAL_COORDINATES");
+		}
+		indigo_init_text_item(SNOOP_REMOVE_RULE_SOURCE_DEVICE_ITEM, SNOOP_REMOVE_RULE_SOURCE_DEVICE_ITEM_NAME, "Source device", "");
+		indigo_init_text_item(SNOOP_REMOVE_RULE_SOURCE_PROPERTY_ITEM, SNOOP_REMOVE_RULE_SOURCE_PROPERTY_ITEM_NAME, "Source property", "");
+		indigo_init_text_item(SNOOP_REMOVE_RULE_TARGET_DEVICE_ITEM, SNOOP_REMOVE_RULE_TARGET_DEVICE_ITEM_NAME, "Target device", "");
+		indigo_init_text_item(SNOOP_REMOVE_RULE_TARGET_PROPERTY_ITEM, SNOOP_REMOVE_RULE_TARGET_PROPERTY_ITEM_NAME, "Target property", "");
 		SNOOP_RULES_PROPERTY = indigo_init_light_property(NULL, device->name, SNOOP_RULES_PROPERTY_NAME, MAIN_GROUP, "Rules", INDIGO_OK_STATE, 0);
-		if (SNOOP_RULES_PROPERTY == NULL)
+		if (SNOOP_RULES_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return agent_enumerate_properties(device, NULL, NULL);
 	}
@@ -154,13 +158,14 @@ static indigo_result agent_device_attach(indigo_device *device) {
 }
 
 static indigo_result agent_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
-	if (client!= NULL && client == DEVICE_PRIVATE_DATA->client)
+	if (client!= NULL && client == DEVICE_PRIVATE_DATA->client) {
 		return INDIGO_OK;
+	}
 	indigo_result result = INDIGO_OK;
 	if ((result = indigo_agent_enumerate_properties(device, client, property)) == INDIGO_OK) {
-		indigo_define_matching_property(SNOOP_ADD_RULE_PROPERTY);
-		indigo_define_matching_property(SNOOP_REMOVE_RULE_PROPERTY);
-		indigo_define_matching_property(SNOOP_RULES_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SNOOP_ADD_RULE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SNOOP_REMOVE_RULE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SNOOP_RULES_PROPERTY);
 	}
 	return result;
 }
@@ -169,8 +174,9 @@ static indigo_result agent_change_property(indigo_device *device, indigo_client 
 	assert(device != NULL);
 	assert(DEVICE_CONTEXT != NULL);
 	assert(property != NULL);
-	if (client == DEVICE_PRIVATE_DATA->client)
+	if (client == DEVICE_PRIVATE_DATA->client) {
 		return INDIGO_OK;
+	}
 	if (indigo_property_match(SNOOP_ADD_RULE_PROPERTY, property)) {
 		indigo_property_copy_values(SNOOP_ADD_RULE_PROPERTY, property, false);
 		rule *r = DEVICE_PRIVATE_DATA->rules;
@@ -186,10 +192,10 @@ static indigo_result agent_change_property(indigo_device *device, indigo_client 
 			r = r->next;
 		}
 		r = indigo_safe_malloc(sizeof(rule));
-		indigo_copy_name(r->source_device_name, SNOOP_ADD_RULE_SOURCE_DEVICE_ITEM->text.value);
-		indigo_copy_name(r->source_property_name, SNOOP_ADD_RULE_SOURCE_PROPERTY_ITEM->text.value);
-		indigo_copy_name(r->target_device_name, SNOOP_ADD_RULE_TARGET_DEVICE_ITEM->text.value);
-		indigo_copy_name(r->target_property_name, SNOOP_ADD_RULE_TARGET_PROPERTY_ITEM->text.value);
+		INDIGO_COPY_NAME(r->source_device_name, SNOOP_ADD_RULE_SOURCE_DEVICE_ITEM->text.value);
+		INDIGO_COPY_NAME(r->source_property_name, SNOOP_ADD_RULE_SOURCE_PROPERTY_ITEM->text.value);
+		INDIGO_COPY_NAME(r->target_device_name, SNOOP_ADD_RULE_TARGET_DEVICE_ITEM->text.value);
+		INDIGO_COPY_NAME(r->target_property_name, SNOOP_ADD_RULE_TARGET_PROPERTY_ITEM->text.value);
 		r->state = INDIGO_OK_STATE;
 		r->next = DEVICE_PRIVATE_DATA->rules;
 		DEVICE_PRIVATE_DATA->rules = r;
@@ -219,10 +225,11 @@ static indigo_result agent_change_property(indigo_device *device, indigo_client 
 			r = r->next;
 		}
 		if (r) {
-			if (rr)
+			if (rr) {
 				rr->next = r->next;
-			else
+			} else {
 				DEVICE_PRIVATE_DATA->rules = r->next;
+			}
 			SNOOP_RULES_PROPERTY = indigo_resize_property(SNOOP_RULES_PROPERTY, SNOOP_RULES_PROPERTY->count - 1);
 			sync_rules(device);
 			SNOOP_REMOVE_RULE_PROPERTY->state = INDIGO_OK_STATE;
@@ -252,8 +259,9 @@ static indigo_result agent_device_detach(indigo_device *device) {
 }
 
 static indigo_result agent_define_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message) {
-	if (device == CLIENT_PRIVATE_DATA->device)
+	if (device == CLIENT_PRIVATE_DATA->device) {
 		return INDIGO_OK;
+	}
 	rule *r = CLIENT_PRIVATE_DATA->rules;
 	int index = 0;
 	while (r) {
@@ -271,8 +279,9 @@ static indigo_result agent_define_property(indigo_client *client, indigo_device 
 			if (r->source_property && r->target_property) {
 				CLIENT_PRIVATE_DATA->rules_property->items[index].light.value = r->state = INDIGO_OK_STATE;
 				indigo_update_property(CLIENT_PRIVATE_DATA->device, CLIENT_PRIVATE_DATA->rules_property, "Rule '%s'.%s > '%s'.%s is active", r->source_device_name, r->source_property_name, r->target_device_name, r->target_property_name);
-				if (r->source_property->state != INDIGO_ALERT_STATE)
+				if (r->source_property->state != INDIGO_ALERT_STATE) {
 					forward_property(device, client, r);
+				}
 			} else {
 				CLIENT_PRIVATE_DATA->rules_property->items[index].light.value = r->state = INDIGO_BUSY_STATE;
 				indigo_update_property(CLIENT_PRIVATE_DATA->device, CLIENT_PRIVATE_DATA->rules_property, NULL);
@@ -285,10 +294,12 @@ static indigo_result agent_define_property(indigo_client *client, indigo_device 
 }
 
 static indigo_result agent_update_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message) {
-	if (device == CLIENT_PRIVATE_DATA->device)
+	if (device == CLIENT_PRIVATE_DATA->device) {
 		return INDIGO_OK;
-	if (property->state == INDIGO_ALERT_STATE)
+	}
+	if (property->state == INDIGO_ALERT_STATE) {
 		return INDIGO_OK;
+	}
 	rule *r = CLIENT_PRIVATE_DATA->rules;
 	while (r) {
 		if (r->source_property == property) {
@@ -305,8 +316,9 @@ static indigo_result agent_update_property(indigo_client *client, indigo_device 
 }
 
 static indigo_result agent_delete_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message) {
-	if (device == CLIENT_PRIVATE_DATA->device)
+	if (device == CLIENT_PRIVATE_DATA->device) {
 		return INDIGO_OK;
+	}
 	rule *r = CLIENT_PRIVATE_DATA->rules;
 	int index = 0;
 	while (r) {
@@ -368,8 +380,9 @@ indigo_result indigo_agent_snoop(indigo_driver_action action, indigo_driver_info
 
 	SET_DRIVER_INFO(info, "Snoop agent", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT:

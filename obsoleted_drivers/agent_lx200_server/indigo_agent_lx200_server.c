@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_agent_lx200_server.c
  */
 
-#define DRIVER_VERSION 0x0004
+#define DRIVER_VERSION 0x02000004
 #define DRIVER_NAME	"indigo_agent_lx200_server"
 
 #include <stdio.h>
@@ -172,8 +172,9 @@ static void start_worker_thread(handler_data *data) {
 		*buffer_in = 0;
 		*buffer_out = 0;
 		result = read(client_socket, buffer_in, 1);
-		if (result <= 0)
+		if (result <= 0) {
 			break;
+		}
 		if (*buffer_in == 6) {
 			strcpy(buffer_out, "P");
 		} else if (*buffer_in == '#') {
@@ -182,16 +183,18 @@ static void start_worker_thread(handler_data *data) {
 			int i = 0;
 			while (i < sizeof(buffer_in)) {
 				result = read(client_socket, buffer_in + i, 1);
-				if (result <= 0)
+				if (result <= 0) {
 					break;
+				}
 				if (buffer_in[i] == '#') {
 					buffer_in[i] = 0;
 					break;
 				}
 				i++;
 			}
-			if (result == -1)
+			if (result == -1) {
 				break;
+			}
 			if (strcmp(buffer_in, "GVP") == 0) {
 				strcpy(buffer_out, "indigo#");
 			} else if (strcmp(buffer_in, "GR") == 0) {
@@ -334,10 +337,11 @@ static void start_worker_thread(handler_data *data) {
 			}
 			if (*buffer_out) {
 				indigo_write(client_socket, buffer_out, strlen(buffer_out));
-				if (*buffer_in == 'G')
+				if (*buffer_in == 'G') {
 					INDIGO_DRIVER_TRACE(LX200_SERVER_AGENT_NAME, "%d: '%s' -> '%s'", client_socket, buffer_in, buffer_out);
-				else
+				} else {
 					INDIGO_DRIVER_DEBUG(LX200_SERVER_AGENT_NAME, "%d: '%s' -> '%s'", client_socket, buffer_in, buffer_out);
+				}
 			} else {
 				INDIGO_DRIVER_DEBUG(LX200_SERVER_AGENT_NAME, "%d: '%s' -> ", client_socket, buffer_in);
 			}
@@ -452,67 +456,78 @@ static indigo_result agent_device_attach(indigo_device *device) {
 		PROFILE_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- local device properties
 		LX200_DEVICES_PROPERTY = indigo_init_text_property(NULL, device->name, LX200_DEVICES_PROPERTY_NAME, MAIN_GROUP, "Devices", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-		if (LX200_DEVICES_PROPERTY == NULL)
+		if (LX200_DEVICES_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_text_item(LX200_DEVICES_MOUNT_ITEM, LX200_DEVICES_MOUNT_ITEM_NAME, "Mount", "");
 		indigo_init_text_item(LX200_DEVICES_GUIDER_ITEM, LX200_DEVICES_GUIDER_ITEM_NAME, "Guider", "");
 		LX200_CONFIGURATION_PROPERTY = indigo_init_number_property(NULL, device->name, LX200_CONFIGURATION_PROPERTY_NAME, MAIN_GROUP, "Configuration", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-		if (LX200_CONFIGURATION_PROPERTY == NULL)
+		if (LX200_CONFIGURATION_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(LX200_CONFIGURATION_PORT_ITEM, LX200_CONFIGURATION_PORT_ITEM_NAME, "Server port", 0, 0xFFFF, 0, 4030);
 		indigo_init_number_item(LX200_CONFIGURATION_EPOCH_ITEM, LX200_CONFIGURATION_EPOCH_ITEM_NAME, "Epoch (0=JNow, 2000=J2k)", 0, 2050, 0, 0);
 		LX200_SERVER_PROPERTY = indigo_init_switch_property(NULL, device->name, LX200_SERVER_PROPERTY_NAME, MAIN_GROUP, "Server", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (LX200_SERVER_PROPERTY == NULL)
+		if (LX200_SERVER_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(LX200_SERVER_STARTED_ITEM, LX200_SERVER_STARTED_ITEM_NAME, "Started", false);
 		indigo_init_switch_item(LX200_SERVER_STOPPED_ITEM, LX200_SERVER_STOPPED_ITEM_NAME, "Stopped", true);
 		// -------------------------------------------------------------------------------- remote device properties
 		MOUNT_EQUATORIAL_COORDINATES_PROPERTY = indigo_init_number_property(NULL, LX200_DEVICES_MOUNT_ITEM->text.value, MOUNT_EQUATORIAL_COORDINATES_PROPERTY_NAME, NULL, NULL, INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-		if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY == NULL)
+		if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(MOUNT_EQUATORIAL_COORDINATES_RA_ITEM, MOUNT_EQUATORIAL_COORDINATES_RA_ITEM_NAME, NULL, 0, 24, 0, 0);
 		indigo_init_number_item(MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM, MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM_NAME, NULL, -90, 90, 0, 90);
 		MOUNT_ON_COORDINATES_SET_PROPERTY = indigo_init_switch_property(NULL, LX200_DEVICES_MOUNT_ITEM->text.value, MOUNT_ON_COORDINATES_SET_PROPERTY_NAME, NULL, NULL, INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 2);
-		if (MOUNT_ON_COORDINATES_SET_PROPERTY == NULL)
+		if (MOUNT_ON_COORDINATES_SET_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(MOUNT_ON_COORDINATES_SET_TRACK_ITEM, MOUNT_ON_COORDINATES_SET_TRACK_ITEM_NAME, NULL, false);
 		indigo_init_switch_item(MOUNT_ON_COORDINATES_SET_SYNC_ITEM, MOUNT_ON_COORDINATES_SET_SYNC_ITEM_NAME, NULL, false);
 		MOUNT_SLEW_RATE_PROPERTY = indigo_init_switch_property(NULL, LX200_DEVICES_MOUNT_ITEM->text.value, MOUNT_SLEW_RATE_PROPERTY_NAME, NULL, NULL, INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 4);
-		if (MOUNT_SLEW_RATE_PROPERTY == NULL)
+		if (MOUNT_SLEW_RATE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(MOUNT_SLEW_RATE_GUIDE_ITEM, MOUNT_SLEW_RATE_GUIDE_ITEM_NAME, NULL, false);
 		indigo_init_switch_item(MOUNT_SLEW_RATE_CENTERING_ITEM, MOUNT_SLEW_RATE_CENTERING_ITEM_NAME, NULL, false);
 		indigo_init_switch_item(MOUNT_SLEW_RATE_FIND_ITEM, MOUNT_SLEW_RATE_FIND_ITEM_NAME, NULL, false);
 		indigo_init_switch_item(MOUNT_SLEW_RATE_MAX_ITEM, MOUNT_SLEW_RATE_MAX_ITEM_NAME, NULL, false);
 		MOUNT_MOTION_DEC_PROPERTY = indigo_init_switch_property(NULL, LX200_DEVICES_MOUNT_ITEM->text.value, MOUNT_MOTION_DEC_PROPERTY_NAME, NULL, NULL, INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 2);
-		if (MOUNT_MOTION_DEC_PROPERTY == NULL)
+		if (MOUNT_MOTION_DEC_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(MOUNT_MOTION_NORTH_ITEM, MOUNT_MOTION_NORTH_ITEM_NAME, NULL, false);
 		indigo_init_switch_item(MOUNT_MOTION_SOUTH_ITEM, MOUNT_MOTION_SOUTH_ITEM_NAME, NULL, false);
 		MOUNT_MOTION_RA_PROPERTY = indigo_init_switch_property(NULL, LX200_DEVICES_MOUNT_ITEM->text.value, MOUNT_MOTION_RA_PROPERTY_NAME, NULL, NULL, INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 2);
-		if (MOUNT_MOTION_RA_PROPERTY == NULL)
+		if (MOUNT_MOTION_RA_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(MOUNT_MOTION_WEST_ITEM, MOUNT_MOTION_WEST_ITEM_NAME, NULL, false);
 		indigo_init_switch_item(MOUNT_MOTION_EAST_ITEM, MOUNT_MOTION_EAST_ITEM_NAME, NULL, false);
 		MOUNT_ABORT_MOTION_PROPERTY = indigo_init_switch_property(NULL, LX200_DEVICES_MOUNT_ITEM->text.value, MOUNT_ABORT_MOTION_PROPERTY_NAME, NULL, NULL, INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 1);
-		if (MOUNT_ABORT_MOTION_PROPERTY == NULL)
+		if (MOUNT_ABORT_MOTION_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(MOUNT_ABORT_MOTION_ITEM, MOUNT_ABORT_MOTION_ITEM_NAME, NULL, false);
 		MOUNT_PARK_PROPERTY = indigo_init_switch_property(NULL, LX200_DEVICES_MOUNT_ITEM->text.value, MOUNT_PARK_PROPERTY_NAME, NULL, NULL, INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_AT_MOST_ONE_RULE, 2);
-		if (MOUNT_PARK_PROPERTY == NULL)
+		if (MOUNT_PARK_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(MOUNT_PARK_PARKED_ITEM, MOUNT_PARK_PARKED_ITEM_NAME, NULL, false);
 		indigo_init_switch_item(MOUNT_PARK_UNPARKED_ITEM, MOUNT_PARK_UNPARKED_ITEM_NAME, NULL, false);
 
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
-		return agent_enumerate_properties(device, NULL, NULL);
+		return agent_enumerate_properties(device, client, property);
 	}
 	return INDIGO_FAILED;
 }
 
 static indigo_result agent_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
-	if (client!= NULL && client == DEVICE_PRIVATE_DATA->client)
+	if (client!= NULL && client == DEVICE_PRIVATE_DATA->client) {
 		return INDIGO_OK;
+	}
 	indigo_result result = INDIGO_OK;
 	if ((result = indigo_agent_enumerate_properties(device, client, property)) == INDIGO_OK) {
 		if (indigo_property_match(LX200_DEVICES_PROPERTY, property))
@@ -529,24 +544,25 @@ static indigo_result agent_change_property(indigo_device *device, indigo_client 
 	assert(device != NULL);
 	assert(DEVICE_CONTEXT != NULL);
 	assert(property != NULL);
-	if (client == DEVICE_PRIVATE_DATA->client)
+	if (client == DEVICE_PRIVATE_DATA->client) {
 		return INDIGO_OK;
+	}
 	if (indigo_property_match(LX200_DEVICES_PROPERTY, property)) {
 		indigo_property_copy_values(LX200_DEVICES_PROPERTY, property, false);
-		indigo_copy_name(MOUNT_EQUATORIAL_COORDINATES_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
-		indigo_copy_name(MOUNT_ON_COORDINATES_SET_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
-		indigo_copy_name(MOUNT_SLEW_RATE_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
-		indigo_copy_name(MOUNT_MOTION_RA_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
-		indigo_copy_name(MOUNT_MOTION_DEC_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
-		indigo_copy_name(MOUNT_ABORT_MOTION_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
-		indigo_copy_name(MOUNT_PARK_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
+		INDIGO_COPY_NAME(MOUNT_EQUATORIAL_COORDINATES_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
+		INDIGO_COPY_NAME(MOUNT_ON_COORDINATES_SET_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
+		INDIGO_COPY_NAME(MOUNT_SLEW_RATE_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
+		INDIGO_COPY_NAME(MOUNT_MOTION_RA_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
+		INDIGO_COPY_NAME(MOUNT_MOTION_DEC_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
+		INDIGO_COPY_NAME(MOUNT_ABORT_MOTION_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
+		INDIGO_COPY_NAME(MOUNT_PARK_PROPERTY->device, LX200_DEVICES_MOUNT_ITEM->text.value);
 		LX200_DEVICES_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, LX200_DEVICES_PROPERTY, NULL);
 	} else if (indigo_property_match(LX200_CONFIGURATION_PROPERTY, property)) {
 		indigo_property_copy_values(LX200_CONFIGURATION_PROPERTY, property, false);
 		if (LX200_CONFIGURATION_EPOCH_ITEM->number.target != 0 && LX200_CONFIGURATION_EPOCH_ITEM->number.target != 2000) {
 			LX200_CONFIGURATION_EPOCH_ITEM->number.value = LX200_CONFIGURATION_EPOCH_ITEM->number.target = 0;
-			indigo_send_message(device, "Warning! Valid values are 0 or 2000 only, value adjusted to 0");
+			indigo_send_message(device, NULL, "Warning! Valid values are 0 or 2000 only, value adjusted to 0");
 		}
 		LX200_CONFIGURATION_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, LX200_CONFIGURATION_PROPERTY, NULL);
@@ -589,8 +605,9 @@ static indigo_result agent_client_attach(indigo_client *client) {
 }
 
 static indigo_result agent_update_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message) {
-	if (device == CLIENT_PRIVATE_DATA->device)
+	if (device == CLIENT_PRIVATE_DATA->device) {
 		return INDIGO_OK;
+	}
 	if (strcmp(device->name, CLIENT_PRIVATE_DATA->lx200_devices_property->items[0].text.value) == 0) {
 		indigo_item *item;
 		if (strcmp(property->name, MOUNT_EQUATORIAL_COORDINATES_PROPERTY_NAME) == 0) {
@@ -607,8 +624,9 @@ static indigo_result agent_update_property(indigo_client *client, indigo_device 
 }
 
 static indigo_result agent_define_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message) {
-	if (device == CLIENT_PRIVATE_DATA->device)
+	if (device == CLIENT_PRIVATE_DATA->device) {
 		return INDIGO_OK;
+	}
 	if (strcmp(device->name, CLIENT_PRIVATE_DATA->lx200_devices_property->items[0].text.value) == 0) {
 		agent_update_property(client, device, property, message);
 	}
@@ -646,8 +664,9 @@ indigo_result indigo_agent_lx200_server(indigo_driver_action action, indigo_driv
 
 	SET_DRIVER_INFO(info, "LX200 Server Agent", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT:

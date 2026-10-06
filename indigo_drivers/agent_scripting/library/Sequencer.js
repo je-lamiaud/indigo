@@ -41,7 +41,9 @@ Sequence.prototype.repeat = function(count, block) {
 		this.recovery_point_index = recovery_point_index_backup;
 		block();
 		i++;
-		this.sequence.push({ execute: 'increment_loop(' + i + ')', step: loop, progress: this.progress, exposure: this.exposure });
+		if (i < count) {
+			this.sequence.push({ execute: 'increment_loop(' + i + ')', step: loop, progress: this.progress, exposure: this.exposure });
+		}
 	}
 	this.sequence.push({ execute: 'exit_loop()', step: this.step, progress: this.progress, exposure: this.exposure });
 	if (count <= 0) {
@@ -66,12 +68,16 @@ Sequence.prototype.wait = function(delay) {
 };
 
 Sequence.prototype.wait_until = function(time) {
-	var delay = (typeof time === 'string') ? indigo_utc_to_delay(time) : indigo_time_to_delay(time);
-	if (this.warn_wait_until_12 && delay > 12 * 60 * 60) {
+	var estimated_delay = (typeof time === 'string') ? indigo_utc_to_delay(time) : indigo_time_to_delay(time);
+	if (this.warn_wait_until_12 && estimated_delay > 12 * 60 * 60) {
 		indigo_send_message("Possible error - 'wait_until' will block for more than 12 hours!");
 		this.warn_wait_until_12 = false;
 	}
-	this.sequence.push({ execute: 'wait(' + delay + ',' + true + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	if (typeof time === 'string') {
+		this.sequence.push({ execute: 'wait_until_utc("' + time + '")', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	} else {
+		this.sequence.push({ execute: 'wait_until_time(' + time + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	}
 };
 
 Sequence.prototype.continue_on_failure = function() {
@@ -87,8 +93,8 @@ Sequence.prototype.abort_on_failure = function() {
 };
 
 Sequence.prototype.break_at = function(time) {
-	var time = (typeof time === 'string') ? indigo_utc_to_time(time) : time;
-	if (this.warn_break_at_12 && indigo_time_to_delay(time) > 12 * 60 * 60) {
+	var t = (typeof time === 'string') ? indigo_utc_to_time(time) : time;
+	if (this.warn_break_at_12 && indigo_time_to_delay(t) > 12 * 60 * 60) {
 		indigo_send_message("Possible error - 'break_at' will fire in more than 12 hours!");
 		this.warn_break_at_12 = false;
 	}
@@ -96,8 +102,24 @@ Sequence.prototype.break_at = function(time) {
 };
 
 Sequence.prototype.break_at_ha = function(limit) {
-	var limit = (typeof limit === 'string') ? indigo_stod(limit) : limit;
-	this.sequence.push({ execute: 'break_at_ha(' + limit + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	var l = (typeof limit === 'string') ? indigo_stod(limit) : limit;
+	this.sequence.push({ execute: 'break_at_ha(' + l + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.wait_until_solar_altitude_below = function(limit) {
+	this.sequence.push({ execute: 'wait_until_solar_altitude_below(' + limit + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.wait_until_target_altitude_above = function(limit, ra, dec) {
+	this.sequence.push({ execute: 'wait_until_target_altitude_above(' + ra + ',' + dec + ',' + limit + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.break_if_solar_altitude_above = function(limit) {
+	this.sequence.push({ execute: 'break_if_solar_altitude_above(' + limit + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.break_if_target_altitude_below = function(limit, ra, dec) {
+	this.sequence.push({ execute: 'break_if_target_altitude_below(' + ra + ',' + dec + ',' + limit + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.resume_point = function() {
@@ -281,6 +303,15 @@ Sequence.prototype.set_object_name = function(name) {
 	this.sequence.push({ execute: 'set_local_mode(null, null, "' + name + '")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
+Sequence.prototype.start_preview = function(exposure) {
+	this.sequence.push({ execute: 'set_batch(0,' + exposure + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_imager_process("PREVIEW", "Busy")', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.stop_preview = function() {
+	this.sequence.push({ execute: 'stop_preview()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+}
+
 Sequence.prototype.capture_batch = function(p1, p2, p3) {
 	// If p1 is not string, treat p1 as count and p2 as exposure
 	// Else treat p1 as name_template, p2 as count, and p3 as exposure
@@ -321,9 +352,9 @@ Sequence.prototype.capture_stream = function(p1, p2, p3) {
 	if (arguments.length === 3 && typeof p1 === 'string') {
 		this.sequence.push({ execute: 'set_local_mode(null, "' + name_template + '", null)', step: this.step, progress: this.progress++, exposure: this.exposure });
 	}
-	this.sequence.push({ execute: 'set_stream(' + count + ',' + exposure + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'set_batch(' + count + ',' + exposure + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
 	this.sequence.push({ execute: 'set_upload_mode("BOTH")', step: this.step, progress: this.progress++, exposure: this.exposure });
-	this.sequence.push({ execute: 'capture_stream()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_imager_process("STREAMING")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 	this.exposure += exposure * count;
 };
 
@@ -350,7 +381,7 @@ Sequence.prototype.focus_ignore_failure = function(exposure) {
 };
 
 Sequence.prototype.clear_focuser_selection = function() {
-	this.sequence.push({ execute: 'clear_focuser_selection()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_imager_process("CLEAR_SELECTION")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.set_focuser_position = function(position) {
@@ -358,29 +389,106 @@ Sequence.prototype.set_focuser_position = function(position) {
 	this.sequence.push({ execute: 'set_focuser_position(' + position + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
-Sequence.prototype.park = function() {
-	this.sequence.push({ execute: 'park()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+Sequence.prototype.slew = function(ra, dec) {
+	this.sequence.push({ execute: 'set_coordinates(' + ra + ',' + dec + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_mount_process("SLEW")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
-Sequence.prototype.home = function() {
-	this.sequence.push({ execute: 'home()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+Sequence.prototype.park = function() {
+	this.sequence.push({ execute: 'start_mount_process("PARK")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.unpark = function() {
-	this.sequence.push({ execute: 'unpark()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_mount_process("UNPARK")', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.home = function() {
+	this.sequence.push({ execute: 'start_mount_process("HOME")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.enable_tracking = function() {
-	this.sequence.push({ execute: 'set_tracking("ON")', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_mount_process("TRACK_ON")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.disable_tracking = function() {
-	this.sequence.push({ execute: 'set_tracking("OFF")', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_mount_process("TRACK_OFF")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
-Sequence.prototype.slew = function(ra, dec) {
-	this.sequence.push({ execute: 'set_coordinates(' + ra + ',' + dec + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
-	this.sequence.push({ execute: 'slew()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+Sequence.prototype.dome_slew = function(az) {
+	this.sequence.push({ execute: 'set_dome_goto()', step: this.step, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'dome_slew(' + az + ')', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.dome_park = function() {
+	this.sequence.push({ execute: 'start_mount_process("DOME_PARK")', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.dome_unpark = function() {
+	this.sequence.push({ execute: 'start_mount_process("DOME_UNPARK")', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.dome_open = function() {
+	this.sequence.push({ execute: 'start_mount_process("DOME_OPEN")', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.dome_close = function() {
+	this.sequence.push({ execute: 'start_mount_process("DOME_CLOSE")', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.enable_ha_limit = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_HA_LIMIT", true)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.disable_ha_limit = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_HA_LIMIT", false)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.enable_time_limit = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_TIME_LIMIT", true)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.disable_time_limit = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_TIME_LIMIT", false)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.enable_dome_slaving = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_DOME_SLAVING", true)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.disable_dome_slaving = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_DOME_SLAVING", false)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.make_dome_slaving_persistent = function() {
+	this.sequence.push({ execute: 'set_mount_feature("MAKE_DOME_SLAVING_PERSISTENT", true)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.make_dome_slaving_not_persistent = function() {
+	this.sequence.push({ execute: 'set_mount_feature("MAKE_DOME_SLAVING_PERSISTENT", false)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.enable_field_derotation = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_FIELD_DEROTATION", true)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.disable_field_derotation = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_FIELD_DEROTATION", false)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.make_field_derotation_persistent = function() {
+	this.sequence.push({ execute: 'set_mount_feature("MAKE_FIELD_DEROTATION_PERSISTENT", true)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.make_field_derotation_not_persistent = function() {
+	this.sequence.push({ execute: 'set_mount_feature("MAKE_FIELD_DEROTATION_PERSISTENT", false)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.enable_joystick_control = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_JOYSTICK_CONTROL", true)', step: this.step++, progress: this.progress++, exposure: this.exposure });
+};
+
+Sequence.prototype.disable_joystick_control = function() {
+	this.sequence.push({ execute: 'set_mount_feature("ENABLE_JOYSTICK_CONTROL", false)', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.wait_for_gps = function() {
@@ -391,13 +499,7 @@ Sequence.prototype.calibrate_guiding = function(exposure) {
 	if (exposure != undefined) {
 		this.sequence.push({ execute: 'set_guider_exposure(' + exposure + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
 	}
-	this.sequence.push({ execute: 'calibrate_guiding()', step: this.step++, progress: this.progress++, exposure: this.exposure });
-};
-
-// TO BE REMOVED IN FUTURE RELEASE - USE calibrate_guiding() INSTEAD
-Sequence.prototype.calibrate_guiding_exposure = function(exposure) {
-	this.sequence.push({ execute: 'set_guider_exposure(' + exposure + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
-	this.sequence.push({ execute: 'calibrate_guiding()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_guider_process("CALIBRATION")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.start_guiding = function(exposure) {
@@ -418,18 +520,18 @@ Sequence.prototype.stop_guiding = function() {
 };
 
 Sequence.prototype.clear_guider_selection = function() {
-	this.sequence.push({ execute: 'clear_guider_selection()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_guider_process("CLEAR_SELECTION")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.sync_center = function(exposure) {
 	this.sequence.push({ execute: 'set_solver_exposure(' + exposure + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
-	this.sequence.push({ execute: 'sync_center()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_astrometry_process("CENTER")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.precise_goto = function(exposure, ra, dec) {
 	this.sequence.push({ execute: 'set_solver_exposure(' + exposure + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
 	this.sequence.push({ execute: 'set_solver_target(' + ra + ', ' + dec + ')', step: this.step, progress: this.progress++, exposure: this.exposure });
-	this.sequence.push({ execute: 'precise_goto()', step: this.step++, progress: this.progress++, exposure: this.exposure });
+	this.sequence.push({ execute: 'start_astrometry_process("PRECISE_GOTO")', step: this.step++, progress: this.progress++, exposure: this.exposure });
 };
 
 Sequence.prototype.set_rotator_angle = function(value) {
@@ -454,20 +556,21 @@ var indigo_flipper = {
 	waiting_for_guiding: false,
 	waiting_for_settle_down: false,
 	resume_guiding: false,
+	resume_ha_limit: false,
 	use_solver: false,
 	state: "Ok",
 
 	on_update: function(property) {
 		if (this.waiting_for_transit) {
-			indigo_log("waiting_for_transit " + property.name + " → " + property.state);
+			indigo_log("waiting_for_transit " + property.name + " -> " + property.state);
 		} else if (this.waiting_for_slew) {
-			indigo_log("waiting_for_slew " + property.name + " → " + property.state);
+			indigo_log("waiting_for_slew " + property.name + " -> " + property.state);
 		} else if (this.waiting_for_sync_and_center) {
-			indigo_log("waiting_for_sync_and_center " + property.name + " → " + property.state);
+			indigo_log("waiting_for_sync_and_center " + property.name + " -> " + property.state);
 		} else if (this.waiting_for_guiding) {
-			indigo_log("waiting_for_guiding " + property.name + " → " + property.state);
+			indigo_log("waiting_for_guiding " + property.name + " -> " + property.state);
 		} else if (this.waiting_for_settle_down) {
-			indigo_log("waiting_for_settle_down " + property.name + " → " + property.state);
+			indigo_log("waiting_for_settle_down " + property.name + " -> " + property.state);
 		}
 		if (this.waiting_for_transit && property.device == this.devices[MOUNT_AGENT] && property.name == "AGENT_MOUNT_DISPLAY_COORDINATES_PROPERTY") {
 			if (property.items.FLIP_REQUIRED == 1) {
@@ -477,12 +580,22 @@ var indigo_flipper = {
 				var guider_agent = indigo_devices[this.devices[GUIDER_AGENT]];
 				if (guider_agent != null) {
 					var guider_process = guider_agent.AGENT_START_PROCESS;
-					if (guider_process.items.CALIBRATION_AND_GUIDING || guider_process.items.GUIDING) {
+					if (guider_process && (guider_process.items.CALIBRATION_AND_GUIDING || guider_process.items.GUIDING)) {
 						this.resume_guiding = true;
 					}
 				}
+				indigo_log("resume_guiding = " + this.resume_guiding);
+				var mount_agent = indigo_devices[this.devices[MOUNT_AGENT]];
+				if (mount_agent != null) {
+					var mount_process_features = mount_agent.AGENT_PROCESS_FEATURES;
+					if (mount_process_features.items.ENABLE_HA_LIMIT) {
+						this.resume_ha_limit = true;
+						indigo_change_switch_property(this.devices[MOUNT_AGENT], "AGENT_PROCESS_FEATURES", { ENABLE_HA_LIMIT: false });
+					}
+				}
+				indigo_log("resume_ha_limit = " + this.resume_ha_limit);
 				this.waiting_for_slew = true;
-				indigo_change_switch_property(this.devices[MOUNT_AGENT], "AGENT_START_PROCESS", { SLEW: true});
+				indigo_change_switch_property(this.devices[MOUNT_AGENT], "AGENT_START_PROCESS", { SLEW: true });
 				indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "FLIPPER_STATE", { WAITING_FOR_TRANSIT: this.waiting_for_transit, WAITING_FOR_SLEW: this.waiting_for_slew, WAITING_FOR_SYNC_AND_CENTER: this.waiting_for_sync_and_center, WAITING_FOR_GUIDING: this.waiting_for_guiding, WAITING_FOR_SETTLE_DOWN: this.waiting_for_settle_down, RESUME_GUIDING: this.resume_guiding, USE_SOLVER: this.use_solver }, this.state = "Busy");
 			}
 		} else if (this.waiting_for_slew && property.device == this.devices[MOUNT_AGENT] && property.name == "AGENT_START_PROCESS") {
@@ -503,16 +616,19 @@ var indigo_flipper = {
 					indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "FLIPPER_STATE", { WAITING_FOR_TRANSIT: this.waiting_for_transit, WAITING_FOR_SLEW: this.waiting_for_slew, WAITING_FOR_SYNC_AND_CENTER: this.waiting_for_sync_and_center, WAITING_FOR_GUIDING: this.waiting_for_guiding, WAITING_FOR_SETTLE_DOWN: this.waiting_for_settle_down, RESUME_GUIDING: this.resume_guiding, USE_SOLVER: this.use_solver }, this.state = "Busy");
 				} else {
 					delete indigo_event_handlers.indigo_flipper;
-					indigo_send_message("Meridian flip finished");
+					if (this.resume_ha_limit) {
+						indigo_change_switch_property(this.devices[MOUNT_AGENT], "AGENT_PROCESS_FEATURES", { ENABLE_HA_LIMIT: true });
+					}
 					indigo_change_switch_property(this.devices[IMAGER_AGENT], "AGENT_PAUSE_PROCESS", { PAUSE_AFTER_TRANSIT: false});
 					indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "FLIPPER_STATE", { WAITING_FOR_TRANSIT: this.waiting_for_transit, WAITING_FOR_SLEW: this.waiting_for_slew, WAITING_FOR_SYNC_AND_CENTER: this.waiting_for_sync_and_center, WAITING_FOR_GUIDING: this.waiting_for_guiding, WAITING_FOR_SETTLE_DOWN: this.waiting_for_settle_down, RESUME_GUIDING: this.resume_guiding, USE_SOLVER: this.use_solver }, this.state = "Ok");
+					indigo_send_message("Meridian flip finished");
 				}
 			}
 		} else if (this.waiting_for_sync_and_center && property.device == this.devices[ASTROMETRY_AGENT] && property.name == "AGENT_START_PROCESS") {
 			if (property.state == "Alert") {
+				delete indigo_event_handlers.indigo_flipper;
 				indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "FLIPPER_STATE", { WAITING_FOR_TRANSIT: this.waiting_for_transit, WAITING_FOR_SLEW: this.waiting_for_slew, WAITING_FOR_SYNC_AND_CENTER: this.waiting_for_sync_and_center, WAITING_FOR_GUIDING: this.waiting_for_guiding, WAITING_FOR_SETTLE_DOWN: this.waiting_for_settle_down, RESUME_GUIDING: this.resume_guiding, USE_SOLVER: this.use_solver }, this.state = "Alert");
 				indigo_send_message("Meridian flip failed (due to sync & center failure)");
-				delete indigo_event_handlers.indigo_flipper;
 				indigo_sequencer.abort();
 			} else if (property.state == "Ok") {
 				this.waiting_for_sync_and_center = false;
@@ -522,16 +638,22 @@ var indigo_flipper = {
 					indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "FLIPPER_STATE", { WAITING_FOR_TRANSIT: this.waiting_for_transit, WAITING_FOR_SLEW: this.waiting_for_slew, WAITING_FOR_SYNC_AND_CENTER: this.waiting_for_sync_and_center, WAITING_FOR_GUIDING: this.waiting_for_guiding, WAITING_FOR_SETTLE_DOWN: this.waiting_for_settle_down, RESUME_GUIDING: this.resume_guiding, USE_SOLVER: this.use_solver }, this.state = "Busy");
 				} else {
 					delete indigo_event_handlers.indigo_flipper;
-					indigo_send_message("Meridian flip finished");
+					if (this.resume_ha_limit) {
+						indigo_change_switch_property(this.devices[MOUNT_AGENT], "AGENT_PROCESS_FEATURES", { ENABLE_HA_LIMIT: true });
+					}
 					indigo_change_switch_property(this.devices[IMAGER_AGENT], "AGENT_PAUSE_PROCESS", { PAUSE_AFTER_TRANSIT: false});
 					indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "FLIPPER_STATE", { WAITING_FOR_TRANSIT: this.waiting_for_transit, WAITING_FOR_SLEW: this.waiting_for_slew, WAITING_FOR_SYNC_AND_CENTER: this.waiting_for_sync_and_center, WAITING_FOR_GUIDING: this.waiting_for_guiding, WAITING_FOR_SETTLE_DOWN: this.waiting_for_settle_down, RESUME_GUIDING: this.resume_guiding, USE_SOLVER: this.use_solver }, this.state = "Ok");
+					indigo_send_message("Meridian flip finished");
 				}
 			}
 		} else if (this.waiting_for_guiding && property.device == this.devices[GUIDER_AGENT] && property.name == "AGENT_START_PROCESS") {
 			if (property.state == "Alert") {
+				delete indigo_event_handlers.indigo_flipper;
+				if (this.resume_ha_limit) {
+					indigo_change_switch_property(this.devices[MOUNT_AGENT], "AGENT_PROCESS_FEATURES", { ENABLE_HA_LIMIT: true });
+				}
 				indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "FLIPPER_STATE", { WAITING_FOR_TRANSIT: this.waiting_for_transit, WAITING_FOR_SLEW: this.waiting_for_slew, WAITING_FOR_SYNC_AND_CENTER: this.waiting_for_sync_and_center, WAITING_FOR_GUIDING: this.waiting_for_guiding, WAITING_FOR_SETTLE_DOWN: this.waiting_for_settle_down, RESUME_GUIDING: this.resume_guiding, USE_SOLVER: this.use_solver }, this.state = "Alert");
 				indigo_send_message("Meridian flip failed (due to guiding failure)");
-				delete indigo_event_handlers.indigo_flipper;
 				indigo_sequencer.abort();
 			} else if (property.state == "Busy") {
 				this.waiting_for_guiding = false;
@@ -543,9 +665,12 @@ var indigo_flipper = {
 			if (property.items.FRAME > 3) {
 				this.waiting_for_settle_down = false;
 				delete indigo_event_handlers.indigo_flipper;
-				indigo_send_message("Meridian flip finished");
+				if (this.resume_ha_limit) {
+					indigo_change_switch_property(this.devices[MOUNT_AGENT], "AGENT_PROCESS_FEATURES", { ENABLE_HA_LIMIT: true });
+				}
 				indigo_change_switch_property(this.devices[IMAGER_AGENT], "AGENT_PAUSE_PROCESS", { PAUSE_AFTER_TRANSIT: false});
 				indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "FLIPPER_STATE", { WAITING_FOR_TRANSIT: this.waiting_for_transit, WAITING_FOR_SLEW: this.waiting_for_slew, WAITING_FOR_SYNC_AND_CENTER: this.waiting_for_sync_and_center, WAITING_FOR_GUIDING: this.waiting_for_guiding, WAITING_FOR_SETTLE_DOWN: this.waiting_for_settle_down, RESUME_GUIDING: this.resume_guiding, USE_SOLVER: this.use_solver }, this.state = "Ok");
+				indigo_send_message("Meridian flip finished");
 			}
 		}
 	},
@@ -560,7 +685,6 @@ var indigo_flipper = {
 		this.waiting_for_guiding = false;
 		this.waiting_for_settle_down = false;
 		indigo_send_message("Meridian flip waits for transit");
-		indigo_log("resume_guiding = " + this.resume_guiding);
 		indigo_log("use_solver = " + this.use_solver);
 		this.waiting_for_transit = true;
 		indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "FLIPPER_STATE", { WAITING_FOR_TRANSIT: this.waiting_for_transit, WAITING_FOR_SLEW: this.waiting_for_slew, WAITING_FOR_SYNC_AND_CENTER: this.waiting_for_sync_and_center, WAITING_FOR_GUIDING: this.waiting_for_guiding, WAITING_FOR_SETTLE_DOWN: this.waiting_for_settle_down, RESUME_GUIDING: this.resume_guiding, USE_SOLVER: this.use_solver }, this.state = "Busy");
@@ -603,6 +727,7 @@ var indigo_sequencer = {
 	capturing_batch: false,
 	batch_exposure: 0,
 	verbose: true,
+	altitude_poll: null,
 
 	update_step_state: function(step, state) {
 		this.step_states["" + step] = state;
@@ -615,7 +740,7 @@ var indigo_sequencer = {
 			indigo_flipper.start(this.use_solver);
 		} else if (this.sequence != null) {
 			if (property.device == this.wait_for_device && property.name == this.wait_for_property) {
-				indigo_log("wait_for '" + property.device + " → " + property.name + "' → " + property.state);
+				indigo_log("wait_for '" + property.device + " -> " + property.name + "' -> " + property.state);
 				if (property.state == "Alert") {
 					this.wait_for_device = null;
 					this.wait_for_property = null;
@@ -666,7 +791,7 @@ var indigo_sequencer = {
 			}
 			for (var i = 0; i < this.loop_level; i++) {
 				if (property.name == null || property.name == "LOOP_" + i) {
-					indigo_define_number_property(this.devices[SCRIPTING_AGENT], "LOOP_" + i, "Sequencer", "Loop " + this.loop_level, { STEP: this.loop_step[i], COUNT: this.loop_count[i] }, { STEP: { label: "Loop at", format: "%g", min: 0, max: 10000, step: 1 }, COUNT: { label: "Itreations elapsed", format: "%g", min: 0, max: 10000, step: 1 }}, "Ok", "RO");
+					indigo_define_number_property(this.devices[SCRIPTING_AGENT], "LOOP_" + i, "Sequencer", "Loop " + i, { STEP: this.loop_step[i], COUNT: this.loop_count[i] }, { STEP: { label: "Loop at", format: "%g", min: 0, max: 10000, step: 1 }, COUNT: { label: "Iterations elapsed", format: "%g", min: 0, max: 10000, step: 1 }}, "Ok", "RO");
 				}
 			}
 			if (property.name == null || property.name == "FLIPPER_STATE") {
@@ -685,7 +810,6 @@ var indigo_sequencer = {
 					}
 				} else {
 					indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "AGENT_ABORT_PROCESS", { ABORT: false }, this.abort_state = "Alert");
-					this.abort_state = "Alert";
 				}
 			} else if (property.name == "AGENT_PAUSE_PROCESS") {
 				if (this.sequence != null) {
@@ -735,6 +859,7 @@ var indigo_sequencer = {
 		this.wait_for_device = null;
 		this.wait_for_property = null;
 		this.wait_for_property_state = "Ok";
+		this.altitude_poll = null;
 		this.sequence = null;
 		if (this.paused) {
 			this.paused = false;
@@ -784,6 +909,7 @@ var indigo_sequencer = {
 			this.skip_to_recovery_point = false;
 			this.ignore_failure = false;
 			this.skip_to_resume_point = false;
+			this.altitude_poll = null;
 			indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "AGENT_PAUSE_PROCESS", { PAUSE_WAIT: false }, this.pause_state = "Ok");
 			indigo_update_switch_property(this.devices[SCRIPTING_AGENT], "AGENT_ABORT_PROCESS", { ABORT: false }, this.abort_state = "Ok");
 			indigo_update_number_property(this.devices[SCRIPTING_AGENT], "SEQUENCE_STATE", { STEP: this.step, PROGRESS: this.progress, PROGRESS_TOTAL: this.progress_total, EXPOSURE: this.exposure, EXPOSURE_TOTAL: this.exposure_total }, this.sequence_state = "Busy");
@@ -815,11 +941,12 @@ var indigo_sequencer = {
 	},
 
 	execute_next: function() {
+		var nesting = 0;
 		if (this.paused) {
 			indigo_set_timer(indigo_sequencer_next_handler, 0.01);
 		} else if (this.sequence != null) {
-			previous = this.sequence[this.index];
-			nesting = 0;
+			var previous = this.sequence[this.index];
+			var current = null;
 			while (true) {
 				current = this.sequence[++this.index];
 				if (current == null) {
@@ -884,7 +1011,7 @@ var indigo_sequencer = {
 		this.loop_level++;
 		this.loop_count.push(0);
 		this.loop_step.push(this.step);
-		indigo_define_number_property(this.devices[SCRIPTING_AGENT], "LOOP_" + this.loop_level, "Sequencer", "Loop " + this.loop_step[this.loop_level], { STEP: this.step, COUNT: this.loop_count[this.loop_level] }, { STEP: { label: "Loop at", format: "%g", min: 0, max: 10000, step: 1 }, COUNT: { label: "Itreations elapsed", format: "%g", min: 0, max: 10000, step: 1 }}, "Ok", "RO");
+		indigo_define_number_property(this.devices[SCRIPTING_AGENT], "LOOP_" + this.loop_level, "Sequencer", "Loop " + this.loop_level, { STEP: this.step, COUNT: this.loop_count[this.loop_level] }, { STEP: { label: "Loop at", format: "%g", min: 0, max: 10000, step: 1 }, COUNT: { label: "Iterations elapsed", format: "%g", min: 0, max: 10000, step: 1 }}, "Ok", "RO");
 		indigo_set_timer(indigo_sequencer_next_handler, 0.1);
 	},
 
@@ -980,7 +1107,7 @@ var indigo_sequencer = {
 				}
 			}
 			if (!found) {
-				this.failure("Failed to set non-existent option '" +item + "' for '" + device + " → " + property.label + "'");
+				this.failure("Failed to set non-existent option '" +item + "' for '" + device + " -> " + property.label + "'");
 				return;
 			}
 		}
@@ -988,7 +1115,7 @@ var indigo_sequencer = {
 			if (allow_same_value) {
 				indigo_set_timer(indigo_sequencer_next_ok_handler, 0.1);
 			} else {
-				this.warning("'" + device + " → " + property.label + " → " + property.item_defs[item].label + "' is already " + (value ? "selected" : "unselected"));
+				this.warning("'" + device + " -> " + property.label + " -> " + property.item_defs[item].label + "' is already " + (value ? "selected" : "unselected"));
 			}
 			return;
 		}
@@ -1004,7 +1131,7 @@ var indigo_sequencer = {
 		this.set_switch(device, property, item, true, state);
 	},
 
-	deselect_switch: function(device, property, item) {
+	deselect_switch: function(device, property, item, state) {
 		this.set_switch(device, property, item, false, state);
 	},
 
@@ -1132,6 +1259,26 @@ var indigo_sequencer = {
 		}
 	},
 
+	wait_until_utc: function(utc_time) {
+		var delay = indigo_utc_to_delay(utc_time);
+		if (delay <= 0) {
+			indigo_send_message("Target time has passed");
+			indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
+			return;
+		}
+		this.wait(delay, true);
+	},
+
+	wait_until_time: function(target_time) {
+		var delay = indigo_time_to_delay(target_time);
+		if (delay <= 0) {
+			indigo_send_message("Target time has passed");
+			indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
+			return;
+		}
+		this.wait(delay, true);
+	},
+
 	set_failure_handling: function(failure_handling) {
 		this.failure_handling = failure_handling;
 		indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
@@ -1166,11 +1313,97 @@ var indigo_sequencer = {
 					// Smaller value is ahead of the larger one.
 					should_break = ha < limit;
 				}
+				if (should_break) {
+					this.skip_to_resume_point = true;
+					indigo_send_message("Break executed: HA " + ha.toFixed(3) + " past limit " + limit.toFixed(3));
+					indigo_sequencer.update_step_state(indigo_sequencer.step, "Alert");
+					indigo_set_timer(indigo_sequencer_next_handler, 0);
+				}
 			}
 		}
-		if (should_break) {
+		if (!should_break) {
+			indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
+		}
+	},
+
+	get_site_coordinates: function() {
+		var lat = 0, lon = 0;
+		var mount_agent = indigo_devices[this.devices[MOUNT_AGENT]];
+		if (mount_agent != null) {
+			var geo = mount_agent.GEOGRAPHIC_COORDINATES;
+			if (geo != null) {
+				lat = geo.items.LATITUDE;
+				lon = geo.items.LONGITUDE;
+			}
+		}
+		return { lat: lat, lon: lon };
+	},
+
+	wait_until_solar_altitude_below: function(limit) {
+		var site = this.get_site_coordinates();
+		var lat = site.lat, lon = site.lon;
+		var alt = indigo_solar_altitude(lat, lon);
+		if (alt < limit) {
+			indigo_send_message("Solar altitude " + alt.toFixed(1) + "° is already below " + limit + "°");
+			indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
+			return;
+		}
+		indigo_send_message("Waiting for solar altitude to drop below " + limit + "° (currently " + alt.toFixed(1) + "°)");
+		this.altitude_poll = function() {
+			var a = indigo_solar_altitude(lat, lon);
+			if (a < limit) {
+				indigo_sequencer.altitude_poll = null;
+				indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
+			} else {
+				indigo_send_message("Solar altitude " + a.toFixed(1) + "°, waiting for < " + limit + "°");
+				indigo_sequencer.wait_for_timer = indigo_set_timer(indigo_sequencer_altitude_poll_handler, 60);
+			}
+		};
+		this.wait_for_timer = indigo_set_timer(indigo_sequencer_altitude_poll_handler, 60);
+	},
+
+	wait_until_target_altitude_above: function(ra, dec, limit) {
+		var site = this.get_site_coordinates();
+		var lat = site.lat, lon = site.lon;
+		var alt = indigo_target_altitude(ra, dec, lat, lon);
+		if (alt > limit) {
+			indigo_send_message("Target altitude " + alt.toFixed(1) + "° is already above " + limit + "°");
+			indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
+			return;
+		}
+		indigo_send_message("Waiting for target altitude to rise above " + limit + "° (currently " + alt.toFixed(1) + "°)");
+		this.altitude_poll = function() {
+			var a = indigo_target_altitude(ra, dec, lat, lon);
+			if (a > limit) {
+				indigo_sequencer.altitude_poll = null;
+				indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
+			} else {
+				indigo_send_message("Target altitude " + a.toFixed(1) + "°, waiting for > " + limit + "°");
+				indigo_sequencer.wait_for_timer = indigo_set_timer(indigo_sequencer_altitude_poll_handler, 60);
+			}
+		};
+		this.wait_for_timer = indigo_set_timer(indigo_sequencer_altitude_poll_handler, 60);
+	},
+
+	break_if_solar_altitude_above: function(limit) {
+		var site = this.get_site_coordinates();
+		var alt = indigo_solar_altitude(site.lat, site.lon);
+		if (alt > limit) {
 			this.skip_to_resume_point = true;
-			indigo_send_message("Break executed: HA " + ha.toFixed(3) + " past limit " + limit.toFixed(3));
+			indigo_send_message("Break executed: solar altitude " + alt.toFixed(1) + "° above " + limit + "°");
+			indigo_sequencer.update_step_state(indigo_sequencer.step, "Alert");
+			indigo_set_timer(indigo_sequencer_next_handler, 0);
+		} else {
+			indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
+		}
+	},
+
+	break_if_target_altitude_below: function(ra, dec, limit) {
+		var site = this.get_site_coordinates();
+		var alt = indigo_target_altitude(ra, dec, site.lat, site.lon);
+		if (alt < limit) {
+			this.skip_to_resume_point = true;
+			indigo_send_message("Break executed: target altitude " + alt.toFixed(1) + "° below " + limit + "°");
 			indigo_sequencer.update_step_state(indigo_sequencer.step, "Alert");
 			indigo_set_timer(indigo_sequencer_next_handler, 0);
 		} else {
@@ -1333,7 +1566,7 @@ var indigo_sequencer = {
 		this.change_texts(this.devices[IMAGER_AGENT], "CCD_SET_FITS_HEADER", { "KEYWORD": keyword, "VALUE": value });
 	},
 
-	remove_fits_header: function(keyword, value) {
+	remove_fits_header: function(keyword) {
 		this.change_texts(this.devices[IMAGER_AGENT], "CCD_REMOVE_FITS_HEADER", { "KEYWORD": keyword });
 	},
 
@@ -1378,13 +1611,28 @@ var indigo_sequencer = {
 		this.change_numbers(this.devices[IMAGER_AGENT], "AGENT_IMAGER_BATCH", { COUNT: count, EXPOSURE: exposure});
 	},
 
-	capture_batch: function() {
-		this.capturing_batch = true;
-		this.select_switch(this.devices[IMAGER_AGENT], "AGENT_START_PROCESS", "EXPOSURE");
+	start_imager_process: function(name, state) {
+		this.select_switch(this.devices[IMAGER_AGENT], "AGENT_START_PROCESS", name, state);
 	},
 
-	capture_stream: function() {
-		this.select_switch(this.devices[IMAGER_AGENT], "AGENT_START_PROCESS", "STREAMING");
+	capture_batch: function() {
+		this.capturing_batch = true;
+		this.start_imager_process("EXPOSURE");
+	},
+
+	stop_preview: function() {
+		var agent = this.devices[IMAGER_AGENT];
+		var property = indigo_devices[agent].AGENT_START_PROCESS;
+		if (property != null) {
+			if (property.state == "Busy") {
+				this.wait_for_property = "AGENT_START_PROCESS";
+				this.select_switch(this.devices[IMAGER_AGENT], "AGENT_ABORT_PROCESS", "ABORT");
+			} else {
+				indigo_set_timer(indigo_sequencer_next_ok_handler, 0);
+			}
+		} else {
+			this.failure("There is no AGENT_START_PROCESS on " + agent);
+		}
 	},
 
 	set_focuser_mode: function(mode) {
@@ -1393,35 +1641,29 @@ var indigo_sequencer = {
 
 	focus: function(ignore_failure) {
 		this.ignore_failure = ignore_failure;
-		this.select_switch(this.devices[IMAGER_AGENT], "AGENT_START_PROCESS", "FOCUSING");
-	},
-
-	clear_focuser_selection: function() {
-		this.select_switch(this.devices[IMAGER_AGENT], "AGENT_START_PROCESS", "CLEAR_SELECTION");
-	},
-
-	unpark: function() {
-		this.select_switch(this.devices[MOUNT_AGENT], "MOUNT_PARK", "UNPARKED");
+		this.start_imager_process("FOCUSING");
 	},
 
 	set_coordinates: function(ra, dec) {
 		this.change_numbers(this.devices[MOUNT_AGENT], "AGENT_MOUNT_EQUATORIAL_COORDINATES", { RA: ra, DEC: dec});
 	},
 
-	slew: function(ra, dec) {
-		this.select_switch(this.devices[MOUNT_AGENT], "AGENT_START_PROCESS", "SLEW");
+	start_mount_process: function(name) {
+		this.select_switch(this.devices[MOUNT_AGENT], "AGENT_START_PROCESS", name);
 	},
 
-	park: function() {
-		this.select_switch(this.devices[MOUNT_AGENT], "MOUNT_PARK", "PARKED");
+	set_dome_goto: function() {
+		this.allow_same_value = true;
+		this.allow_missing_property = true;
+		this.select_switch(this.devices[MOUNT_AGENT], "DOME_ON_COORDINATES_SET", "GOTO");
 	},
 
-	home: function() {
-		this.select_switch(this.devices[MOUNT_AGENT], "MOUNT_HOME", "HOME");
+	dome_slew: function(az) {
+		this.change_numbers(this.devices[MOUNT_AGENT], "DOME_HORIZONTAL_COORDINATES", { AZ: az });
 	},
 
-	set_tracking: function(on_off) {
-		this.select_switch(this.devices[MOUNT_AGENT], "MOUNT_TRACKING", on_off);
+	set_mount_feature: function(name, value) {
+		this.set_switch(this.devices[MOUNT_AGENT], "AGENT_PROCESS_FEATURES", name, value);
 	},
 
 	wait_for_gps: function() {
@@ -1444,13 +1686,13 @@ var indigo_sequencer = {
 		this.change_numbers(this.devices[GUIDER_AGENT], "AGENT_GUIDER_SETTINGS", { EXPOSURE: exposure });
 	},
 
-	calibrate_guiding: function() {
-		this.select_switch(this.devices[GUIDER_AGENT], "AGENT_START_PROCESS", "CALIBRATION");
+	start_guider_process: function(name, state) {
+		this.select_switch(this.devices[GUIDER_AGENT], "AGENT_START_PROCESS", name, state);
 	},
 
 	start_guiding: function() {
 		this.allow_busy_state = true;
-		this.select_switch(this.devices[GUIDER_AGENT], "AGENT_START_PROCESS", "GUIDING", "Busy");
+		this.start_guider_process("GUIDING", "Busy");
 	},
 
 	stop_guiding: function() {
@@ -1468,10 +1710,6 @@ var indigo_sequencer = {
 		}
 	},
 
-	clear_guider_selection: function() {
-		this.select_switch(this.devices[GUIDER_AGENT], "AGENT_START_PROCESS", "CLEAR_SELECTION");
-	},
-
 	set_solver_exposure: function(exposure) {
 		this.change_numbers(this.devices[ASTROMETRY_AGENT], "AGENT_PLATESOLVER_EXPOSURE", { EXPOSURE: exposure });
 	},
@@ -1480,12 +1718,8 @@ var indigo_sequencer = {
 		this.change_numbers(this.devices[ASTROMETRY_AGENT], "AGENT_PLATESOLVER_GOTO_SETTINGS", { RA: ra, DEC: dec });
 	},
 
-	precise_goto: function() {
-		this.select_switch(this.devices[ASTROMETRY_AGENT], "AGENT_START_PROCESS", "PRECISE_GOTO");
-	},
-
-	sync_center: function() {
-		this.select_switch(this.devices[ASTROMETRY_AGENT], "AGENT_START_PROCESS", "CENTER");
+	start_astrometry_process: function(name) {
+		this.select_switch(this.devices[ASTROMETRY_AGENT], "AGENT_START_PROCESS", name);
 	},
 
 	set_rotator_goto: function() {
@@ -1524,6 +1758,13 @@ function indigo_sequencer_next_ok_handler() {
 
 function indigo_sequencer_abort_handler() {
 	indigo_sequencer.abort();
+}
+
+function indigo_sequencer_altitude_poll_handler() {
+	indigo_sequencer.wait_for_timer = null;
+	if (indigo_sequencer.altitude_poll != null) {
+		indigo_sequencer.altitude_poll();
+	}
 }
 
 // MARK: Main code

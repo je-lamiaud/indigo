@@ -1,9 +1,9 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2026 CloudMakers, s. r. o.
 // All rights reserved.
-//
-// You can use this software under the terms of 'INDIGO Astronomy
+
+// You may use this software under the terms of 'INDIGO Astronomy
 // open-source license' (see LICENSE.md).
-//
+
 // THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
 // OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
 // WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -16,281 +16,225 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// version history
-// 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// This file generated from indigo_guider_cgusbst4.driver
 
-/** INDIGO CGUSBST4 driver
- \file indigo_guider_cgusbst4.c
- */
-
-#define DRIVER_VERSION 0x0004
-#define DRIVER_NAME	"indigo_guider_cgusbst4"
+#pragma mark - Includes
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <time.h>
 #include <math.h>
 #include <assert.h>
-#include <errno.h>
 #include <pthread.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <sys/ioctl.h>
-#include <sys/time.h>
-
 #include <indigo/indigo_driver_xml.h>
-#include <indigo/indigo_io.h>
+#include <indigo/indigo_guider_driver.h>
+#include <indigo/indigo_uni_io.h>
 
 #include "indigo_guider_cgusbst4.h"
 
-#define PRIVATE_DATA        ((cgusbst4_private_data *)device->private_data)
+#pragma mark - Common definitions
+
+#define DRIVER_VERSION       0x03000005
+#define DRIVER_NAME          "indigo_guider_cgusbst4"
+#define DRIVER_LABEL         "CG-USB-ST4 Adapter"
+#define GUIDER_DEVICE_NAME   "CG-USB-ST4 Adapter"
+#define PRIVATE_DATA         ((cgusbst4_private_data *)device->private_data)
+
+#pragma mark - Private data definition
 
 typedef struct {
-	int handle;
-	pthread_mutex_t port_mutex;
-	indigo_timer *ra_guider_timer, *dec_guider_timer;
+	indigo_uni_handle *handle;
+	//+ data
+	char response[2];
+	//- data
 } cgusbst4_private_data;
 
-static bool cgusbst4_command(indigo_device *device, char *command, char *response, int max, int sleep);
+#pragma mark - Low level code
+
+//+ code
+
+static bool cgusbst4_command(indigo_device *device, char *command, int response, ...) {
+	long result = indigo_uni_discard(PRIVATE_DATA->handle);
+	if (result >= 0) {
+		va_list args;
+		va_start(args, response);
+		result = indigo_uni_vprintf(PRIVATE_DATA->handle, command, args);
+		va_end(args);
+		if (result > 0 && response > 0) {
+			indigo_usleep(INDIGO_DELAY(1));
+			result = indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, response, "#", "", INDIGO_DELAY(1));
+		}
+	}
+	return result > 0;
+}
 
 static bool cgusbst4_open(indigo_device *device) {
 	char *name = DEVICE_PORT_ITEM->text.value;
-	PRIVATE_DATA->handle = indigo_open_serial(name);
-	if (PRIVATE_DATA->handle >= 0) {
-		INDIGO_DRIVER_LOG(DRIVER_NAME, "Connected to %s", name);
-		return true;
-	} else {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to connect to %s", name);
-		return false;
-	}
-}
-
-static bool cgusbst4_command(indigo_device *device, char *command, char *response, int max, int sleep) {
-	pthread_mutex_lock(&PRIVATE_DATA->port_mutex);
-	char c;
-	struct timeval tv;
-	// flush
-	while (true) {
-		fd_set readout;
-		FD_ZERO(&readout);
-		FD_SET(PRIVATE_DATA->handle, &readout);
-		tv.tv_sec = 0;
-		tv.tv_usec = 100000;
-		long result = select(PRIVATE_DATA->handle+1, &readout, NULL, NULL, &tv);
-		if (result == 0) {
-			break;
+	PRIVATE_DATA->handle = indigo_uni_open_serial(name, INDIGO_LOG_DEBUG);
+	if (PRIVATE_DATA->handle != NULL) {
+		if (cgusbst4_command(device, "\006", 1) && PRIVATE_DATA->response[0] == 'A') {
+			return true;
 		}
-		if (result < 0) {
-			pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-			return false;
-		}
-		result = read(PRIVATE_DATA->handle, &c, 1);
-		if (result < 1) {
-			pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-			return false;
-		}
+		indigo_uni_close(&PRIVATE_DATA->handle);
 	}
-	// write command
-	indigo_write(PRIVATE_DATA->handle, command, strlen(command));
-	if (sleep > 0) {
-		indigo_usleep(sleep);
-	}
-	// read response
-	if (response != NULL) {
-		int index = 0;
-		int timeout = 3;
-		while (index < max) {
-			fd_set readout;
-			FD_ZERO(&readout);
-			FD_SET(PRIVATE_DATA->handle, &readout);
-			tv.tv_sec = timeout;
-			tv.tv_usec = 100000;
-			timeout = 0;
-			long result = select(PRIVATE_DATA->handle+1, &readout, NULL, NULL, &tv);
-			if (result <= 0) {
-				break;
-			}
-			result = read(PRIVATE_DATA->handle, &c, 1);
-			if (result < 1) {
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read from %s -> %s (%d)", DEVICE_PORT_ITEM->text.value, strerror(errno), errno);
-				pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-				return false;
-			}
-			if (c == '#') {
-				break;
-			}
-			response[index++] = c;
-		}
-		response[index] = 0;
-	}
-	pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command %s -> %s", command, response != NULL ? response : "NULL");
-	return true;
+	return false;
 }
 
 static void cgusbst4_close(indigo_device *device) {
-	if (PRIVATE_DATA->handle > 0) {
-		close(PRIVATE_DATA->handle);
+	if (PRIVATE_DATA->handle != NULL) {
+		indigo_uni_close(&PRIVATE_DATA->handle);
 		PRIVATE_DATA->handle = 0;
 		INDIGO_DRIVER_LOG(DRIVER_NAME, "Disconnected from %s", DEVICE_PORT_ITEM->text.value);
 	}
 }
 
-// -------------------------------------------------------------------------------- INDIGO guider device implementation
-
-static indigo_result guider_attach(indigo_device *device) {
-	assert(device != NULL);
-	assert(PRIVATE_DATA != NULL);
-	if (indigo_guider_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
-		DEVICE_PORT_PROPERTY->hidden = false;
-		DEVICE_PORTS_PROPERTY->hidden = false;
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
-		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
-		return indigo_guider_enumerate_properties(device, NULL, NULL);
-	}
-	return INDIGO_FAILED;
+static void guider_guide_dec_finish_handler(indigo_device *device) {
+	GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
+	INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_OK_STATE, NULL);
 }
 
-static void guider_connect_callback(indigo_device *device) {
+static void guider_guide_ra_finish_handler(indigo_device *device) {
+	GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_WEST_ITEM->number.value = 0;
+	INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_OK_STATE, NULL);
+}
+
+//- code
+
+#pragma mark - High level code (guider)
+
+static void guider_connection_handler(indigo_device *device) {
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
-		bool result = true;
-		result = cgusbst4_open(device);
-		if (result) {
-			char response[2];
-			result = cgusbst4_command(device, "\006", response, 1, 1) && *response == 'A';
-		}
-		if (result) {
+		bool connection_result = true;
+		connection_result = cgusbst4_open(device);
+		if (connection_result) {
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
+			indigo_send_message(device, OK_PROPERTY, "Connected to %s on %s", GUIDER_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
 		} else {
+			indigo_send_message(device, ALERT_PROPERTY, "Failed to connect to %s on %s", GUIDER_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
 			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 			indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		}
 	} else {
+		indigo_cancel_pending_handlers(device);
 		cgusbst4_close(device);
+		indigo_send_message(device, OK_PROPERTY, "Disconnected from %s", device->name);
 		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 	}
 	indigo_guider_change_property(device, NULL, CONNECTION_PROPERTY);
 }
 
-static void guider_ra_timer_callback(indigo_device *device) {
-	if (GUIDER_GUIDE_EAST_ITEM->number.value != 0 || GUIDER_GUIDE_WEST_ITEM->number.value != 0) {
-		GUIDER_GUIDE_EAST_ITEM->number.value = 0;
-		GUIDER_GUIDE_WEST_ITEM->number.value = 0;
-		GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_OK_STATE;
-		indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, NULL);
+static void guider_guide_dec_handler(indigo_device *device) {
+	GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_OK_STATE;
+	//+ guider.GUIDER_GUIDE_DEC.on_change
+	int duration = GUIDER_GUIDE_NORTH_ITEM->number.value;
+	if (duration > 0) {
+		cgusbst4_command(device, ":Mgn%4d#", 0, (int)GUIDER_GUIDE_NORTH_ITEM->number.value);
+	} else {
+		duration = GUIDER_GUIDE_SOUTH_ITEM->number.value;
+		if (duration > 0) {
+			cgusbst4_command(device, ":Mgs%4d#", 0, (int)GUIDER_GUIDE_SOUTH_ITEM->number.value);
+		}
 	}
+	if (duration > 0) {
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_BUSY_STATE, NULL);
+		indigo_execute_priority_handler_in(device, 100, duration / 1000.0, guider_guide_dec_finish_handler);
+	}
+	//- guider.GUIDER_GUIDE_DEC.on_change
+	indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
 }
 
-static void guider_dec_timer_callback(indigo_device *device) {
-	if (GUIDER_GUIDE_NORTH_ITEM->number.value != 0 || GUIDER_GUIDE_SOUTH_ITEM->number.value != 0) {
-		GUIDER_GUIDE_NORTH_ITEM->number.value = 0;
-		GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
-		GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_OK_STATE;
-		indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
+static void guider_guide_ra_handler(indigo_device *device) {
+	GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_OK_STATE;
+	//+ guider.GUIDER_GUIDE_RA.on_change
+	int duration = GUIDER_GUIDE_EAST_ITEM->number.value;
+	if (duration > 0) {
+		cgusbst4_command(device, ":Mge%4d#", 0, (int)GUIDER_GUIDE_EAST_ITEM->number.value);
+	} else {
+		duration = GUIDER_GUIDE_WEST_ITEM->number.value;
+		if (duration > 0) {
+			cgusbst4_command(device, ":Mgw%4d#", 0, (int)GUIDER_GUIDE_WEST_ITEM->number.value);
+		}
 	}
+	if (duration > 0) {
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_BUSY_STATE, NULL);
+		indigo_execute_priority_handler_in(device, 100, duration / 1000.0, guider_guide_ra_finish_handler);
+	}
+	//- guider.GUIDER_GUIDE_RA.on_change
+	indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, NULL);
+}
+
+#pragma mark - Device API (guider)
+
+static indigo_result guider_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
+
+static indigo_result guider_attach(indigo_device *device) {
+	if (indigo_guider_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
+		DEVICE_PORT_PROPERTY->hidden = false;
+		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
+		GUIDER_GUIDE_DEC_PROPERTY->hidden = false;
+		GUIDER_GUIDE_RA_PROPERTY->hidden = false;
+		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
+		return guider_enumerate_properties(device, NULL, NULL);
+	}
+	return INDIGO_FAILED;
+}
+
+static indigo_result guider_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
+	return indigo_guider_enumerate_properties(device, client, property);
 }
 
 static indigo_result guider_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
-	assert(device != NULL);
-	assert(DEVICE_CONTEXT != NULL);
-	assert(property != NULL);
 	if (indigo_property_match_changeable(CONNECTION_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- CONNECTION
-		if (indigo_ignore_connection_change(device, property))
-			return INDIGO_OK;
-		indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
-		CONNECTION_PROPERTY->state = INDIGO_BUSY_STATE;
-		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
-		indigo_set_timer(device, 0, guider_connect_callback, NULL);
-		return INDIGO_OK;	} else if (indigo_property_match_changeable(GUIDER_GUIDE_DEC_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- GUIDER_GUIDE_DEC
-		indigo_property_copy_values(GUIDER_GUIDE_DEC_PROPERTY, property, false);
-		char command[128];
-		if (GUIDER_GUIDE_NORTH_ITEM->number.value > 0) {
-			sprintf(command, ":Mgn%4d#", (int)GUIDER_GUIDE_NORTH_ITEM->number.value);
-			cgusbst4_command(device, command, NULL, 0, 0);
-			GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_BUSY_STATE;
-			indigo_set_timer(device, GUIDER_GUIDE_NORTH_ITEM->number.value/1000.0, guider_dec_timer_callback, &PRIVATE_DATA->dec_guider_timer);
-		} else if (GUIDER_GUIDE_SOUTH_ITEM->number.value > 0) {
-			sprintf(command, ":Mgs%4d#", (int)GUIDER_GUIDE_SOUTH_ITEM->number.value);
-			cgusbst4_command(device, command, NULL, 0, 0);
-			GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_BUSY_STATE;
-			indigo_set_timer(device, GUIDER_GUIDE_SOUTH_ITEM->number.value/1000.0, guider_dec_timer_callback, &PRIVATE_DATA->dec_guider_timer);
-		} else {
-			GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_OK_STATE;
+		if (!indigo_ignore_connection_change(device, property)) {
+			indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
+			INDIGO_UPDATE_PROPERTY_STATE(CONNECTION_PROPERTY, INDIGO_BUSY_STATE, NULL);
+			indigo_execute_handler(device, guider_connection_handler);
 		}
-		indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(GUIDER_GUIDE_DEC_PROPERTY, property)) {
+		INDIGO_COPY_VALUES_PROCESS_CHANGE(GUIDER_GUIDE_DEC_PROPERTY, guider_guide_dec_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(GUIDER_GUIDE_RA_PROPERTY, property)) {
-		// -------------------------------------------------------------------------------- GUIDER_GUIDE_RA
-		indigo_property_copy_values(GUIDER_GUIDE_RA_PROPERTY, property, false);
-		char command[128];
-		if (GUIDER_GUIDE_WEST_ITEM->number.value > 0) {
-			sprintf(command, ":Mgw%4d#", (int)GUIDER_GUIDE_WEST_ITEM->number.value);
-			cgusbst4_command(device, command, NULL, 0, 0);
-			GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_BUSY_STATE;
-			indigo_set_timer(device, GUIDER_GUIDE_WEST_ITEM->number.value/1000.0, guider_ra_timer_callback, &PRIVATE_DATA->ra_guider_timer);
-		} else if (GUIDER_GUIDE_EAST_ITEM->number.value > 0) {
-			sprintf(command, ":Mge%4d#", (int)GUIDER_GUIDE_EAST_ITEM->number.value);
-			cgusbst4_command(device, command, NULL, 0, 0);
-			GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_BUSY_STATE;
-			indigo_set_timer(device, GUIDER_GUIDE_EAST_ITEM->number.value/1000.0, guider_ra_timer_callback, &PRIVATE_DATA->ra_guider_timer);
-		} else {
-			GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_OK_STATE;
-		}
-		indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, NULL);
+		INDIGO_COPY_VALUES_PROCESS_CHANGE(GUIDER_GUIDE_RA_PROPERTY, guider_guide_ra_handler);
 		return INDIGO_OK;
-		// --------------------------------------------------------------------------------
 	}
 	return indigo_guider_change_property(device, client, property);
 }
 
 static indigo_result guider_detach(indigo_device *device) {
-	assert(device != NULL);
 	if (IS_CONNECTED) {
-		indigo_cancel_timer(device, &PRIVATE_DATA->ra_guider_timer);
-		indigo_cancel_timer(device, &PRIVATE_DATA->dec_guider_timer);
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
-		guider_connect_callback(device);
+		guider_connection_handler(device);
 	}
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_guider_detach(device);
 }
 
-// --------------------------------------------------------------------------------
+#pragma mark - Device templates
 
-static cgusbst4_private_data *private_data = NULL;
-static indigo_device *guider = NULL;
+static indigo_device guider_template = INDIGO_DEVICE_INITIALIZER(GUIDER_DEVICE_NAME, guider_attach, guider_enumerate_properties, guider_change_property, NULL, guider_detach);
+
+#pragma mark - Main code
 
 indigo_result indigo_guider_cgusbst4(indigo_driver_action action, indigo_driver_info *info) {
-	static indigo_device mount_guider_template = INDIGO_DEVICE_INITIALIZER(
-		"CG-USB-ST4 Adapter",
-		guider_attach,
-		indigo_guider_enumerate_properties,
-		guider_change_property,
-		NULL,
-		guider_detach
-	);
-
 	static indigo_driver_action last_action = INDIGO_DRIVER_SHUTDOWN;
+	static cgusbst4_private_data *private_data = NULL;
+	static indigo_device *guider = NULL;
 
-	static indigo_device_match_pattern patterns[1] = { 0 };
-	strcpy(patterns[0].vendor_string, "Astrogene1000");
-	strcpy(patterns[0].product_string, "USB to ST4");
-	INDIGO_REGISER_MATCH_PATTERNS(mount_guider_template, patterns, 1);
+	SET_DRIVER_INFO(info, DRIVER_LABEL, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	SET_DRIVER_INFO(info, "CG-USB-ST4 Adapter", __FUNCTION__, DRIVER_VERSION, false, last_action);
-
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:
 			last_action = action;
+			static indigo_device_match_pattern patterns[1] = { 0 };
+			strcpy(patterns[0].product_string, "USB to ST4 Astrogene_1000");
+			INDIGO_REGISER_MATCH_PATTERNS(guider_template, patterns, 1);
 			private_data = indigo_safe_malloc(sizeof(cgusbst4_private_data));
-			guider = indigo_safe_malloc_copy(sizeof(indigo_device), &mount_guider_template);
+			guider = indigo_safe_malloc_copy(sizeof(indigo_device), &guider_template);
 			guider->private_data = private_data;
 			indigo_attach_device(guider);
 			break;

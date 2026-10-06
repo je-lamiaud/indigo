@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Rumen G. Bogdanovski
+// Copyright (C) 2020-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** INDIGO Lunatico AAG CloudWatcher AUX driver
  \file indigo_aux_cloudwatcher.c
@@ -25,7 +25,7 @@
 
 #include "indigo_aux_cloudwatcher.h"
 
-#define DRIVER_VERSION         0x0008
+#define DRIVER_VERSION 0x02000009
 #define AUX_CLOUDWATCHER_NAME  "AAG CloudWatcher"
 
 #define DRIVER_NAME              "indigo_aux_skywatcher"
@@ -33,18 +33,18 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <ctype.h>
+#if defined(INDIGO_MACOS) || defined(INDIGO_LINUX)
 #include <sys/time.h>
-#include <termios.h>
+#endif
 
 #include <indigo/indigo_driver_xml.h>
-#include <indigo/indigo_io.h>
+#include <indigo/indigo_uni_io.h>
 #include <indigo/indigo_client.h>
 #include <indigo/indigo_aux_driver.h>
 
@@ -277,19 +277,18 @@ typedef struct {
 } cloudwatcher_data;
 
 typedef struct {
-	int handle;
+	indigo_uni_handle *handle;
 	float firmware;
 	bool udp;
 	bool anemometer_black;
 	bool cancel_reading;
-	pthread_mutex_t port_mutex;
+	pthread_mutex_t port_mutex; // keep mutex as we use threads and queues
 
 	heating_algorithm_state heating_state;
 	time_t pulse_start_time;
 	time_t wet_start_time;
 	float desired_sensor_temperature;
 	float sensor_heater_power;
-	indigo_timer *sensors_timer;
 	indigo_property *outlet_names_property,
 	                *gpio_outlet_property,
 	                *heater_control_state,
@@ -334,59 +333,39 @@ typedef struct {
 #define REFRESH_INTERVAL 15.0
 
 /* Linatico AAG CloudWatcher device Commands ======================================================================== */
-static bool aag_command(indigo_device *device, const char *command, char *response, int block_count, int sleep) {
+static bool aag_command(indigo_device *device, const char *command, char *response, int block_count) {
 	int max = block_count * BLOCK_SIZE;
 	char c;
-	struct timeval tv;
 	pthread_mutex_lock(&PRIVATE_DATA->port_mutex);
-	
+
 	// flush input and output
-	tcflush(PRIVATE_DATA->handle, TCIOFLUSH);
-	
+	indigo_uni_discard(PRIVATE_DATA->handle);
+
 	// write command
-	indigo_write(PRIVATE_DATA->handle, command, strlen(command));
-	if (sleep > 0) {
-		usleep(sleep);
-	}
-	
+	indigo_uni_write(PRIVATE_DATA->handle, command, strlen(command));
+
 	// read responce
 	if (response != NULL) {
 		int index = 0;
-		int timeout = 3;
+
 		while (index < max) {
-			fd_set readout;
-			FD_ZERO(&readout);
-			FD_SET(PRIVATE_DATA->handle, &readout);
-			tv.tv_sec = timeout;
-			tv.tv_usec = 0;
-			timeout = 15; /* new sky darkness sensor may take up to 15 secods to read in complete darkness */
-			long result = select(PRIVATE_DATA->handle+1, &readout, NULL, NULL, &tv);
+			/* new sky darkness sensor may take up to 15 secods to read in complete darkness */
+			int result = indigo_uni_wait_for_data(PRIVATE_DATA->handle, 15 * 1000000L);
 			if (result <= 0) {
 				break;
 			}
-			if (PRIVATE_DATA->udp) {
-				result = read(PRIVATE_DATA->handle, response, MAX_LEN);
-				if (result < 1) {
-					pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-					INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read from %s -> %s (%d)", DEVICE_PORT_ITEM->text.value, strerror(errno), errno);
-					return false;
-				}
-				index = (int)result;
+			result = (int)indigo_uni_read(PRIVATE_DATA->handle, &c, 1);
+			if (result < 1) {
+				pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read from %s -> %s (%d)", DEVICE_PORT_ITEM->text.value, strerror(errno), errno);
+				return false;
+			}
+			response[index++] = c;
+
+			/* If the last block is a handshake block, aka end of message (!XON), stop reading */
+			if (index >= BLOCK_SIZE && index % BLOCK_SIZE == 0 && response[index - BLOCK_SIZE + 1] == 0x11) {
+				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Handshake block received");
 				break;
-			} else {
-				result = read(PRIVATE_DATA->handle, &c, 1);
-				if (result < 1) {
-					pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-					INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read from %s -> %s (%d)", DEVICE_PORT_ITEM->text.value, strerror(errno), errno);
-					return false;
-				}
-				response[index++] = c;
-				
-				/* If the last block is a handshake block, aka end of message (!XON), stop reading */
-				if (index >= BLOCK_SIZE && index % BLOCK_SIZE == 0 && response[index - BLOCK_SIZE + 1] == 0x11) {
-					INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Handshake block received");
-					break;
-				}
 			}
 		}
 		/* We do not need the handshake block - terminate the string at its beginning */
@@ -407,7 +386,7 @@ static bool aag_command(indigo_device *device, const char *command, char *respon
 
 static bool aag_is_cloudwatcher(indigo_device *device, char *name) {
 	char buffer[BLOCK_SIZE * 2];
-	bool r = aag_command(device, "A!", buffer, 2, 0);
+	bool r = aag_command(device, "A!", buffer, 2);
 
 	if (!r) return false;
 
@@ -436,7 +415,7 @@ static bool aag_is_cloudwatcher(indigo_device *device, char *name) {
 }
 
 //static bool aag_reset_buffers(indigo_device *device) {
-//	bool r = aag_command(device, "z!", NULL, 0, 0);
+//	bool r = aag_command(device, "z!", NULL, 0);
 //	if (!r) return false;
 //	return true;
 //}
@@ -445,13 +424,13 @@ static bool aag_get_firmware_version(indigo_device *device, char *version) {
 	if (version == NULL) return false;
 
 	char buffer[BLOCK_SIZE * 2];
-	bool r = aag_command(device, "B!", buffer, 2, 0);
+	bool r = aag_command(device, "B!", buffer, 2);
 	if (!r) return false;
 
 	int res = sscanf(buffer, "!V %4s", version);
 	if (res != 1) return false;
 
-	PRIVATE_DATA->firmware = atof(version);
+	PRIVATE_DATA->firmware = (float)atof(version);
 	return true;
 }
 
@@ -460,7 +439,7 @@ static bool aag_get_serial_number(indigo_device *device, char *serial_number) {
 	if (serial_number == NULL) return false;
 
 	char buffer[BLOCK_SIZE * 2];
-	bool r = aag_command(device, "K!", buffer, 2, 0);
+	bool r = aag_command(device, "K!", buffer, 2);
 	if (!r) return false;
 
 	int res = sscanf(buffer, "!K %4s", serial_number);
@@ -489,7 +468,7 @@ static bool aag_get_values(indigo_device *device, int *power_voltage, int *ambie
 	int raw_sq = NO_READING;
 
 	char buffer[BLOCK_SIZE * 6] = "";
-	bool r = aag_command(device, "C!", buffer, 6, 0);
+	bool r = aag_command(device, "C!", buffer, 6);
 	if (!r) return false;
 
 	int record_type, value;
@@ -545,7 +524,7 @@ static bool aag_get_values(indigo_device *device, int *power_voltage, int *ambie
 static bool aag_get_ir_sky_temperature(indigo_device *device, int *temp) {
 	char buffer[BLOCK_SIZE * 2];
 
-	bool r = aag_command(device, "S!", buffer, 2, 0);
+	bool r = aag_command(device, "S!", buffer, 2);
 	if (!r) return false;
 
 	int res = sscanf(buffer, "!1 %d", temp);
@@ -558,7 +537,7 @@ static bool aag_get_ir_sky_temperature(indigo_device *device, int *temp) {
 static bool aag_get_sensor_temperature(indigo_device *device, int *temp) {
 	char buffer[BLOCK_SIZE * 2];
 
-	bool r = aag_command(device, "T!", buffer, 2, 0);
+	bool r = aag_command(device, "T!", buffer, 2);
 	if (!r) return false;
 
 	int res = sscanf(buffer, "!2 %d", temp);
@@ -571,7 +550,7 @@ static bool aag_get_sensor_temperature(indigo_device *device, int *temp) {
 static bool aag_get_rain_frequency(indigo_device *device, int *rain_freqency) {
 	char buffer[BLOCK_SIZE * 2];
 
-	bool r = aag_command(device, "E!", buffer, 2, 0);
+	bool r = aag_command(device, "E!", buffer, 2);
 	if (!r) return false;
 
 	int res = sscanf(buffer, "!R %d", rain_freqency);
@@ -603,7 +582,7 @@ static bool set_pwm_duty_cycle(indigo_device *device, int pwm_duty_cycle) {
 	command[4] = new_pwm + '0';
 
 	char buffer[BLOCK_SIZE * 2];
-	bool r = aag_command(device, command, buffer, 2, 0);
+	bool r = aag_command(device, command, buffer, 2);
 	if (!r) return false;
 
 	int res = sscanf(buffer, "!Q %d", &new_pwm);
@@ -619,7 +598,7 @@ static bool set_pwm_duty_cycle(indigo_device *device, int pwm_duty_cycle) {
 static bool aag_get_pwm_duty_cycle(indigo_device *device, int *pwm_duty_cycle) {
 	char buffer[BLOCK_SIZE * 2];
 
-	bool r = aag_command(device, "Q!", buffer, 2, 0);
+	bool r = aag_command(device, "Q!", buffer, 2);
 	if (!r) return false;
 
 	int res = sscanf(buffer, "!Q %d", pwm_duty_cycle);
@@ -632,7 +611,7 @@ static bool aag_get_atm_pressure_temperature(indigo_device *device, float *atm_p
 	int pressure, temperature;
 	char buffer[BLOCK_SIZE * 2];
 
-	bool r = aag_command(device, "p!", buffer, 2, 0);
+	bool r = aag_command(device, "p!", buffer, 2);
 	if (!r) return false;
 
 	int res = sscanf(buffer, "!p %d", &pressure);
@@ -642,7 +621,7 @@ static bool aag_get_atm_pressure_temperature(indigo_device *device, float *atm_p
 
 	*atm_pressure = pressure / 16.0;
 
-	r = aag_command(device, "q!", buffer, 2, 0);
+	r = aag_command(device, "q!", buffer, 2);
 	if (!r) return false;
 
 	res = sscanf(buffer, "!q %d", &temperature);
@@ -657,7 +636,7 @@ static bool aag_get_atm_pressure_temperature(indigo_device *device, float *atm_p
 static bool aag_open_swith(indigo_device *device) {
 	char buffer[BLOCK_SIZE * 2];
 
-	bool r = aag_command(device, "G!", buffer, 2, 0);
+	bool r = aag_command(device, "G!", buffer, 2);
 	if (!r) return false;
 
 	if (buffer[1] != 'X') return false;
@@ -668,7 +647,7 @@ static bool aag_open_swith(indigo_device *device) {
 static bool aag_close_swith(indigo_device *device) {
 	char buffer[BLOCK_SIZE * 2];
 
-	bool r = aag_command(device, "H!", buffer, 2, 0);
+	bool r = aag_command(device, "H!", buffer, 2);
 	if (!r) return false;
 
 	if (buffer[1] != 'Y') return false;
@@ -679,18 +658,16 @@ static bool aag_close_swith(indigo_device *device) {
 static bool aag_get_swith(indigo_device *device, bool *closed) {
 	char buffer[BLOCK_SIZE * 2];
 
-	bool r = aag_command(device, "F!", buffer, 2, 0);
+	bool r = aag_command(device, "F!", buffer, 2);
 	if (!r) return false;
 
 	if (buffer[1] == 'Y') {
 		*closed = true;
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "CLOSED = TRUE");
-	}
-	else if (buffer[1] == 'X') {
+	} else if (buffer[1] == 'X') {
 		*closed = false;
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "CLOSED = FALSE");
-	}
-	else {
+	} else {
 		return false;
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "CLOSED = UNKNOWN");
 	}
@@ -705,7 +682,7 @@ static bool aag_get_rh_temperature(indigo_device *device, float *rh, float *temp
 	char buffer[BLOCK_SIZE * 2];
 
 	bool precise = true;
-	bool r = aag_command(device, "t!", buffer, 2, 0);
+	bool r = aag_command(device, "t!", buffer, 2);
 	if (!r) return false;
 	int res = sscanf(buffer, "!th%d", &tempi);
 	if (res != 1) {
@@ -727,7 +704,7 @@ static bool aag_get_rh_temperature(indigo_device *device, float *rh, float *temp
 	if (*temperature < -50 || *temperature > 80) return false;
 
 	precise = true;
-	r = aag_command(device, "h!", buffer, 2, 0);
+	r = aag_command(device, "h!", buffer, 2);
 	if (!r) return false;
 	res = sscanf(buffer, "!hh%d", &rhi);
 	if (res != 1) {
@@ -737,9 +714,9 @@ static bool aag_get_rh_temperature(indigo_device *device, float *rh, float *temp
 	}
 
 	if (precise) {
-		*rh = ((rhi * 125) / 65536) - 6;
+		*rh = ((rhi * 125) / 65536) - 6.0;
 	} else {
-		*rh = ((rhi * 1.7572) / 100) - 6;
+		*rh = ((rhi * 1.7572) / 100) - 6.0;
 	}
 
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "rhi = %d", rhi);
@@ -762,7 +739,7 @@ static bool aag_get_electrical_constants(
 	if (PRIVATE_DATA->firmware < 3.0) return false;
 
 	char buffer[BLOCK_SIZE * 2];
-	bool r = aag_command(device, "M!", buffer, 2, 0);
+	bool r = aag_command(device, "M!", buffer, 2);
 	if (!r) return false;
 
 	if (buffer[1] != 'M') return false;
@@ -798,7 +775,7 @@ static bool aag_is_anemometer_present(indigo_device *device, bool *present) {
 	}
 
 	char buffer[BLOCK_SIZE * 2];
-	bool r = aag_command(device, "v!", buffer, 2, 0);
+	bool r = aag_command(device, "v!", buffer, 2);
 	if (!r) return false;
 
 	int ipresent;
@@ -820,7 +797,7 @@ static bool aag_get_wind_speed(indigo_device *device, float *wind_speed) {
 	}
 
 	char buffer[BLOCK_SIZE * 2];
-	bool r = aag_command(device, "V!", buffer, 2, 0);
+	bool r = aag_command(device, "V!", buffer, 2);
 	if (!r) return false;
 
 	int res = sscanf(buffer, "!w %f", wind_speed);
@@ -870,12 +847,18 @@ static float aggregate_floats(float values[], int num) {
 }
 
 
-static int aggregate_integers(int values[], int num) {
-	float fvalues[num];
+static int aggregate_integers(int values[], const int num) {
+	float* fvalues = (float*)indigo_safe_malloc(num * sizeof(float));
+
+	if (!fvalues) return 0;
+
 	for (int i = 0; i < num; i++) {
 		fvalues[i] = (float)values[i];
 	}
-	return (int)aggregate_floats(fvalues, num);
+	int result = (int)aggregate_floats(fvalues, num);
+
+	free(fvalues);
+	return result;
 }
 
 
@@ -979,7 +962,7 @@ static bool aag_populate_constants(indigo_device *device) {
 
 bool process_data_and_update(indigo_device *device, cloudwatcher_data data) {
 	// Rain sensor temperature
-	float rain_sensor_temp = data.rain_sensor_temperature;
+	float rain_sensor_temp = (float)data.rain_sensor_temperature;
 	if (rain_sensor_temp > 1022) {
 		rain_sensor_temp = 1022;
 	} else if (rain_sensor_temp < 1) {
@@ -1038,7 +1021,7 @@ bool process_data_and_update(indigo_device *device, cloudwatcher_data data) {
 	indigo_update_property(device, AUX_SKY_PROPERTY, NULL);
 
 	// Ambient temperature and dewpoint
-	float ambient_temperature = data.ambient_temperature;
+	float ambient_temperature = (float)data.ambient_temperature;
 	if (ambient_temperature < -200) {
 		if (data.rh_temperature > -200) {
 			ambient_temperature = data.rh_temperature;
@@ -1188,7 +1171,7 @@ bool process_data_and_update(indigo_device *device, cloudwatcher_data data) {
 
 // --------------------------------------------------------------------------------- Common stuff
 static bool aag_open(indigo_device *device) {
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "OPEN REQUESTED: %d -> %d", PRIVATE_DATA->handle, DEVICE_CONNECTED);
+	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "OPEN REQUESTED: %p -> %d", PRIVATE_DATA->handle, DEVICE_CONNECTED);
 	if (DEVICE_CONNECTED) return false;
 
 	pthread_mutex_lock(&PRIVATE_DATA->port_mutex);
@@ -1199,17 +1182,14 @@ static bool aag_open(indigo_device *device) {
 	}
 
 	char *name = DEVICE_PORT_ITEM->text.value;
-	if (!indigo_is_device_url(name, "aag")) {
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Opening local device on port: '%s', baudrate = %d", DEVICE_PORT_ITEM->text.value, atoi(DEVICE_BAUDRATE_ITEM->text.value));
-		PRIVATE_DATA->handle = indigo_open_serial_with_speed(name, atoi(DEVICE_BAUDRATE_ITEM->text.value));
-		PRIVATE_DATA->udp = false;
+	if (!indigo_uni_is_url(name, "nexdome")) {
+		PRIVATE_DATA->handle = indigo_uni_open_serial_with_speed(name, atoi(DEVICE_BAUDRATE_ITEM->text.value), INDIGO_LOG_TRACE); // Driver Debug shows better formatted messages
 	} else {
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Opening network device on host: %s", DEVICE_PORT_ITEM->text.value);
-		indigo_network_protocol proto = INDIGO_PROTOCOL_UDP;
-		PRIVATE_DATA->handle = indigo_open_network_device(name, 10000, &proto);
-		PRIVATE_DATA->udp = true;
+		PRIVATE_DATA->handle = indigo_uni_open_url(name, 8080, INDIGO_TCP_HANDLE, INDIGO_LOG_TRACE);
 	}
-	if (PRIVATE_DATA->handle < 0) {
+	//indigo_usleep(2*ONE_SECOND_DELAY);
+
+	if (PRIVATE_DATA->handle == NULL) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Opening device %s: failed", DEVICE_PORT_ITEM->text.value);
 		CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
@@ -1225,15 +1205,15 @@ static bool aag_open(indigo_device *device) {
 
 
 static void aag_close(indigo_device *device) {
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "CLOSE REQUESTED: %d -> %d", PRIVATE_DATA->handle, DEVICE_CONNECTED);
+	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "CLOSE REQUESTED: %p -> %d", PRIVATE_DATA->handle, DEVICE_CONNECTED);
 	if (!DEVICE_CONNECTED) {
 		return;
 	}
 	pthread_mutex_lock(&PRIVATE_DATA->port_mutex);
-	close(PRIVATE_DATA->handle);
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "close(%d)", PRIVATE_DATA->handle);
+	indigo_uni_close(&PRIVATE_DATA->handle);
+	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "indigo_uni_close(%d)", PRIVATE_DATA->handle);
 	indigo_global_unlock(device);
-	PRIVATE_DATA->handle = 0;
+	PRIVATE_DATA->handle = NULL;
 	clear_connected_flag(device);
 	pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
 }
@@ -1245,32 +1225,37 @@ static int aag_init_properties(indigo_device *device) {
 	DEVICE_PORT_PROPERTY->hidden = false;
 	// -------------------------------------------------------------------------------- DEVICE_PORTS
 	DEVICE_PORTS_PROPERTY->hidden = false;
+	indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 	// -------------------------------------------------------------------------------- DEVICE_BAUDRATE
 	DEVICE_BAUDRATE_PROPERTY->hidden = true;
-	indigo_copy_value(DEVICE_BAUDRATE_ITEM->text.value, DEFAULT_BAUDRATE);
+	INDIGO_COPY_VALUE(DEVICE_BAUDRATE_ITEM->text.value, DEFAULT_BAUDRATE);
 	// --------------------------------------------------------------------------------
 	INFO_PROPERTY->count = 8;
 	// -------------------------------------------------------------------------------- GPIO OUTLETS
 	AUX_GPIO_OUTLET_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_GPIO_OUTLETS_PROPERTY_NAME, SWITCH_GROUP, "Switch outlet", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 1);
-	if (AUX_GPIO_OUTLET_PROPERTY == NULL)
+	if (AUX_GPIO_OUTLET_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(AUX_GPIO_OUTLET_1_ITEM, AUX_GPIO_OUTLETS_OUTLET_1_ITEM_NAME, "Switch", false);
 	// -------------------------------------------------------------------------------- OUTLET_NAMES
 	AUX_OUTLET_NAMES_PROPERTY = indigo_init_text_property(NULL, device->name, AUX_OUTLET_NAMES_PROPERTY_NAME, SWITCH_GROUP, "Switch name", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-	if (AUX_OUTLET_NAMES_PROPERTY == NULL)
+	if (AUX_OUTLET_NAMES_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_text_item(AUX_OUTLET_NAME_1_ITEM, AUX_GPIO_OUTLET_NAME_1_ITEM_NAME, "Internal switch", "Switch");
 	// -------------------------------------------------------------------------------- X_HEATER_CONTROL_STATE
 	X_HEATER_CONTROL_STATE_PROPERTY = indigo_init_switch_property(NULL, device->name, X_HEATER_CONTROL_STATE_PROPERTY_NAME, STATUS_GROUP, "Heater control state", INDIGO_BUSY_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
-	if (X_HEATER_CONTROL_STATE_PROPERTY == NULL)
+	if (X_HEATER_CONTROL_STATE_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(X_HEATER_CONTROL_NORMAL_ITEM, X_HEATER_CONTROL_NORMAL_ITEM_NAME, "Normal", false);
 	indigo_init_switch_item(X_HEATER_CONTROL_INCREASE_ITEM, X_HEATER_CONTROL_INCREASE_ITEM_NAME, "Inscreasing", false);
 	indigo_init_switch_item(X_HEATER_CONTROL_PULSE_ITEM, X_HEATER_CONTROL_PULSE_ITEM_NAME, "Pulse", false);
 	// -------------------------------------------------------------------------------- X_SKY_CORRECTION
 	X_SKY_CORRECTION_PROPERTY = indigo_init_number_property(NULL, device->name, X_SKY_CORRECTION_PROPERTY_NAME, SETTINGS_GROUP, "Sky temperature correction", INDIGO_OK_STATE, INDIGO_RW_PERM, 5);
-	if (X_SKY_CORRECTION_PROPERTY == NULL)
+	if (X_SKY_CORRECTION_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(X_SKY_CORRECTION_K1_ITEM, X_SKY_CORRECTION_K1_ITEM_NAME, X_SKY_CORRECTION_K1_ITEM_NAME, -999, 999, 0, 3);
 	indigo_init_number_item(X_SKY_CORRECTION_K2_ITEM, X_SKY_CORRECTION_K2_ITEM_NAME, X_SKY_CORRECTION_K2_ITEM_NAME, -999, 999, 0, 0);
 	indigo_init_number_item(X_SKY_CORRECTION_K3_ITEM, X_SKY_CORRECTION_K3_ITEM_NAME, X_SKY_CORRECTION_K3_ITEM_NAME, -999, 999, 0, 4);
@@ -1278,8 +1263,9 @@ static int aag_init_properties(indigo_device *device) {
 	indigo_init_number_item(X_SKY_CORRECTION_K5_ITEM, X_SKY_CORRECTION_K5_ITEM_NAME, X_SKY_CORRECTION_K5_ITEM_NAME, -999, 999, 0, 100);
 	// -------------------------------------------------------------------------------- X_CONSTANTS
 	X_CONSTANTS_PROPERTY = indigo_init_number_property(NULL, device->name, X_CONSTANTS_PROPERTY_NAME, STATUS_GROUP, "Device Constants", INDIGO_OK_STATE, INDIGO_RO_PERM, 10);
-	if (X_CONSTANTS_PROPERTY == NULL)
+	if (X_CONSTANTS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(X_CONSTANTS_ZENER_VOLTAGE_ITEM, X_CONSTANTS_ZENER_VOLTAGE_ITEM_NAME, "Zener voltage (V)", -100, 100, 0, 3);
 	indigo_init_number_item(X_CONSTANTS_LDR_MAX_R_ITEM, X_CONSTANTS_LDR_MAX_R_ITEM_NAME, "LDR max R (kΩ)", 0, 100000, 0, 1744);
 	indigo_init_number_item(X_CONSTANTS_LDR_PULLUP_R_ITEM, X_CONSTANTS_LDR_PULLUP_R_ITEM_NAME, "LDR Pullup R (kΩ)", 0, 100000, 0, 56);
@@ -1292,149 +1278,169 @@ static int aag_init_properties(indigo_device *device) {
 	indigo_init_number_item(X_CONSTANTS_ANEMOMETER_STATE_ITEM, X_CONSTANTS_ANEMOMETER_STATE_ITEM_NAME, "Anemometer Status", 0, 10, 0, 0);
 	// -------------------------------------------------------------------------------- X_SENSOR_READINGS_PROPERTY
 	X_SENSOR_READINGS_PROPERTY = indigo_init_number_property(NULL, device->name, X_SENSOR_READINGS_PROPERTY_NAME, WEATHER_GROUP, "Sensor Readings", INDIGO_BUSY_STATE, INDIGO_RO_PERM, 8);
-	if (X_SENSOR_READINGS_PROPERTY == NULL)
+	if (X_SENSOR_READINGS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(X_SENSOR_RAW_SKY_TEMPERATURE_ITEM, X_SENSOR_RAW_SKY_TEMPERATURE_ITEM_NAME, "Raw infrared sky temperature (°C)", -200, 80, 0, 0);
-	indigo_copy_value(X_SENSOR_RAW_SKY_TEMPERATURE_ITEM->number.format, "%.1f");
+	INDIGO_COPY_VALUE(X_SENSOR_RAW_SKY_TEMPERATURE_ITEM->number.format, "%.1f");
 	indigo_init_number_item(X_SENSOR_SKY_TEMPERATURE_ITEM, X_SENSOR_SKY_TEMPERATURE_ITEM_NAME, "Infrared sky temperature (°C)", -200, 80, 0, 0);
-	indigo_copy_value(X_SENSOR_SKY_TEMPERATURE_ITEM->number.format, "%.1f");
+	INDIGO_COPY_VALUE(X_SENSOR_SKY_TEMPERATURE_ITEM->number.format, "%.1f");
 	indigo_init_number_item(X_SENSOR_IR_SENSOR_TEMPERATURE_ITEM, X_SENSOR_IR_SENSOR_TEMPERATURE_ITEM_NAME, "Infrared sensor temperature (°C)", -200, 80, 0, 0);
-	indigo_copy_value(X_SENSOR_IR_SENSOR_TEMPERATURE_ITEM->number.format, "%.1f");
+	INDIGO_COPY_VALUE(X_SENSOR_IR_SENSOR_TEMPERATURE_ITEM->number.format, "%.1f");
 	indigo_init_number_item(X_SENSOR_RAIN_CYCLES_ITEM, X_SENSOR_RAIN_CYCLES_ITEM_NAME, "Rain (cycles)", 0, 100000, 0, 0);
-	indigo_copy_value(X_SENSOR_RAIN_CYCLES_ITEM->number.format, "%.0f");
+	INDIGO_COPY_VALUE(X_SENSOR_RAIN_CYCLES_ITEM->number.format, "%.0f");
 	indigo_init_number_item(X_SENSOR_RAIN_SENSOR_TEMPERATURE_ITEM, X_SENSOR_RAIN_SENSOR_TEMPERATURE_ITEM_NAME, "Rain sensor temperature (°C)", -200, 80, 0, 0);
-	indigo_copy_value(X_SENSOR_RAIN_SENSOR_TEMPERATURE_ITEM->number.format, "%.1f");
+	INDIGO_COPY_VALUE(X_SENSOR_RAIN_SENSOR_TEMPERATURE_ITEM->number.format, "%.1f");
 	indigo_init_number_item(X_SENSOR_RAIN_HEATER_POWER_ITEM, X_SENSOR_RAIN_HEATER_POWER_ITEM_NAME, "Rain sensor heater power (%)", 0, 100, 1, 0);
-	indigo_copy_value(X_SENSOR_RAIN_HEATER_POWER_ITEM->number.format, "%.0f");
+	INDIGO_COPY_VALUE(X_SENSOR_RAIN_HEATER_POWER_ITEM->number.format, "%.0f");
 	indigo_init_number_item(X_SENSOR_SKY_BRIGHTNESS_KOHM_ITEM, X_SENSOR_SKY_BRIGHTNESS_KOHM_ITEM_NAME, "Sky brightness (kΩ)", 0, 100000, 1, 0);
-	indigo_copy_value(X_SENSOR_SKY_BRIGHTNESS_KOHM_ITEM->number.format, "%.0f");
+	INDIGO_COPY_VALUE(X_SENSOR_SKY_BRIGHTNESS_KOHM_ITEM->number.format, "%.0f");
 	indigo_init_number_item(X_SENSOR_AMBIENT_TEMPERATURE_ITEM, X_SENSOR_AMBIENT_TEMPERATURE_ITEM_NAME, "Ambient temperature (°C)", -200, 80, 0, 0);
-	indigo_copy_value(X_SENSOR_AMBIENT_TEMPERATURE_ITEM->number.format, "%.1f");
+	INDIGO_COPY_VALUE(X_SENSOR_AMBIENT_TEMPERATURE_ITEM->number.format, "%.1f");
 	// -------------------------------------------------------------------------------- DEW_THRESHOLD
 	AUX_DEW_THRESHOLD_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_DEW_THRESHOLD_PROPERTY_NAME, THRESHOLDS_GROUP, "Dew warning threshold", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-	if (AUX_DEW_THRESHOLD_PROPERTY == NULL)
+	if (AUX_DEW_THRESHOLD_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_DEW_THRESHOLD_SENSOR_1_ITEM, AUX_DEW_THRESHOLD_SENSOR_1_ITEM_NAME, "Temperature difference (°C)", 0, 9, 0, 2);
 	// -------------------------------------------------------------------------------- WIND_THRESHOLD
 	AUX_WIND_THRESHOLD_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_WIND_THRESHOLD_PROPERTY_NAME, THRESHOLDS_GROUP, "Wind warning threshold", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-	if (AUX_WIND_THRESHOLD_PROPERTY == NULL)
+	if (AUX_WIND_THRESHOLD_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_WIND_THRESHOLD_SENSOR_1_ITEM, AUX_WIND_THRESHOLD_SENSOR_1_ITEM_NAME, "Wind speed (m/s)", 0, 50, 0, 6);
 	// -------------------------------------------------------------------------------- RAIN_THRESHOLD
 	AUX_RAIN_THRESHOLD_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_RAIN_THRESHOLD_PROPERTY_NAME, THRESHOLDS_GROUP, "Rain warning threshold", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-	if (AUX_WIND_THRESHOLD_PROPERTY == NULL)
+	if (AUX_WIND_THRESHOLD_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_RAIN_THRESHOLD_SENSOR_1_ITEM, AUX_RAIN_THRESHOLD_SENSOR_1_ITEM_NAME, "Rain (cycles)", 0, 100000, 1, 400);
 	// -------------------------------------------------------------------------------- DEW_WARNING
 	AUX_DEW_WARNING_PROPERTY = indigo_init_light_property(NULL, device->name, AUX_DEW_WARNING_PROPERTY_NAME, WARNINGS_GROUP, "Dew warning", INDIGO_BUSY_STATE, 1);
-	if (AUX_DEW_WARNING_PROPERTY == NULL)
+	if (AUX_DEW_WARNING_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_light_item(AUX_DEW_WARNING_SENSOR_1_ITEM, AUX_DEW_WARNING_SENSOR_1_ITEM_NAME, "Dew warning", INDIGO_IDLE_STATE);
 	// -------------------------------------------------------------------------------- RAIN_WARNING
 	AUX_RAIN_WARNING_PROPERTY = indigo_init_light_property(NULL, device->name, AUX_RAIN_WARNING_PROPERTY_NAME, WARNINGS_GROUP, "Rain warning", INDIGO_BUSY_STATE, 1);
-	if (AUX_RAIN_WARNING_PROPERTY == NULL)
+	if (AUX_RAIN_WARNING_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_light_item(AUX_RAIN_WARNING_SENSOR_1_ITEM, AUX_RAIN_WARNING_SENSOR_1_ITEM_NAME, "Rain warning", INDIGO_IDLE_STATE);
 	// -------------------------------------------------------------------------------- WIND_WARNING
 	AUX_WIND_WARNING_PROPERTY = indigo_init_light_property(NULL, device->name, AUX_WIND_WARNING_PROPERTY_NAME, WARNINGS_GROUP, "Wind warning", INDIGO_BUSY_STATE, 1);
-	if (AUX_WIND_WARNING_PROPERTY == NULL)
+	if (AUX_WIND_WARNING_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_light_item(AUX_WIND_WARNING_SENSOR_1_ITEM, AUX_WIND_WARNING_SENSOR_1_ITEM_NAME, "Wind warning", INDIGO_IDLE_STATE);
 	// -------------------------------------------------------------------------------- AUX_HUMIDITY_THRESHOLDS
 	AUX_HUMIDITY_THRESHOLDS_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_HUMIDITY_THRESHOLDS_PROPERTY_NAME, THRESHOLDS_GROUP, "Relative humidity thresholds (%)", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-	if (AUX_HUMIDITY_THRESHOLDS_PROPERTY == NULL)
+	if (AUX_HUMIDITY_THRESHOLDS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_HUMIDITY_HUMID_THRESHOLD_ITEM, AUX_HUMIDITY_HUMID_ITEM_NAME, "Humid (more than)", 0, 100, 0, 60);
 	indigo_init_number_item(AUX_HUMIDITY_NORMAL_THRESHOLD_ITEM, AUX_HUMIDITY_NORMAL_ITEM_NAME, "Normal (more than)", 0, 100, 0, 30);
 	// -------------------------------------------------------------------------------- AUX_WIND_THRESHOLDS
 	AUX_WIND_THRESHOLDS_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_WIND_THRESHOLDS_PROPERTY_NAME, THRESHOLDS_GROUP, "Wind thresholds (m/s)", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-	if (AUX_WIND_THRESHOLDS_PROPERTY == NULL)
+	if (AUX_WIND_THRESHOLDS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_WIND_STRONG_THRESHOLD_ITEM, AUX_WIND_STRONG_ITEM_NAME, "Strong wind (more than)", 0, 100, 0, 10);
 	indigo_init_number_item(AUX_WIND_MODERATE_THRESHOLD_ITEM, AUX_WIND_MODERATE_ITEM_NAME, "Moderate wind (more than)", 0, 100, 0, 1);
 	// -------------------------------------------------------------------------------- AUX_RAIN_THRESHOLDS
 	AUX_RAIN_THRESHOLDS_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_RAIN_THRESHOLDS_PROPERTY_NAME, THRESHOLDS_GROUP, "Rain sensor thresholds (kΩ)", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-	if (AUX_RAIN_THRESHOLDS_PROPERTY == NULL)
+	if (AUX_RAIN_THRESHOLDS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_RAIN_RAINING_THRESHOLD_ITEM, AUX_RAIN_RAINING_ITEM_NAME, "Raining (less than)", 0, 100000, 0, 400);
 	indigo_init_number_item(AUX_RAIN_WET_THRESHOLD_ITEM, AUX_RAIN_WET_ITEM_NAME, "Wet (less than)", 0, 100000, 0, 1700);
 	// -------------------------------------------------------------------------------- AUX_CLOUD_THRESHOLDS
 	AUX_CLOUD_THRESHOLDS_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_CLOUD_THRESHOLDS_PROPERTY_NAME, THRESHOLDS_GROUP, "Cloud thresholds (°C)", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-	if (AUX_CLOUD_THRESHOLDS_PROPERTY == NULL)
+	if (AUX_CLOUD_THRESHOLDS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_CLOUD_CLEAR_THRESHOLD_ITEM, AUX_CLOUD_CLEAR_ITEM_NAME, "Clear (less than)", -200, 80, 0, -15);
 	indigo_init_number_item(AUX_CLOUD_CLOUDY_THRESHOLD_ITEM, AUX_CLOUD_CLOUDY_ITEM_NAME, "Cloudy (less than)", -200, 80, 0, 0);
 	// -------------------------------------------------------------------------------- AUX_SKY_THRESHOLDS
 	AUX_SKY_THRESHOLDS_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_SKY_THRESHOLDS_PROPERTY_NAME, THRESHOLDS_GROUP, "Sky darkness threshold (kΩ)", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-	if (AUX_SKY_THRESHOLDS_PROPERTY == NULL)
+	if (AUX_SKY_THRESHOLDS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_SKY_DARK_THRESHOLD_ITEM, AUX_SKY_DARK_ITEM_NAME, "Dark (more than)", 0, 100000, 0, 2100);
 	indigo_init_number_item(AUX_SKY_LIGHT_THRESHOLD_ITEM, AUX_SKY_LIGHT_ITEM_NAME, "Light (more than)", 0, 100000, 0, 6);
 	// -------------------------------------------------------------------------------- AUX_HUMIDITY
 	AUX_HUMIDITY_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_HUMIDITY_PROPERTY_NAME, WEATHER_GROUP, "Humidity condition", INDIGO_BUSY_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
-	if (AUX_HUMIDITY_PROPERTY == NULL)
+	if (AUX_HUMIDITY_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(AUX_HUMIDITY_HUMID_ITEM, AUX_HUMIDITY_HUMID_ITEM_NAME, "Humid", false);
 	indigo_init_switch_item(AUX_HUMIDITY_NORMAL_ITEM, AUX_HUMIDITY_NORMAL_ITEM_NAME, "Normal", false);
 	indigo_init_switch_item(AUX_HUMIDITY_DRY_ITEM, AUX_HUMIDITY_DRY_ITEM_NAME, "Dry", false);
 	// -------------------------------------------------------------------------------- AUX_WIND
 	AUX_WIND_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_WIND_PROPERTY_NAME, WEATHER_GROUP, "Wind condition", INDIGO_BUSY_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
-	if (AUX_WIND_PROPERTY == NULL)
+	if (AUX_WIND_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(AUX_WIND_STRONG_ITEM, AUX_WIND_STRONG_ITEM_NAME, "Strong", false);
 	indigo_init_switch_item(AUX_WIND_MODERATE_ITEM, AUX_WIND_MODERATE_ITEM_NAME, "Moderate", false);
 	indigo_init_switch_item(AUX_WIND_CALM_ITEM, AUX_WIND_CALM_ITEM_NAME, "Calm", false);
 	// -------------------------------------------------------------------------------- AUX_RAIN
 	AUX_RAIN_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_RAIN_PROPERTY_NAME, WEATHER_GROUP, "Rain condition", INDIGO_BUSY_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
-	if (AUX_RAIN_PROPERTY == NULL)
+	if (AUX_RAIN_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(AUX_RAIN_RAINING_ITEM, AUX_RAIN_RAINING_ITEM_NAME, "Raining", false);
 	indigo_init_switch_item(AUX_RAIN_WET_ITEM, AUX_RAIN_WET_ITEM_NAME, "Wet", false);
 	indigo_init_switch_item(AUX_RAIN_DRY_ITEM, AUX_RAIN_DRY_ITEM_NAME, "Dry", false);
 	// -------------------------------------------------------------------------------- AUX_CLOUD
 	AUX_CLOUD_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_CLOUD_PROPERTY_NAME, WEATHER_GROUP, "Cloud condition", INDIGO_BUSY_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
-	if (AUX_CLOUD_PROPERTY == NULL)
+	if (AUX_CLOUD_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(AUX_CLOUD_CLEAR_ITEM, AUX_CLOUD_CLEAR_ITEM_NAME, "Clear", false);
 	indigo_init_switch_item(AUX_CLOUD_CLOUDY_ITEM, AUX_CLOUD_CLOUDY_ITEM_NAME, "Cloudy", false);
 	indigo_init_switch_item(AUX_CLOUD_OVERCAST_ITEM, AUX_CLOUD_OVERCAST_ITEM_NAME, "Overcast", false);
 	// -------------------------------------------------------------------------------- AUX_SKY
 	AUX_SKY_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_SKY_PROPERTY_NAME, WEATHER_GROUP, "Sky condition", INDIGO_BUSY_STATE, INDIGO_RO_PERM, INDIGO_AT_MOST_ONE_RULE, 3);
-	if (AUX_SKY_PROPERTY == NULL)
+	if (AUX_SKY_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(AUX_SKY_DARK_ITEM, AUX_SKY_DARK_ITEM_NAME, "Dark", false);
 	indigo_init_switch_item(AUX_SKY_LIGHT_ITEM, AUX_SKY_LIGHT_ITEM_NAME, "Light", false);
 	indigo_init_switch_item(AUX_SKY_VERY_LIGHT_ITEM, AUX_SKY_VERY_LIGHT_ITEM_NAME, "Very light", false);
 	// -------------------------------------------------------------------------------- X_ANEMOMETER_TYPE
 	X_ANEMOMETER_TYPE_PROPERTY = indigo_init_switch_property(NULL, device->name, X_ANEMOMETER_TYPE_PROPERTY_NAME, SETTINGS_GROUP, "Anemometer type (if present)", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-	if (X_ANEMOMETER_TYPE_PROPERTY == NULL)
+	if (X_ANEMOMETER_TYPE_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(X_ANEMOMETER_TYPE_BLACK_ITEM, X_ANEMOMETER_TYPE_BLACK_ITEM_NAME, "Black", true);
 	indigo_init_switch_item(X_ANEMOMETER_TYPE_GREY_ITEM, X_ANEMOMETER_TYPE_GREY_ITEM_NAME, "Grey", false);
 	PRIVATE_DATA->anemometer_black = true;
 	// -------------------------------------------------------------------------------- AUX_WEATHER
 	AUX_WEATHER_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_WEATHER_PROPERTY_NAME, WEATHER_GROUP, "Weather conditions", INDIGO_BUSY_STATE, INDIGO_RO_PERM, 8);
-	if (AUX_WEATHER_PROPERTY == NULL)
+	if (AUX_WEATHER_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_WEATHER_TEMPERATURE_ITEM, AUX_WEATHER_TEMPERATURE_ITEM_NAME, "Ambient temperature (°C)", -200, 80, 0, 0);
-	indigo_copy_value(AUX_WEATHER_TEMPERATURE_ITEM->number.format, "%.1f");
+	INDIGO_COPY_VALUE(AUX_WEATHER_TEMPERATURE_ITEM->number.format, "%.1f");
 	indigo_init_number_item(AUX_WEATHER_SKY_TEMPERATURE_ITEM, AUX_WEATHER_SKY_TEMPERATURE_ITEM_NAME, "Sky temperature (°C)", -200, 80, 1, 0);
-	indigo_copy_value(AUX_WEATHER_SKY_TEMPERATURE_ITEM->number.format, "%.1f");
+	INDIGO_COPY_VALUE(AUX_WEATHER_SKY_TEMPERATURE_ITEM->number.format, "%.1f");
 	indigo_init_number_item(AUX_WEATHER_DEWPOINT_ITEM, AUX_WEATHER_DEWPOINT_ITEM_NAME, "Dewpoint (°C)", -200, 80, 1, 0);
-	indigo_copy_value(AUX_WEATHER_DEWPOINT_ITEM->number.format, "%.1f");
+	INDIGO_COPY_VALUE(AUX_WEATHER_DEWPOINT_ITEM->number.format, "%.1f");
 	indigo_init_number_item(AUX_WEATHER_HUMIDITY_ITEM, AUX_WEATHER_HUMIDITY_ITEM_NAME, "Relative humidity (%)", 0, 100, 0, 0);
-	indigo_copy_value(AUX_WEATHER_HUMIDITY_ITEM->number.format, "%.0f");
+	INDIGO_COPY_VALUE(AUX_WEATHER_HUMIDITY_ITEM->number.format, "%.0f");
 	indigo_init_number_item(AUX_WEATHER_PRESSURE_ITEM, AUX_WEATHER_PRESSURE_ITEM_NAME, "Atmospheric pressure (hPa)", 0, 100, 0, 0);
-	indigo_copy_value(AUX_WEATHER_HUMIDITY_ITEM->number.format, "%.0f");
+	INDIGO_COPY_VALUE(AUX_WEATHER_HUMIDITY_ITEM->number.format, "%.0f");
 	indigo_init_number_item(AUX_WEATHER_WIND_SPEED_ITEM, AUX_WEATHER_WIND_SPEED_ITEM_NAME, "Wind speed (m/s)", 0, 200, 0, 0);
-	indigo_copy_value(AUX_WEATHER_WIND_SPEED_ITEM->number.format, "%.1f");
-	indigo_init_number_item(AUX_WEATHER_SKY_BRIGHTNESS_ITEM, AUX_WEATHER_SKY_BRIGHTNESS_ITEM_NAME, "Sky brightness [m/arcsec\u00B2]", -20, 30, 0, 0);
-	indigo_copy_value(AUX_WEATHER_SKY_BRIGHTNESS_ITEM->number.format, "%.2f");
+	INDIGO_COPY_VALUE(AUX_WEATHER_WIND_SPEED_ITEM->number.format, "%.1f");
+	indigo_init_number_item(AUX_WEATHER_SKY_BRIGHTNESS_ITEM, AUX_WEATHER_SKY_BRIGHTNESS_ITEM_NAME, "Sky brightness [m/arcsec²]", -20, 30, 0, 0);
+	INDIGO_COPY_VALUE(AUX_WEATHER_SKY_BRIGHTNESS_ITEM->number.format, "%.2f");
 	indigo_init_number_item(AUX_WEATHER_SKY_BORTLE_CLASS_ITEM, AUX_WEATHER_SKY_BORTLE_CLASS_ITEM_NAME, "Sky Bortle class", 1, 9, 0, 0);
 	// -------------------------------------------------------------------------------- X_RAIN_SENSOR_HEATER_SETUP
 	X_RAIN_SENSOR_HEATER_SETUP_PROPERTY = indigo_init_number_property(NULL, device->name, X_RAIN_SENSOR_HEATER_SETUP_PROPERTY_NAME, SETTINGS_GROUP, "Rain sensor heater setup", INDIGO_OK_STATE, INDIGO_RW_PERM, 8);
-	if (X_RAIN_SENSOR_HEATER_SETUP_PROPERTY == NULL)
+	if (X_RAIN_SENSOR_HEATER_SETUP_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(X_RAIN_SENSOR_HEATER_TEMPETATURE_LOW_ITEM, X_RAIN_SENSOR_HEATER_TEMPETATURE_LOW_ITEM_NAME, "Temperature low (°C)", -200, 80, 0, 0);
 	indigo_init_number_item(X_RAIN_SENSOR_HEATER_TEMPETATURE_HIGH_ITEM, X_RAIN_SENSOR_HEATER_TEMPETATURE_HIGH_ITEM_NAME, "Temperature high (°C)", -200, 80, 0, 20);
 	indigo_init_number_item(X_RAIN_SENSOR_HEATER_DELTA_LOW_ITEM, X_RAIN_SENSOR_HEATER_DELTA_LOW_ITEM_NAME, "Temperature delta low (°C)", -200, 80, 0, 6);
@@ -1451,20 +1457,24 @@ static int aag_init_properties(indigo_device *device) {
 static void aag_reset_properties(indigo_device *device) {
 	int i;
 	X_HEATER_CONTROL_STATE_PROPERTY->state = INDIGO_BUSY_STATE;
-	for (i = 0; i < X_HEATER_CONTROL_STATE_PROPERTY->count; i++)
+	for (i = 0; i < X_HEATER_CONTROL_STATE_PROPERTY->count; i++) {
 		X_HEATER_CONTROL_STATE_PROPERTY->items[i].sw.value = false;
+	}
 
 	X_CONSTANTS_PROPERTY->state = INDIGO_BUSY_STATE;
-	for (i = 0; i < X_CONSTANTS_PROPERTY->count; i++)
+	for (i = 0; i < X_CONSTANTS_PROPERTY->count; i++) {
 		X_CONSTANTS_PROPERTY->items[i].number.value = 0;
+	}
 
 	X_SENSOR_READINGS_PROPERTY->state = INDIGO_BUSY_STATE;
-	for (i = 0; i < X_SENSOR_READINGS_PROPERTY->count; i++)
+	for (i = 0; i < X_SENSOR_READINGS_PROPERTY->count; i++) {
 		X_SENSOR_READINGS_PROPERTY->items[i].number.value = 0;
+	}
 
 	AUX_WEATHER_PROPERTY->state = INDIGO_BUSY_STATE;
-	for (i = 0; i < AUX_WEATHER_PROPERTY->count; i++)
+	for (i = 0; i < AUX_WEATHER_PROPERTY->count; i++) {
 		AUX_WEATHER_PROPERTY->items[i].number.value = 0;
+	}
 
 	AUX_DEW_WARNING_PROPERTY->state = INDIGO_BUSY_STATE;
 	AUX_DEW_WARNING_SENSOR_1_ITEM->light.value = INDIGO_IDLE_STATE;
@@ -1476,24 +1486,29 @@ static void aag_reset_properties(indigo_device *device) {
 	AUX_WIND_WARNING_SENSOR_1_ITEM->light.value = INDIGO_IDLE_STATE;
 
 	AUX_HUMIDITY_PROPERTY->state = INDIGO_BUSY_STATE;
-	for (i = 0; i < AUX_HUMIDITY_PROPERTY->count; i++)
-		AUX_HUMIDITY_PROPERTY->items[i].sw.value = NULL;
+	for (i = 0; i < AUX_HUMIDITY_PROPERTY->count; i++) {
+		AUX_HUMIDITY_PROPERTY->items[i].sw.value = false;
+	}
 
 	AUX_WIND_PROPERTY->state = INDIGO_BUSY_STATE;
-	for (i = 0; i < AUX_WIND_PROPERTY->count; i++)
-		AUX_WIND_PROPERTY->items[i].sw.value = NULL;
+	for (i = 0; i < AUX_WIND_PROPERTY->count; i++) {
+		AUX_WIND_PROPERTY->items[i].sw.value = false;
+	}
 
 	AUX_RAIN_PROPERTY->state = INDIGO_BUSY_STATE;
-	for (i = 0; i < AUX_RAIN_PROPERTY->count; i++)
-		AUX_RAIN_PROPERTY->items[i].sw.value = NULL;
+	for (i = 0; i < AUX_RAIN_PROPERTY->count; i++) {
+		AUX_RAIN_PROPERTY->items[i].sw.value = false;
+	}
 
 	AUX_CLOUD_PROPERTY->state = INDIGO_BUSY_STATE;
-	for (i = 0; i < AUX_CLOUD_PROPERTY->count; i++)
-		AUX_CLOUD_PROPERTY->items[i].sw.value = NULL;
+	for (i = 0; i < AUX_CLOUD_PROPERTY->count; i++) {
+		AUX_CLOUD_PROPERTY->items[i].sw.value = false;
+	}
 
 	AUX_SKY_PROPERTY->state = INDIGO_BUSY_STATE;
-	for (i = 0; i < AUX_SKY_PROPERTY->count; i++)
-		AUX_SKY_PROPERTY->items[i].sw.value = NULL;
+	for (i = 0; i < AUX_SKY_PROPERTY->count; i++) {
+		AUX_SKY_PROPERTY->items[i].sw.value = false;
+	}
 }
 
 
@@ -1656,40 +1671,40 @@ static void sensors_timer_callback(indigo_device *device) {
 	float reschedule_time = REFRESH_INTERVAL - cwd.read_duration;
 	if (reschedule_time < 1) reschedule_time = 1;
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "REFRESH_INTERVAL = %.2f, reschedule_time = %.2f,  cwd.read_duration = %.2f\n", REFRESH_INTERVAL, reschedule_time, cwd.read_duration);
-	indigo_reschedule_timer(device, reschedule_time, &PRIVATE_DATA->sensors_timer);
+	indigo_execute_handler_in(device, reschedule_time, sensors_timer_callback);
 }
 
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (DEVICE_CONNECTED) {
-		indigo_define_matching_property(AUX_GPIO_OUTLET_PROPERTY);
-		indigo_define_matching_property(X_HEATER_CONTROL_STATE_PROPERTY);
-		indigo_define_matching_property(X_CONSTANTS_PROPERTY);
-		indigo_define_matching_property(X_SENSOR_READINGS_PROPERTY);
-		indigo_define_matching_property(AUX_WEATHER_PROPERTY);
-		indigo_define_matching_property(AUX_DEW_WARNING_PROPERTY);
-		indigo_define_matching_property(AUX_RAIN_WARNING_PROPERTY);
-		indigo_define_matching_property(AUX_WIND_WARNING_PROPERTY);
-		indigo_define_matching_property(AUX_HUMIDITY_PROPERTY);
-		indigo_define_matching_property(AUX_WIND_PROPERTY);
-		indigo_define_matching_property(AUX_RAIN_PROPERTY);
-		indigo_define_matching_property(AUX_CLOUD_PROPERTY);
-		indigo_define_matching_property(AUX_SKY_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_GPIO_OUTLET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_HEATER_CONTROL_STATE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_CONSTANTS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_SENSOR_READINGS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_WEATHER_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_DEW_WARNING_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_RAIN_WARNING_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_WIND_WARNING_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_HUMIDITY_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_WIND_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_RAIN_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_CLOUD_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_SKY_PROPERTY);
 	}
-	indigo_define_matching_property(AUX_OUTLET_NAMES_PROPERTY);
-	indigo_define_matching_property(X_SKY_CORRECTION_PROPERTY);
-	indigo_define_matching_property(AUX_DEW_THRESHOLD_PROPERTY);
-	indigo_define_matching_property(AUX_RAIN_THRESHOLD_PROPERTY);
-	indigo_define_matching_property(AUX_WIND_THRESHOLD_PROPERTY);
-	indigo_define_matching_property(AUX_HUMIDITY_THRESHOLDS_PROPERTY);
-	indigo_define_matching_property(AUX_WIND_THRESHOLDS_PROPERTY);
-	indigo_define_matching_property(AUX_RAIN_THRESHOLDS_PROPERTY);
-	indigo_define_matching_property(AUX_CLOUD_THRESHOLDS_PROPERTY);
-	indigo_define_matching_property(AUX_SKY_THRESHOLDS_PROPERTY);
-	indigo_define_matching_property(X_ANEMOMETER_TYPE_PROPERTY);
-	indigo_define_matching_property(X_RAIN_SENSOR_HEATER_SETUP_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_OUTLET_NAMES_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(X_SKY_CORRECTION_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_DEW_THRESHOLD_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_RAIN_THRESHOLD_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_WIND_THRESHOLD_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_HUMIDITY_THRESHOLDS_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_WIND_THRESHOLDS_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_RAIN_THRESHOLDS_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_CLOUD_THRESHOLDS_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_SKY_THRESHOLDS_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(X_ANEMOMETER_TYPE_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(X_RAIN_SENSOR_HEATER_SETUP_PROPERTY);
 
-	return indigo_aux_enumerate_properties(device, NULL, NULL);
+	return indigo_aux_enumerate_properties(device, client, property);
 }
 
 
@@ -1700,7 +1715,7 @@ static indigo_result aux_attach(indigo_device *device) {
 		// --------------------------------------------------------------------------------
 		if (aag_init_properties(device) != INDIGO_OK) return INDIGO_FAILED;
 		pthread_mutex_init(&PRIVATE_DATA->port_mutex, NULL);
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return aux_enumerate_properties(device, NULL, NULL);
 	}
@@ -1716,13 +1731,13 @@ static void handle_aux_connect_property(indigo_device *device) {
 				char firmware[MAX_LEN] = "N/A";
 				char serial_number[MAX_LEN] = "N/A";
 				/* Pocket CW needs ~2sec after connect, maybe arduino based which resets at connect?!? */
-				indigo_usleep(ONE_SECOND_DELAY*2);
+				indigo_sleep(2);
 				if (aag_is_cloudwatcher(device, board)) {
-					indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, board);
+					INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, board);
 					aag_get_firmware_version(device, firmware);
-					indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
+					INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
 					aag_get_serial_number(device, serial_number);
-					indigo_copy_value(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, serial_number);
+					INDIGO_COPY_VALUE(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, serial_number);
 					aag_get_swith(device, &AUX_GPIO_OUTLET_1_ITEM->sw.value);
 					aag_reset_properties(device);
 					if (X_ANEMOMETER_TYPE_BLACK_ITEM->sw.value) {
@@ -1751,8 +1766,8 @@ static void handle_aux_connect_property(indigo_device *device) {
 					indigo_define_property(device, AUX_CLOUD_PROPERTY, NULL);
 					indigo_define_property(device, AUX_SKY_PROPERTY, NULL);
 					aag_populate_constants(device);
-					indigo_send_message(device, "[Warning] %s connected, it may take up to 30s to get the first readings", device->name);
-					indigo_set_timer(device, 0, sensors_timer_callback, &PRIVATE_DATA->sensors_timer);
+					indigo_send_message(device, BUSY_PROPERTY, "%s connected, it may take up to 30s to get the first readings", device->name);
+					indigo_execute_handler(device, sensors_timer_callback);
 					CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 				} else {
 					CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -1768,7 +1783,7 @@ static void handle_aux_connect_property(indigo_device *device) {
 		if (DEVICE_CONNECTED) {
 			// Stop timer faster - do not wait to finish readout cycle
 			PRIVATE_DATA->cancel_reading = true;
-			indigo_cancel_timer_sync(device, &PRIVATE_DATA->sensors_timer);
+			indigo_cancel_pending_handlers(device);
 			// To be on the safe side - set mim heating power
 			set_pwm_duty_cycle(device, (int)(PRIVATE_DATA->sensor_heater_power * 1023.0 / 100.0));
 			indigo_delete_property(device, AUX_GPIO_OUTLET_PROPERTY, NULL);
@@ -1791,6 +1806,26 @@ static void handle_aux_connect_property(indigo_device *device) {
 	indigo_aux_change_property(device, NULL, CONNECTION_PROPERTY);
 }
 
+static void aux_gpio_outlet_callback(indigo_device *device) {
+	if (!DEVICE_CONNECTED) return;
+
+	AUX_GPIO_OUTLET_PROPERTY->state = INDIGO_BUSY_STATE;
+	indigo_update_property(device, AUX_GPIO_OUTLET_PROPERTY, NULL);
+
+	bool success = false;
+	if (AUX_GPIO_OUTLET_1_ITEM->sw.value) {
+		success = aag_close_swith(device);
+	} else {
+		success = aag_open_swith(device);
+	}
+	if (success) {
+		AUX_GPIO_OUTLET_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, AUX_GPIO_OUTLET_PROPERTY, NULL);
+	} else {
+		AUX_GPIO_OUTLET_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_property(device, AUX_GPIO_OUTLET_PROPERTY, "Open/Close switch failed");
+	}
+}
 
 static indigo_result aux_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
 	assert(device != NULL);
@@ -1803,7 +1838,7 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 		indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
 		CONNECTION_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
-		indigo_set_timer(device, 0, handle_aux_connect_property, NULL);
+		indigo_execute_handler(device, handle_aux_connect_property);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(AUX_OUTLET_NAMES_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- X_AUX_OUTLET_NAMES
@@ -1821,21 +1856,8 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 	} else if (indigo_property_match_changeable(AUX_GPIO_OUTLET_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- AUX_GPIO_OUTLET
 		indigo_property_copy_values(AUX_GPIO_OUTLET_PROPERTY, property, false);
-		if (!DEVICE_CONNECTED) return INDIGO_OK;
-
-		bool success = false;
-		if (AUX_GPIO_OUTLET_1_ITEM->sw.value) {
-			success = aag_close_swith(device);
-		} else {
-			success = aag_open_swith(device);
-		}
-		if (success) {
-			AUX_GPIO_OUTLET_PROPERTY->state = INDIGO_OK_STATE;
-			indigo_update_property(device, AUX_GPIO_OUTLET_PROPERTY, NULL);
-		} else {
-			AUX_GPIO_OUTLET_PROPERTY->state = INDIGO_ALERT_STATE;
-			indigo_update_property(device, AUX_GPIO_OUTLET_PROPERTY, "Open/Close switch failed");
-		}
+		// Should be async timer as sensors_timer_callback() is running long time (up to 15s)
+		indigo_set_timer(device, 0, aux_gpio_outlet_callback, NULL);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(X_SKY_CORRECTION_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- X_SKY_CORRECTION
@@ -1913,7 +1935,7 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 		X_RAIN_SENSOR_HEATER_SETUP_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, X_RAIN_SENSOR_HEATER_SETUP_PROPERTY, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, AUX_OUTLET_NAMES_PROPERTY);
@@ -2013,33 +2035,34 @@ indigo_result indigo_aux_cloudwatcher(indigo_driver_action action, indigo_driver
 
 	SET_DRIVER_INFO(info, DRIVER_INFO, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		last_action = action;
-		private_data = indigo_safe_malloc(sizeof(aag_private_data));
-		aag_cw = indigo_safe_malloc_copy(sizeof(indigo_device), &aux_template);
-		aag_cw->private_data = private_data;
-		indigo_attach_device(aag_cw);
-		break;
+		case INDIGO_DRIVER_INIT:
+			last_action = action;
+			private_data = indigo_safe_malloc(sizeof(aag_private_data));
+			aag_cw = indigo_safe_malloc_copy(sizeof(indigo_device), &aux_template);
+			aag_cw->private_data = private_data;
+			indigo_attach_device(aag_cw);
+			break;
 
-	case INDIGO_DRIVER_SHUTDOWN:
-		VERIFY_NOT_CONNECTED(aag_cw);
-		last_action = action;
-		if (aag_cw != NULL) {
-			indigo_detach_device(aag_cw);
-			free(aag_cw);
-			aag_cw = NULL;
-		}
-		if (private_data != NULL) {
-			free(private_data);
-			private_data = NULL;
-		}
+		case INDIGO_DRIVER_SHUTDOWN:
+			VERIFY_NOT_CONNECTED(aag_cw);
+			last_action = action;
+			if (aag_cw != NULL) {
+				indigo_detach_device(aag_cw);
+				free(aag_cw);
+				aag_cw = NULL;
+			}
+			if (private_data != NULL) {
+				free(private_data);
+				private_data = NULL;
+			}
 
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

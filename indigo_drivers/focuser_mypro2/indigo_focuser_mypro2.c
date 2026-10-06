@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Rumen G. Bogdanovski
+// Copyright (C) 2020-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,28 +17,26 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** myFocuserPro2 focuser driver
  \file indigo_focuser_mypro2.c
  */
 
-#define DRIVER_VERSION 0x0008
+#define DRIVER_VERSION 0x03000009
 #define DRIVER_NAME "indigo_focuser_mypro2"
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
-#include <sys/time.h>
 
 #include <indigo/indigo_driver_xml.h>
 
-#include <indigo/indigo_io.h>
+#include <indigo/indigo_uni_io.h>
 
 #include "indigo_focuser_mypro2.h"
 
@@ -88,11 +86,10 @@
 #define is_connected                    gp_bits
 
 typedef struct {
-	int handle;
-	int32_t current_position, target_position, max_position;
+	indigo_uni_handle *handle;
+	uint32_t current_position, target_position, max_position;
 	double prev_temp;
-	indigo_timer *focuser_timer, *temperature_timer;
-	pthread_mutex_t port_mutex;
+	bool has_temperature_sensor;
 	indigo_property *step_mode_property, *coils_mode_property, *current_control_property, *timings_property, *model_hint_property;
 } mfp_private_data;
 
@@ -120,67 +117,48 @@ typedef enum {
 
 #define NO_TEMP_READING                (-127)
 
-static bool mfp_command(indigo_device *device, const char *command, char *response, int max, int timeout_ms) {
-	timeout_ms = timeout_ms > 0 ? timeout_ms : 1000000L;
-	char c;
-	struct timeval tv;
-	pthread_mutex_lock(&PRIVATE_DATA->port_mutex);
-	// flush
-	while (true) {
-		fd_set readout;
-		FD_ZERO(&readout);
-		FD_SET(PRIVATE_DATA->handle, &readout);
-		tv.tv_sec = 0;
-		tv.tv_usec = 100000;
-		long result = select(PRIVATE_DATA->handle+1, &readout, NULL, NULL, &tv);
-		if (result == 0) {
-			break;
-		}
-		if (result < 0) {
-			pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-			return false;
-		}
-		result = read(PRIVATE_DATA->handle, &c, 1);
-		if (result < 1) {
-			pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-			return false;
+#define RESPONSE_TIMEOUT               300 // milliseconds
+
+static void focuser_connect_callback(indigo_device *device);
+
+static void network_disconnection(indigo_device* device) {
+	if (CONNECTION_CONNECTED_ITEM->sw.value) {
+		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
+		focuser_connect_callback(device);
+		CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;  // The alert state signals the unexpected disconnection
+		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
+		// Sending message as this update will not pass through the agent
+		indigo_send_message(device, ALERT_PROPERTY, "Device disconnected unexpectedly", device->name);
+	}
+	// Otherwise not previously connected, nothing to do
+}
+
+static bool mfp_command(indigo_device *device, const char *command, char *response, int max, int timeout) {
+	int tmout = timeout > 0 ? timeout * 1000 : INDIGO_DELAY(3);
+	if (indigo_uni_discard(PRIVATE_DATA->handle) >= 0) {
+		if (indigo_uni_write(PRIVATE_DATA->handle, command, (long)strlen(command)) > 0) {
+			if (response != NULL) {
+				if (indigo_uni_read_section(PRIVATE_DATA->handle, response, max, "#", "", tmout) > 0) {
+					indigo_usleep(50000);
+					return true;
+				}
+			} else {
+				return true;
+			}
 		}
 	}
-	// write command
-	indigo_write(PRIVATE_DATA->handle, command, strlen(command));
-
-	// read responce
-	if (response != NULL) {
-		int index = 0;
-		int timeout = 3;
-		while (index < max) {
-			fd_set readout;
-			FD_ZERO(&readout);
-			FD_SET(PRIVATE_DATA->handle, &readout);
-			tv.tv_sec = timeout;
-			tv.tv_usec = timeout_ms % 1000000L;
-			timeout = timeout_ms / 1000000L;
-			long result = select(PRIVATE_DATA->handle+1, &readout, NULL, NULL, &tv);
-			if (result <= 0) {
-				break;
-			}
-			result = read(PRIVATE_DATA->handle, &c, 1);
-			if (result < 1) {
-				pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read from %s -> %s (%d)", DEVICE_PORT_ITEM->text.value, strerror(errno), errno);
-				return false;
-			}
-			response[index++] = c;
-
-			if (c == '#') {
-				break;
-			}
-		}
-		response[index] = 0;
+	if (PRIVATE_DATA->handle && PRIVATE_DATA->handle->type == INDIGO_TCP_HANDLE) {
+		indigo_execute_handler(device, network_disconnection);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Unexpected disconnection from %s", DEVICE_PORT_ITEM->text.value);
 	}
-	pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command %s -> %s", command, response != NULL ? response : "NULL");
-	return true;
+	return false;
+}
+
+static void mfp_close(indigo_device *device) {
+	if (PRIVATE_DATA->handle != NULL) {
+		indigo_uni_close(&PRIVATE_DATA->handle);
+		INDIGO_DRIVER_LOG(DRIVER_NAME, "Disconnected from %s", DEVICE_PORT_ITEM->text.value);
+	}
 }
 
 
@@ -383,7 +361,12 @@ static bool mfp_set_speed(indigo_device *device, uint32_t speed) {
 
 
 static bool mfp_is_moving(indigo_device *device, bool *is_moving) {
-	return mfp_command_get_int_value(device, ":01#", 'I', (uint32_t *)is_moving);
+	uint32_t temp_value;
+	bool result = mfp_command_get_int_value(device, ":01#", 'I', &temp_value);
+	if (result) {
+		*is_moving = (temp_value != 0);
+	}
+	return result;
 }
 
 
@@ -411,25 +394,25 @@ static void focuser_timer_callback(indigo_device *device) {
 	uint32_t position;
 
 	if (!mfp_is_moving(device, &moving)) {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_is_moving(%d) failed", PRIVATE_DATA->handle);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_is_moving(%p) failed", PRIVATE_DATA->handle);
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
 		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 
 	if (!mfp_get_position(device, &position)) {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%d) failed", PRIVATE_DATA->handle);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%p) failed", PRIVATE_DATA->handle);
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
 		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
 	} else {
-		PRIVATE_DATA->current_position = (double)position;
+		PRIVATE_DATA->current_position = position;
 	}
 
-	FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
+	FOCUSER_POSITION_ITEM->number.value = (double)PRIVATE_DATA->current_position;
 	if ((!moving) || (PRIVATE_DATA->current_position == PRIVATE_DATA->target_position)) {
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
 		FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
 	} else {
-		indigo_reschedule_timer(device, 0.5, &(PRIVATE_DATA->focuser_timer));
+		indigo_execute_handler_in(device, 0.5, focuser_timer_callback);
 	}
 	indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
 	indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
@@ -438,27 +421,26 @@ static void focuser_timer_callback(indigo_device *device) {
 
 static void temperature_timer_callback(indigo_device *device) {
 	double temp;
-	static bool has_sensor = true;
 	//bool moving = false;
 
 	FOCUSER_TEMPERATURE_PROPERTY->state = INDIGO_OK_STATE;
 	if (!mfp_get_temperature(device, &temp)) {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_temperature(%d, -> %f) failed", PRIVATE_DATA->handle, temp);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_temperature(%p, -> %f) failed", PRIVATE_DATA->handle, temp);
 		FOCUSER_TEMPERATURE_PROPERTY->state = INDIGO_ALERT_STATE;
 	} else {
 		FOCUSER_TEMPERATURE_ITEM->number.value = temp;
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "mfp_get_temperature(%d, -> %f) succeeded", PRIVATE_DATA->handle, FOCUSER_TEMPERATURE_ITEM->number.value);
+		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "mfp_get_temperature(%p, -> %f) succeeded", PRIVATE_DATA->handle, FOCUSER_TEMPERATURE_ITEM->number.value);
 	}
 
 	if (FOCUSER_TEMPERATURE_ITEM->number.value <= NO_TEMP_READING) { /* -127 is returned when the sensor is not connected */
 		FOCUSER_TEMPERATURE_PROPERTY->state = INDIGO_IDLE_STATE;
-		if (has_sensor) {
+		if (PRIVATE_DATA->has_temperature_sensor) {
 			INDIGO_DRIVER_LOG(DRIVER_NAME, "The temperature sensor is not connected.");
 			indigo_update_property(device, FOCUSER_TEMPERATURE_PROPERTY, "The temperature sensor is not connected.");
-			has_sensor = false;
+			PRIVATE_DATA->has_temperature_sensor = false;
 		}
 	} else {
-		has_sensor = true;
+		PRIVATE_DATA->has_temperature_sensor = true;
 		indigo_update_property(device, FOCUSER_TEMPERATURE_PROPERTY, NULL);
 	}
 	if (FOCUSER_MODE_AUTOMATIC_ITEM->sw.value) {
@@ -468,7 +450,7 @@ static void temperature_timer_callback(indigo_device *device) {
 		PRIVATE_DATA->prev_temp = NO_TEMP_READING;
 	}
 
-	indigo_reschedule_timer(device, 2, &(PRIVATE_DATA->temperature_timer));
+	indigo_execute_handler_in(device, 2, temperature_timer_callback);
 }
 
 
@@ -515,20 +497,20 @@ static void compensate_focus(indigo_device *device, double new_temp) {
 
 	uint32_t current_position;
 	if (!mfp_get_position(device, &current_position)) {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%d) failed", PRIVATE_DATA->handle);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%p) failed", PRIVATE_DATA->handle);
 	}
 	PRIVATE_DATA->current_position = current_position;
 
 	/* Make sure we do not attempt to go beyond the limits */
 	if (FOCUSER_POSITION_ITEM->number.max < PRIVATE_DATA->target_position) {
-		PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.max;
+		PRIVATE_DATA->target_position = (int32_t)FOCUSER_POSITION_ITEM->number.max;
 	} else if (FOCUSER_POSITION_ITEM->number.min > PRIVATE_DATA->target_position) {
-		PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.min;
+		PRIVATE_DATA->target_position = (int32_t)FOCUSER_POSITION_ITEM->number.min;
 	}
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Compensating: Corrected PRIVATE_DATA->target_position = %d", PRIVATE_DATA->target_position);
 
 	if (!mfp_goto_position(device, (uint32_t)PRIVATE_DATA->target_position)) {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_goto_position(%d, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_goto_position(%p, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
 		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 
@@ -536,17 +518,17 @@ static void compensate_focus(indigo_device *device, double new_temp) {
 	FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
 	FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
 	indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
-	indigo_set_timer(device, 0.5, focuser_timer_callback, &PRIVATE_DATA->focuser_timer);
+	indigo_execute_handler_in(device, 0.5, focuser_timer_callback);
 }
 
 
 static indigo_result mfp_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_STEP_MODE_PROPERTY);
-		indigo_define_matching_property(X_COILS_MODE_PROPERTY);
-		indigo_define_matching_property(X_SETTLE_TIME_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_STEP_MODE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_COILS_MODE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_SETTLE_TIME_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 
@@ -554,15 +536,15 @@ static indigo_result focuser_attach(indigo_device *device) {
 	assert(device != NULL);
 	assert(PRIVATE_DATA != NULL);
 	if (indigo_focuser_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
-		pthread_mutex_init(&PRIVATE_DATA->port_mutex, NULL);
-		PRIVATE_DATA->handle = -1;
+		PRIVATE_DATA->handle = NULL;
 		// -------------------------------------------------------------------------------- DEVICE_PORT
 		DEVICE_PORT_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- DEVICE_PORTS
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 		// -------------------------------------------------------------------------------- DEVICE_BAUDRATE
 		DEVICE_BAUDRATE_PROPERTY->hidden = false;
-		indigo_copy_value(DEVICE_BAUDRATE_ITEM->text.value, SERIAL_BAUDRATE);
+		INDIGO_COPY_VALUE(DEVICE_BAUDRATE_ITEM->text.value, SERIAL_BAUDRATE);
 		// --------------------------------------------------------------------------------
 		INFO_PROPERTY->count = 6;
 
@@ -602,12 +584,13 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_COMPENSATION_ITEM->number.max = 10000;
 		FOCUSER_COMPENSATION_PROPERTY->count = 2;
 
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 
 		// -------------------------------------------------------------------------- STEP_MODE_PROPERTY
 		X_STEP_MODE_PROPERTY = indigo_init_switch_property(NULL, device->name, X_STEP_MODE_PROPERTY_NAME, FOCUSER_ADVANCED_GROUP, "Step mode", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 8);
-		if (X_STEP_MODE_PROPERTY == NULL)
+		if (X_STEP_MODE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		X_STEP_MODE_PROPERTY->hidden = false;
 		indigo_init_switch_item(X_STEP_MODE_FULL_ITEM, X_STEP_MODE_FULL_ITEM_NAME, "Full step", false);
 		indigo_init_switch_item(X_STEP_MODE_HALF_ITEM, X_STEP_MODE_HALF_ITEM_NAME, "1/2 step", false);
@@ -620,15 +603,17 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 		// -------------------------------------------------------------------------- COILS_MODE_PROPERTY
 		X_COILS_MODE_PROPERTY = indigo_init_switch_property(NULL, device->name, X_COILS_MODE_PROPERTY_NAME, FOCUSER_ADVANCED_GROUP, "Coils Power", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (X_COILS_MODE_PROPERTY == NULL)
+		if (X_COILS_MODE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		X_COILS_MODE_PROPERTY->hidden = false;
 		indigo_init_switch_item(X_COILS_MODE_IDLE_OFF_ITEM, X_COILS_MODE_IDLE_OFF_ITEM_NAME, "OFF when idle", false);
 		indigo_init_switch_item(X_COILS_MODE_ALWAYS_ON_ITEM, X_COILS_MODE_ALWAYS_ON_ITEM_NAME, "Always ON", false);
 		//--------------------------------------------------------------------------- TIMINGS_PROPERTY
 		X_SETTLE_TIME_PROPERTY = indigo_init_number_property(NULL, device->name, X_SETTLE_TIME_PROPERTY_NAME, FOCUSER_ADVANCED_GROUP, "Settle time", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (X_SETTLE_TIME_PROPERTY == NULL)
+		if (X_SETTLE_TIME_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_SETTLE_TIME_ITEM, X_SETTLE_TIME_ITEM_NAME, "Settle time (ms)", 0, 255, 10, 0);
 		// --------------------------------------------------------------------------
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
@@ -641,7 +626,7 @@ static void update_step_mode_switches(indigo_device * device) {
 	stepmode_t value;
 
 	if (!mfp_get_step_mode(device, &value)) {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_step_mode(%d) failed", PRIVATE_DATA->handle);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_step_mode(%p) failed", PRIVATE_DATA->handle);
 		return;
 	}
 
@@ -671,7 +656,7 @@ static void update_step_mode_switches(indigo_device * device) {
 		indigo_set_switch(X_STEP_MODE_PROPERTY, X_STEP_MODE_128TH_ITEM, true);
 		break;
 	default:
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_step_mode(%d) wrong value %d", PRIVATE_DATA->handle, value);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_step_mode(%p) wrong value %d", PRIVATE_DATA->handle, value);
 	}
 }
 
@@ -680,7 +665,7 @@ static void update_coils_mode_switches(indigo_device * device) {
 	coilsmode_t value;
 
 	if (!mfp_get_coils_mode(device, &value)) {
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_coils_mode(%d) failed", PRIVATE_DATA->handle);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_coils_mode(%p) failed", PRIVATE_DATA->handle);
 		return;
 	}
 
@@ -692,7 +677,7 @@ static void update_coils_mode_switches(indigo_device * device) {
 		indigo_set_switch(X_COILS_MODE_PROPERTY, X_COILS_MODE_ALWAYS_ON_ITEM, true);
 		break;
 	default:
-		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_coils_mode(%d) wrong value %d", PRIVATE_DATA->handle, value);
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_coils_mode(%p) wrong value %d", PRIVATE_DATA->handle, value);
 	}
 }
 
@@ -700,26 +685,22 @@ static void focuser_connect_callback(indigo_device *device) {
 	uint32_t position;
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
 		if (!device->is_connected) {
-			pthread_mutex_lock(&PRIVATE_DATA->port_mutex);
 			if (indigo_try_global_lock(device) != INDIGO_OK) {
-				pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
 				CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 				indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 				indigo_update_property(device, CONNECTION_PROPERTY, NULL);
 			} else {
-				pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
 				char *name = DEVICE_PORT_ITEM->text.value;
-				if (!indigo_is_device_url(name, "mfp")) {
-					PRIVATE_DATA->handle = indigo_open_serial_with_speed(name, atoi(DEVICE_BAUDRATE_ITEM->text.value));
+				if (!indigo_uni_is_url(name, "mfp")) {
+					PRIVATE_DATA->handle = indigo_uni_open_serial_with_speed(name, atoi(DEVICE_BAUDRATE_ITEM->text.value), INDIGO_LOG_DEBUG);
 				} else {
-					indigo_network_protocol proto = INDIGO_PROTOCOL_TCP;
-					PRIVATE_DATA->handle = indigo_open_network_device(name, 8080, &proto);
+					PRIVATE_DATA->handle = indigo_uni_open_url(name, 8080, INDIGO_TCP_HANDLE, INDIGO_LOG_DEBUG);
 				}
 				/* MFP resets on RTS, which is manipulated on connect! Wait for 2 seconds to recover! */
 				indigo_usleep(2*ONE_SECOND_DELAY);
 
-				if (PRIVATE_DATA->handle < 0) {
+				if (PRIVATE_DATA->handle == NULL) {
 					INDIGO_DRIVER_ERROR(DRIVER_NAME, "Opening device %s: failed", DEVICE_PORT_ITEM->text.value);
 					CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
 					indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
@@ -727,12 +708,7 @@ static void focuser_connect_callback(indigo_device *device) {
 					indigo_global_unlock(device);
 					return;
 				} else if (!mfp_get_position(device, &position)) {  // check if it is MFP Focuser first
-					int res = close(PRIVATE_DATA->handle);
-					if (res < 0) {
-						INDIGO_DRIVER_ERROR(DRIVER_NAME, "close(%d) = %d", PRIVATE_DATA->handle, res);
-					} else {
-						INDIGO_DRIVER_DEBUG(DRIVER_NAME, "close(%d) = %d", PRIVATE_DATA->handle, res);
-					}
+					mfp_close(device);
 					indigo_global_unlock(device);
 					device->is_connected = false;
 					INDIGO_DRIVER_ERROR(DRIVER_NAME, "connect failed: MyFP2 AF did not respond");
@@ -745,8 +721,8 @@ static void focuser_connect_callback(indigo_device *device) {
 					char firmware[MFP_CMD_LEN] = "N/A";
 					uint32_t value;
 					if (mfp_get_info(device, board, firmware)) {
-						indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, board);
-						indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
+						INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, board);
+						INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
 						indigo_update_property(device, INFO_PROPERTY, NULL);
 					}
 					if (strstr(INFO_DEVICE_MODEL_ITEM->text.value, "Gemini") != NULL) {
@@ -759,7 +735,7 @@ static void focuser_connect_callback(indigo_device *device) {
 
 					int backlash_in, backlash_out;
 					if (!mfp_get_backlashes(device, &backlash_in, &backlash_out)) {
-						INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_backlashes(%d) failed", PRIVATE_DATA->handle);
+						INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_backlashes(%p) failed", PRIVATE_DATA->handle);
 					} else {
 						if (backlash_in != backlash_out) {
 							INDIGO_DRIVER_ERROR(DRIVER_NAME, "backlash_in != backlash_out, using baclash_in as backlash", PRIVATE_DATA->handle);
@@ -769,12 +745,12 @@ static void focuser_connect_callback(indigo_device *device) {
 					}
 
 					if (!mfp_get_max_position(device, &PRIVATE_DATA->max_position)) {
-						INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_max_position(%d) failed", PRIVATE_DATA->handle);
+						INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_max_position(%p) failed", PRIVATE_DATA->handle);
 					}
 					FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value = (double)PRIVATE_DATA->max_position;
 
-					if (!mfp_set_speed(device, FOCUSER_SPEED_ITEM->number.value)) {
-						INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_speed(%d) failed", PRIVATE_DATA->handle);
+					if (!mfp_set_speed(device, (uint32_t)FOCUSER_SPEED_ITEM->number.value)) {
+						INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_speed(%p) failed", PRIVATE_DATA->handle);
 					}
 					FOCUSER_SPEED_ITEM->number.target = FOCUSER_SPEED_ITEM->number.value;
 
@@ -788,7 +764,7 @@ static void focuser_connect_callback(indigo_device *device) {
 					indigo_define_property(device, X_STEP_MODE_PROPERTY, NULL);
 
 					if (!mfp_get_settle_buffer(device, &value)) {
-						INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_settle_buffer(%d) failed", PRIVATE_DATA->handle);
+						INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_settle_buffer(%p) failed", PRIVATE_DATA->handle);
 					}
 					X_SETTLE_TIME_ITEM->number.value = (double)value;
 					X_SETTLE_TIME_ITEM->number.target = (double)value;
@@ -797,18 +773,18 @@ static void focuser_connect_callback(indigo_device *device) {
 					CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 					device->is_connected = true;
 
-					indigo_set_timer(device, 0.5, focuser_timer_callback, &PRIVATE_DATA->focuser_timer);
+					indigo_execute_handler_in(device, 0.5, focuser_timer_callback);
 
 					mfp_get_temperature(device, &FOCUSER_TEMPERATURE_ITEM->number.value);
 					PRIVATE_DATA->prev_temp = FOCUSER_TEMPERATURE_ITEM->number.value;
-					indigo_set_timer(device, 1, temperature_timer_callback, &PRIVATE_DATA->temperature_timer);
+					PRIVATE_DATA->has_temperature_sensor = true;
+					indigo_execute_handler_in(device, 1, temperature_timer_callback);
 				}
 			}
 		}
 	} else {
 		if (device->is_connected) {
-			indigo_cancel_timer_sync(device, &PRIVATE_DATA->focuser_timer);
-			indigo_cancel_timer_sync(device, &PRIVATE_DATA->temperature_timer);
+			indigo_cancel_pending_handlers(device);
 
 			mfp_stop(device);
 			mfp_save_settings(device);
@@ -817,15 +793,8 @@ static void focuser_connect_callback(indigo_device *device) {
 			indigo_delete_property(device, X_COILS_MODE_PROPERTY, NULL);
 			indigo_delete_property(device, X_SETTLE_TIME_PROPERTY, NULL);
 
-			pthread_mutex_lock(&PRIVATE_DATA->port_mutex);
-			int res = close(PRIVATE_DATA->handle);
-			if (res < 0) {
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "close(%d) = %d", PRIVATE_DATA->handle, res);
-			} else {
-				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "close(%d) = %d", PRIVATE_DATA->handle, res);
-			}
+			mfp_close(device);
 			indigo_global_unlock(device);
-			pthread_mutex_unlock(&PRIVATE_DATA->port_mutex);
 			device->is_connected = false;
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 		}
@@ -833,6 +802,218 @@ static void focuser_connect_callback(indigo_device *device) {
 	indigo_focuser_change_property(device, NULL, CONNECTION_PROPERTY);
 }
 
+static void revese_motion_callback(indigo_device *device) {
+	FOCUSER_REVERSE_MOTION_PROPERTY->state = INDIGO_OK_STATE;
+	if (!mfp_set_reverse(device, FOCUSER_REVERSE_MOTION_ENABLED_ITEM->sw.value)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_reverse(%p, %d) failed", PRIVATE_DATA->handle, FOCUSER_REVERSE_MOTION_ENABLED_ITEM->sw.value);
+		FOCUSER_REVERSE_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	indigo_update_property(device, FOCUSER_REVERSE_MOTION_PROPERTY, NULL);
+}
+
+static void focuser_position_callback(indigo_device *device) {
+	if (FOCUSER_POSITION_ITEM->number.target < 0 || FOCUSER_POSITION_ITEM->number.target > FOCUSER_POSITION_ITEM->number.max) {
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	} else if (FOCUSER_POSITION_ITEM->number.target == PRIVATE_DATA->current_position) {
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	} else { /* GOTO position */
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_BUSY_STATE;
+		PRIVATE_DATA->target_position = (uint32_t)FOCUSER_POSITION_ITEM->number.target;
+		FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
+		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		if (FOCUSER_ON_POSITION_SET_GOTO_ITEM->sw.value) { /* GOTO POSITION */
+			if (!mfp_goto_position(device, (uint32_t)PRIVATE_DATA->target_position)) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_goto_position(%p, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
+			}
+			indigo_execute_handler_in(device, 0.5, focuser_timer_callback);
+		} else { /* RESET CURRENT POSITION */
+			FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
+			FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
+			if (!mfp_sync_position(device, PRIVATE_DATA->target_position)) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_sync_position(%d, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
+				FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+				FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
+			uint32_t position;
+			indigo_sleep(0.5); // wait for the focuser to process the sync command
+			if (!mfp_get_position(device, &position)) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%d) failed", PRIVATE_DATA->handle);
+				FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+				FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+			} else {
+				FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position = position;
+			}
+			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+			indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+		}
+	}
+}
+
+static void focuser_limit_callback(indigo_device *device) {
+	PRIVATE_DATA->max_position = (int)FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target;
+	if (!mfp_set_max_position(device, PRIVATE_DATA->max_position)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_max_position(%p) failed", PRIVATE_DATA->handle);
+		FOCUSER_LIMITS_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	if (!mfp_get_max_position(device, &PRIVATE_DATA->max_position)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_max_position(%p) failed", PRIVATE_DATA->handle);
+		FOCUSER_LIMITS_PROPERTY->state = INDIGO_OK_STATE;
+	}
+	FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value = (double)PRIVATE_DATA->max_position;
+	indigo_update_property(device, FOCUSER_LIMITS_PROPERTY, NULL);
+}
+
+static void focuser_speed_callback(indigo_device *device) {
+	FOCUSER_SPEED_PROPERTY->state = INDIGO_OK_STATE;
+	if (!mfp_set_speed(device, (uint32_t)FOCUSER_SPEED_ITEM->number.target)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_speed(%p) failed", PRIVATE_DATA->handle);
+		FOCUSER_SPEED_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	indigo_update_property(device, FOCUSER_SPEED_PROPERTY, NULL);
+}
+
+static void focuser_steps_callback(indigo_device *device) {
+	if (FOCUSER_STEPS_ITEM->number.value < 0 || FOCUSER_STEPS_ITEM->number.value > FOCUSER_STEPS_ITEM->number.max) {
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	} else {
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+		uint32_t position;
+		if (!mfp_get_position(device, &position)) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%p) failed", PRIVATE_DATA->handle);
+		} else {
+			PRIVATE_DATA->current_position = position;
+		}
+
+		if (FOCUSER_DIRECTION_MOVE_INWARD_ITEM->sw.value) {
+			PRIVATE_DATA->target_position = PRIVATE_DATA->current_position - (uint32_t)FOCUSER_STEPS_ITEM->number.value;
+		} else {
+			PRIVATE_DATA->target_position = PRIVATE_DATA->current_position + (uint32_t)FOCUSER_STEPS_ITEM->number.value;
+		}
+
+		// Make sure we do not attempt to go beyond the limits
+		if (FOCUSER_POSITION_ITEM->number.max < PRIVATE_DATA->target_position) {
+			PRIVATE_DATA->target_position = (uint32_t)FOCUSER_POSITION_ITEM->number.max;
+		} else if (FOCUSER_POSITION_ITEM->number.min > PRIVATE_DATA->target_position) {
+			PRIVATE_DATA->target_position = (uint32_t)FOCUSER_POSITION_ITEM->number.min;
+		}
+
+		FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
+		if (!mfp_goto_position(device, (uint32_t)PRIVATE_DATA->target_position)) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_goto_position(%p, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
+			FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+			FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+		indigo_execute_handler_in(device, 0.5, focuser_timer_callback);
+	}
+}
+
+static void focuser_abort_callback(indigo_device *device) {
+	FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
+	FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
+	FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
+	indigo_cancel_pending_handler(device, focuser_timer_callback);
+
+	if (!mfp_stop(device)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_stop(%p) failed", PRIVATE_DATA->handle);
+		FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	uint32_t position;
+	if (!mfp_get_position(device, &position)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%p) failed", PRIVATE_DATA->handle);
+		FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
+	} else {
+		PRIVATE_DATA->current_position = position;
+	}
+	FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
+	FOCUSER_ABORT_MOTION_ITEM->sw.value = false;
+	indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+	indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+	indigo_update_property(device, FOCUSER_ABORT_MOTION_PROPERTY, NULL);
+}
+
+static void focuser_backlash_callback(indigo_device *device) {
+	if (!mfp_set_backlashes(device, (int)FOCUSER_BACKLASH_ITEM->number.target, (int)FOCUSER_BACKLASH_ITEM->number.target)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_backlashes(%p, %d, %d) failed", PRIVATE_DATA->handle, (int)FOCUSER_BACKLASH_ITEM->number.target, (int)FOCUSER_BACKLASH_ITEM->number.target);
+		FOCUSER_BACKLASH_PROPERTY->state = INDIGO_ALERT_STATE;
+	} else {
+		FOCUSER_BACKLASH_PROPERTY->state = INDIGO_OK_STATE;
+	}
+	if (FOCUSER_BACKLASH_PROPERTY->state == INDIGO_ALERT_STATE){
+		int backlash_in, backlash_out;
+		mfp_get_backlashes(device, &backlash_in, &backlash_out);
+		FOCUSER_BACKLASH_ITEM->number.value = (double)backlash_in;
+	}
+	indigo_update_property(device, FOCUSER_BACKLASH_PROPERTY, NULL);
+}
+
+static void focuser_x_step_mode_callback(indigo_device *device) {
+	X_STEP_MODE_PROPERTY->state = INDIGO_OK_STATE;
+	stepmode_t mode = STEP_MODE_FULL;
+	if (X_STEP_MODE_FULL_ITEM->sw.value) {
+		mode = STEP_MODE_FULL;
+	} else if (X_STEP_MODE_HALF_ITEM->sw.value) {
+		mode = STEP_MODE_HALF;
+	} else if (X_STEP_MODE_FOURTH_ITEM->sw.value) {
+		mode = STEP_MODE_FOURTH;
+	} else if (X_STEP_MODE_EIGTH_ITEM->sw.value) {
+		mode = STEP_MODE_EIGTH;
+	} else if (X_STEP_MODE_16TH_ITEM->sw.value) {
+		mode = STEP_MODE_16TH;
+	} else if (X_STEP_MODE_32TH_ITEM->sw.value) {
+		mode = STEP_MODE_32TH;
+	} else if (X_STEP_MODE_64TH_ITEM->sw.value) {
+		mode = STEP_MODE_64TH;
+	} else if (X_STEP_MODE_128TH_ITEM->sw.value) {
+		mode = STEP_MODE_128TH;
+	}
+	if (!mfp_set_step_mode(device, mode)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_step_mode(%p, %d) failed", PRIVATE_DATA->handle, mode);
+		X_STEP_MODE_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	update_step_mode_switches(device);
+	indigo_update_property(device, X_STEP_MODE_PROPERTY, NULL);
+}
+
+static void foccuser_x_settle_time_callback(indigo_device *device) {
+	X_SETTLE_TIME_PROPERTY->state = INDIGO_OK_STATE;
+	if (!mfp_set_settle_buffer(device, (uint32_t)X_SETTLE_TIME_ITEM->number.target)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_settle_buffer(%p, %d) failed", PRIVATE_DATA->handle, (uint32_t)X_SETTLE_TIME_ITEM->number.target);
+		X_SETTLE_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	uint32_t value;
+	if (!mfp_get_settle_buffer(device, &value)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_settle_buffer(%p) failed", PRIVATE_DATA->handle);
+	} else {
+		X_SETTLE_TIME_ITEM->number.target = (double)value;
+	}
+	indigo_update_property(device, X_SETTLE_TIME_PROPERTY, NULL);
+}
+
+static void focusser_x_coils_mode_callback(indigo_device *device) {
+	X_COILS_MODE_PROPERTY->state = INDIGO_OK_STATE;
+	coilsmode_t mode = COILS_MODE_IDLE_OFF;
+	if (X_COILS_MODE_IDLE_OFF_ITEM->sw.value) {
+		mode = COILS_MODE_IDLE_OFF;
+	} else if (X_COILS_MODE_ALWAYS_ON_ITEM->sw.value) {
+		mode = COILS_MODE_ALWAYS_ON;
+	}
+	if (!mfp_set_coils_mode(device, mode)) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_coils_mode(%d, %d) failed", PRIVATE_DATA->handle, mode);
+		X_COILS_MODE_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
+	update_coils_mode_switches(device);
+	indigo_update_property(device, X_COILS_MODE_PROPERTY, NULL);
+}
 
 static indigo_result focuser_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
 	assert(device != NULL);
@@ -845,155 +1026,49 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 		indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
 		CONNECTION_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, CONNECTION_PROPERTY, NULL);
-		indigo_set_timer(device, 0, focuser_connect_callback, NULL);
+		indigo_execute_handler(device, focuser_connect_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(FOCUSER_REVERSE_MOTION_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- FOCUSER_REVERSE_MOTION
 		indigo_property_copy_values(FOCUSER_REVERSE_MOTION_PROPERTY, property, false);
-		FOCUSER_REVERSE_MOTION_PROPERTY->state = INDIGO_OK_STATE;
-		if (!mfp_set_reverse(device, FOCUSER_REVERSE_MOTION_ENABLED_ITEM->sw.value)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_reverse(%d, %d) failed", PRIVATE_DATA->handle, FOCUSER_REVERSE_MOTION_ENABLED_ITEM->sw.value);
-			FOCUSER_REVERSE_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
+		FOCUSER_REVERSE_MOTION_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, FOCUSER_REVERSE_MOTION_PROPERTY, NULL);
+		indigo_execute_handler(device, revese_motion_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(FOCUSER_POSITION_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- FOCUSER_POSITION
 		indigo_property_copy_values(FOCUSER_POSITION_PROPERTY, property, false);
-		if (FOCUSER_POSITION_ITEM->number.target < 0 || FOCUSER_POSITION_ITEM->number.target > FOCUSER_POSITION_ITEM->number.max) {
-			FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
-			FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
-			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
-			indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
-		} else if (FOCUSER_POSITION_ITEM->number.target == PRIVATE_DATA->current_position) {
-			FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
-			FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
-			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
-			indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
-		} else { /* GOTO position */
-			FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
-			FOCUSER_STEPS_PROPERTY->state = INDIGO_BUSY_STATE;
-			PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.target;
-			FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
-			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
-			indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
-			if (FOCUSER_ON_POSITION_SET_GOTO_ITEM->sw.value) { /* GOTO POSITION */
-				if (!mfp_goto_position(device, (uint32_t)PRIVATE_DATA->target_position)) {
-					INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_goto_position(%d, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
-				}
-				indigo_set_timer(device, 0.5, focuser_timer_callback, &PRIVATE_DATA->focuser_timer);
-			} else { /* RESET CURRENT POSITION */
-				FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
-				FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
-				if (!mfp_sync_position(device, PRIVATE_DATA->target_position)) {
-					INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_sync_position(%d, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
-					FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
-					FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
-				}
-				uint32_t position;
-				if (!mfp_get_position(device, &position)) {
-					INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%d) failed", PRIVATE_DATA->handle);
-					FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
-					FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
-				} else {
-					FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position = (double)position;
-				}
-				indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
-				indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
-			}
-		}
+		FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_position_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(FOCUSER_LIMITS_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- FOCUSER_LIMITS
 		indigo_property_copy_values(FOCUSER_LIMITS_PROPERTY, property, false);
-		FOCUSER_LIMITS_PROPERTY->state = INDIGO_OK_STATE;
-		PRIVATE_DATA->max_position = (int)FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target;
-		if (!mfp_set_max_position(device, PRIVATE_DATA->max_position)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_max_position(%d) failed", PRIVATE_DATA->handle);
-			FOCUSER_LIMITS_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
-		if (!mfp_get_max_position(device, &PRIVATE_DATA->max_position)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_max_position(%d) failed", PRIVATE_DATA->handle);
-		}
-		FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value = (double)PRIVATE_DATA->max_position;
+		FOCUSER_LIMITS_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, FOCUSER_LIMITS_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_limit_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(FOCUSER_SPEED_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- FOCUSER_SPEED
 		indigo_property_copy_values(FOCUSER_SPEED_PROPERTY, property, false);
-		FOCUSER_SPEED_PROPERTY->state = INDIGO_OK_STATE;
-		if (!mfp_set_speed(device, (uint32_t)FOCUSER_SPEED_ITEM->number.target)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_speed(%d) failed", PRIVATE_DATA->handle);
-			FOCUSER_SPEED_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
+		FOCUSER_SPEED_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, FOCUSER_SPEED_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_speed_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(FOCUSER_STEPS_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- FOCUSER_STEPS
 		indigo_property_copy_values(FOCUSER_STEPS_PROPERTY, property, false);
-		if (FOCUSER_STEPS_ITEM->number.value < 0 || FOCUSER_STEPS_ITEM->number.value > FOCUSER_STEPS_ITEM->number.max) {
-			FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
-			FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
-			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
-			indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
-		} else {
-			FOCUSER_STEPS_PROPERTY->state = INDIGO_BUSY_STATE;
-			FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
-			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
-			indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
-			uint32_t position;
-			if (!mfp_get_position(device, &position)) {
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%d) failed", PRIVATE_DATA->handle);
-			} else {
-				PRIVATE_DATA->current_position = (double)position;
-			}
-
-			if (FOCUSER_DIRECTION_MOVE_INWARD_ITEM->sw.value) {
-				PRIVATE_DATA->target_position = PRIVATE_DATA->current_position - FOCUSER_STEPS_ITEM->number.value;
-			} else {
-				PRIVATE_DATA->target_position = PRIVATE_DATA->current_position + FOCUSER_STEPS_ITEM->number.value;
-			}
-
-			// Make sure we do not attempt to go beyond the limits
-			if (FOCUSER_POSITION_ITEM->number.max < PRIVATE_DATA->target_position) {
-				PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.max;
-			} else if (FOCUSER_POSITION_ITEM->number.min > PRIVATE_DATA->target_position) {
-				PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.min;
-			}
-
-			FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
-			if (!mfp_goto_position(device, (uint32_t)PRIVATE_DATA->target_position)) {
-				INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_goto_position(%d, %d) failed", PRIVATE_DATA->handle, PRIVATE_DATA->target_position);
-				FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
-				FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
-			}
-			indigo_set_timer(device, 0.5, focuser_timer_callback, &PRIVATE_DATA->focuser_timer);
-		}
+		FOCUSER_STEPS_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_steps_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(FOCUSER_ABORT_MOTION_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- FOCUSER_ABORT_MOTION
 		indigo_property_copy_values(FOCUSER_ABORT_MOTION_PROPERTY, property, false);
-		FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
-		FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
-		FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
-		indigo_cancel_timer(device, &PRIVATE_DATA->focuser_timer);
-
-		if (!mfp_stop(device)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_stop(%d) failed", PRIVATE_DATA->handle);
-			FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
-		uint32_t position;
-		if (!mfp_get_position(device, &position)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_position(%d) failed", PRIVATE_DATA->handle);
-			FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
-		} else {
-			PRIVATE_DATA->current_position = (double)position;
-		}
-		FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
-		FOCUSER_ABORT_MOTION_ITEM->sw.value = false;
-		indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
-		indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
+		FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, FOCUSER_ABORT_MOTION_PROPERTY, NULL);
+		indigo_execute_priority_handler(device, INDIGO_TASK_PRIORITY_URGENT, focuser_abort_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(FOCUSER_COMPENSATION_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- FOCUSER_COMPENSATION_PROPERTY
@@ -1006,83 +1081,28 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 		indigo_property_copy_values(FOCUSER_BACKLASH_PROPERTY, property, false);
 		FOCUSER_BACKLASH_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, FOCUSER_BACKLASH_PROPERTY, NULL);
-		if (!mfp_set_backlashes(device, (int)FOCUSER_BACKLASH_ITEM->number.target, (int)FOCUSER_BACKLASH_ITEM->number.target)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_backlashes(%d, %d, %d) failed", PRIVATE_DATA->handle, (int)FOCUSER_BACKLASH_ITEM->number.target, (int)FOCUSER_BACKLASH_ITEM->number.target);
-			FOCUSER_BACKLASH_PROPERTY->state = INDIGO_ALERT_STATE;
-		} else {
-			FOCUSER_BACKLASH_PROPERTY->state = INDIGO_OK_STATE;
-		}
-		if (FOCUSER_BACKLASH_PROPERTY->state == INDIGO_ALERT_STATE){
-			int backlash_in, backlash_out;
-			mfp_get_backlashes(device, &backlash_in, &backlash_out);
-			FOCUSER_BACKLASH_ITEM->number.value = (double)backlash_in;
-		}
-		indigo_update_property(device, FOCUSER_BACKLASH_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_backlash_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(X_STEP_MODE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- X_STEP_MODE_PROPERTY
 		indigo_property_copy_values(X_STEP_MODE_PROPERTY, property, false);
-		X_STEP_MODE_PROPERTY->state = INDIGO_OK_STATE;
-		stepmode_t mode = STEP_MODE_FULL;
-		if (X_STEP_MODE_FULL_ITEM->sw.value) {
-			mode = STEP_MODE_FULL;
-		} else if (X_STEP_MODE_HALF_ITEM->sw.value) {
-			mode = STEP_MODE_HALF;
-		} else if (X_STEP_MODE_FOURTH_ITEM->sw.value) {
-			mode = STEP_MODE_FOURTH;
-		} else if (X_STEP_MODE_EIGTH_ITEM->sw.value) {
-			mode = STEP_MODE_EIGTH;
-		} else if (X_STEP_MODE_16TH_ITEM->sw.value) {
-			mode = STEP_MODE_16TH;
-		} else if (X_STEP_MODE_32TH_ITEM->sw.value) {
-			mode = STEP_MODE_32TH;
-		} else if (X_STEP_MODE_64TH_ITEM->sw.value) {
-			mode = STEP_MODE_64TH;
-		} else if (X_STEP_MODE_128TH_ITEM->sw.value) {
-			mode = STEP_MODE_128TH;
-		}
-		if (!mfp_set_step_mode(device, mode)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_step_mode(%d, %d) failed", PRIVATE_DATA->handle, mode);
-			X_STEP_MODE_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
-		update_step_mode_switches(device);
+		X_STEP_MODE_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, X_STEP_MODE_PROPERTY, NULL);
+		indigo_execute_handler(device, focuser_x_step_mode_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(X_SETTLE_TIME_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- X_SETTLE_TIME_PROPERTY
 		indigo_property_copy_values(X_SETTLE_TIME_PROPERTY, property, false);
-		X_SETTLE_TIME_PROPERTY->state = INDIGO_OK_STATE;
-
-		if (!mfp_set_settle_buffer(device, (uint32_t)X_SETTLE_TIME_ITEM->number.target)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_settle_buffer(%d, %d) failed", PRIVATE_DATA->handle, (uint32_t)X_SETTLE_TIME_ITEM->number.target);
-			X_SETTLE_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
-
-		uint32_t value;
-		if (!mfp_get_settle_buffer(device, &value)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_get_settle_buffer(%d) failed", PRIVATE_DATA->handle);
-		} else {
-			X_SETTLE_TIME_ITEM->number.target = (double)value;
-		}
-
+		X_SETTLE_TIME_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, X_SETTLE_TIME_PROPERTY, NULL);
+		indigo_execute_handler(device, foccuser_x_settle_time_callback);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(X_COILS_MODE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- X_COILS_MODE_PROPERTY
 		indigo_property_copy_values(X_COILS_MODE_PROPERTY, property, false);
-		X_COILS_MODE_PROPERTY->state = INDIGO_OK_STATE;
-		coilsmode_t mode = COILS_MODE_IDLE_OFF;
-		if (X_COILS_MODE_IDLE_OFF_ITEM->sw.value) {
-			mode = COILS_MODE_IDLE_OFF;
-		} else if (X_COILS_MODE_ALWAYS_ON_ITEM->sw.value) {
-			mode = COILS_MODE_ALWAYS_ON;
-		}
-		if (!mfp_set_coils_mode(device, mode)) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "mfp_set_coils_mode(%d, %d) failed", PRIVATE_DATA->handle, mode);
-			X_COILS_MODE_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
-		update_coils_mode_switches(device);
+		X_COILS_MODE_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, X_COILS_MODE_PROPERTY, NULL);
+		indigo_execute_handler(device, focusser_x_coils_mode_callback);
 		return INDIGO_OK;
 		// -------------------------------------------------------------------------------- FOCUSER_MODE
 	} else if (indigo_property_match_changeable(FOCUSER_MODE_PROPERTY, property)) {
@@ -1113,7 +1133,7 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 		FOCUSER_MODE_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, FOCUSER_MODE_PROPERTY, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, X_STEP_MODE_PROPERTY);
@@ -1159,35 +1179,36 @@ indigo_result indigo_focuser_mypro2(indigo_driver_action action, indigo_driver_i
 
 	SET_DRIVER_INFO(info, "myFocuserPro2 Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		last_action = action;
+		case INDIGO_DRIVER_INIT:
+			last_action = action;
 
-		private_data = indigo_safe_malloc(sizeof(mfp_private_data));
-		focuser = indigo_safe_malloc_copy(sizeof(indigo_device), &focuser_template);
-		focuser->private_data = private_data;
-		indigo_attach_device(focuser);
-		break;
+			private_data = indigo_safe_malloc(sizeof(mfp_private_data));
+			focuser = indigo_safe_malloc_copy(sizeof(indigo_device), &focuser_template);
+			focuser->private_data = private_data;
+			indigo_attach_device(focuser);
+			break;
 
-	case INDIGO_DRIVER_SHUTDOWN:
-		VERIFY_NOT_CONNECTED(focuser);
-		last_action = action;
-		if (focuser != NULL) {
-			indigo_detach_device(focuser);
-			free(focuser);
-			focuser = NULL;
-		}
-		if (private_data != NULL) {
-			free(private_data);
-			private_data = NULL;
-		}
-		break;
+		case INDIGO_DRIVER_SHUTDOWN:
+			VERIFY_NOT_CONNECTED(focuser);
+			last_action = action;
+			if (focuser != NULL) {
+				indigo_detach_device(focuser);
+				free(focuser);
+				focuser = NULL;
+			}
+			if (private_data != NULL) {
+				free(private_data);
+				private_data = NULL;
+			}
+			break;
 
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

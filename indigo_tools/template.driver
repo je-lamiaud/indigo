@@ -1,0 +1,249 @@
+// Copyright (c) 2026 XXXXX
+// All rights reserved.
+//
+// You may use this software under the terms of 'INDIGO Astronomy
+// open-source license' (see LICENSE.md).
+//
+// THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
+// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+// GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+// NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// XXXXX driver definition
+
+// version history
+// 2.0 by XXX <XXX>
+// 3.0 refactoring by XXX <XXX>
+
+driver XXXXX { // replace XXXXX with driver base name without indigo_type_ prefix (mandatory identifier literal)
+	author = "XXXXX"; // mandatory attribute; replace XXXXX with author name and surname with optional email enclosed in '<' and '>' (string literal)
+	copyright = "Copyright (c) 2026 XXXXXX"; // mandatory attribute; replace XXXXX with copyright holder (string literal)
+	label = "XXXXX"; // mandatory attribute; replace XXXXX with descriptive driver label (string literal)
+	version = XXXXX; // mandatory attribute; replace XXXXX with driver minor version, major version is always set to 3.0 (int literal)
+	XXXXX = YYYYY; // optional attribute(s); replace XXXXX with name and YYYYY with value of any constant (identifier and C expression literal)
+	include {
+		// optional C code block
+		// replace content of this section with common preprocessor include directives
+		// the code will be surrounded by "//+ include" and "//-" markers in the generated code
+	}
+	define {
+		// optional C code block
+		// replace content of this section with common preprocessor define directions
+		// the code will be surrounded by "//+ define" and "//-" markers in the generated code
+	}
+	data {
+		// optional C code block
+		// replace content of this section with additional private data attributes declaration
+		// the code will be surrounded by "//+ data" and "//-" markers in the generated code
+	}
+	code {
+		// optional C code block
+		// replace content of this section with common low level communication code, at least with XXXXX_command(), XXXXX_open() and XXXXX_close() functions
+		// the code will be surrounded by "//+ code" and "//-" markers in the generated code
+	}
+	on_init {
+		// optional C code block
+		// replace content of this section with common code for driver initialization, it will be put at the beginning of INDIGO_DRIVER_INIT handling code
+		// the code will be surrounded by "//+ on_init" and "//-" markers in the generated code
+	}
+	on_shutdown {
+		// optional C code block
+		// replace content of this section with common code for driver deinitialization, it will be put at the end of INDIGO_DRIVER_SHUTDOWN handling code
+		// the code will be surrounded by "//+ on_shutdown" and "//-" markers in the generated code
+	}
+	serial { // this block is mandatory for serial devices, but may be empty if no pattern is defined
+		configurable_speed = true; // optional attribute, default is false; use this if driver should support configurable baud rate (bool literal)
+		pattern {  // this block is optional serial port pattern matching definition and may be repeated as many times as you need
+			product = "XXXXX"; // optional attribute; replace XXXXX with product name pattern (string literal)
+			vendor = "XXXXX"; // optional attribute; replace XXXXX with vendor name pattern (string literal)
+			serial = "XXXXX"; // optional attribute; replace XXXXX with serial number pattern (string literal)
+			pid = XXXXX; // optional attribute; replace XXXXX with product ID (number literal)
+			vid = XXXXX; // optional attribute; replace XXXXX with vendor ID (number literal)
+		}
+	}
+	libusb { // this block is mandatory for libusb devices
+		hotplug = false; //optional attribute, default is true; use to disable hotplug (bool literal)
+		pid = XXXXX; // optional attribute; replace XXXXX with product ID (number C expression)
+		vid = XXXXX; // optional attribute; replace XXXXX with vendor ID (number C expression)
+	}
+	hid { // this block is mandatory for HID devices
+		hotplug = false; //optional attribute, default is true; use to disable hotplug (bool literal)
+		pid = XXXXX; // optional attribute; replace XXXXX with product ID (number C expression)
+		vid = XXXXX; // optional attribute; replace XXXXX with vendor ID (number C expression)
+	}
+	XXXXX { // at least one device block is mandatory; replace XXXXX with aux, ccd, wheel, focuser, mount, guider, rotator, gps, ao or aux, additional device definitions may follow, but the first one is the master device)
+		name = "XXXXX";  // mandatory attribute; replace XXXXX with device name  (string literal)
+		additional_instances = true; // optional attribute, default is false; use this if the driver can create additional device instances  (bool literal)
+		interface = XXXXX; // mandatory for AUX devices; replace XXXXX with additional AUX interface like INDIGO_INTERFACE_AUX_LIGHTBOX (C uint32 expression)
+		code {
+			// optional C code block
+			// replace content of this section with low level communication code
+			// the code will be surrounded by "//+ XXXXX.code" and "//-" markers in the generated code where XXXXX is device type
+		}
+		on_timer {
+			// optional C code block
+			// replace content of this section with the code for background timer
+			// the code will be surrounded by "//+ XXXXX.on_timer" and "//-" markers in the generated code where XXXXX is device type
+		}
+		on_attach {
+			// optional C code block
+			// replace content of this section is customization of attach code
+			// it is injected before definitions of local properties
+			// the code will be surrounded by "//+ XXXXX.on_attach" and "//-" markers in the generated code where XXXXX is device type
+		}
+		on_detach {
+			// optional C code block
+			// replace content of this section is customization of detach code
+			// it is injected before releses of local properties
+			// the code will be surrounded by "//+ XXXXX.on_detach" and "//-" markers in the generated code where XXXXX is device type
+		}
+		on_connect {
+			// optional C code block
+			// replace content of this section with intialization code in case of sucessfull connection
+			// the code will be surrounded by "//+ XXXXX.on_connect" and "//-" markers in the generated code where XXXXX is device type
+		}
+		on_disconnect {
+			// optional C code block
+			// replace content of this section with intialization code in case of sucessfull connection
+			// the code will be surrounded by "//+ XXXXX.on_disconnect" and "//-" markers in the generated code where XXXXX is device type
+		}
+		inherited XXXXX { // optional block; replace XXXXX with inherited property base name without _PROPERTY suffix, repeat block as many times as you need (mandatory identifier literal)
+			preserve_values = true; // preserve values and set only target
+			on_attach {
+				// optional C code block
+				// replace content of this section with property attach code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_attach" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+			on_change {
+				// optional C code block
+				// replace content of this section with property change handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_change" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+		}
+		switch XXXXX { // replace XXXXX with switch property base name without _PROPERTY suffix, repeat block as many times as you need (mandatory identifier literal)
+			label = XXXXX; // mandatory attribute; replace XXXXX with descriptive property label (C string expression)
+			name = XXXXX;  // mandatory attribute; replace XXXXX with item name  (string literal)
+			group = XXXXX; // optional attribute, default is MAIN_GROUP; replace XXXXX with group name (C string expression)
+			perm = XXXXX; // optional attribute, default is INDIGO_RW_PERM;replace XXXXX with permission (C int expression)
+			rule = XXXXX; // optional attribute, default is INDIGO_ONE_OF_MANY_RULE;replace XXXXX with switch rule (C int expression)
+			persistent = true; // optional attribute, default is false; use this if property can be saved in driver configuration (bool literal)
+			handle_change = false; // optional attribute, default depend on perm; use this if property change shouldn't be handled (bool C expression)
+			asynchronous_change = false; // optional attribute, default is true; use this if property change should be asynchronous and serialized (bool C expression)
+			always_defined = true; // optional attribute, default is false; use this if property should be always defined (bool literal)
+			hidden = true; // optional attribute, default is false; use if this property should be initially hidden (bool literal)
+			item XXXXX { // replace XXXXX with item base name without _ITEM suffix, repeat block as many times as you need (mandatory identifier literal)
+				label = XXXXX; // mandatory attribute; replace XXXXX with descriptive item label (C string expression)
+				value = XXXXX; // optional attribute, default value is false; replace XXXXX with item initial value (C bool expression)
+			}
+			on_attach {
+				// optional C code block
+				// replace content of this section with property attach handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_attach" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+			on_detach {
+				// optional C code block
+				// replace content of this section with property detach handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_detach" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+			on_change {
+				// optional C code block
+				// replace content of this section with property change handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_change" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+		}
+		text XXXXX { // replace XXXXX with text property base name without _PROPERTY suffix, repeat block as many times as you need (mandatory identifier literal)
+			label = XXXXX; // mandatory attribute; replace XXXXX with descriptive property label (C string expression)
+			name = XXXXX;  // mandatory attribute; replace XXXXX with item name  (string literal)
+			group = XXXXX; // optional attribute, default is MAIN_GROUP; replace XXXXX with group name (C string expression)
+			perm = XXXXX; // optional attribute, default is INDIGO_RW_PERM;replace XXXXX with permission (C int expression)
+			persistent = true; // optional attribute, default is false; use this if property can be saved in driver configuration (bool literal)
+			handle_change = false; // optional attribute, default depend on perm; use this if property change shouldn't be handled (bool C expression)
+			asynchronous_change = false; // optional attribute, default is true; use this if property change should be asynchronous and serialized (bool C expression)
+			always_defined = true; // optional attribute, default is false; use this if property should be always defined (bool literal)
+			hidden = true; // optional attribute, default is false; use if this property should be initially hidden (bool literal)
+			item XXXXX { // replace XXXXX with item base name without _ITEM suffix, repeat block as many times as you need (mandatory identifier literal)
+				label = XXXXX; // mandatory attribute; replace XXXXX with descriptive item label (C string expression)
+				value = XXXXX; // optional attribute, default value is ""; replace XXXXX with item initial value (C string expression)
+			}
+			on_attach {
+				// optional C code block
+				// replace content of this section with property attach handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_attach" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+			on_detach {
+				// optional C code block
+				// replace content of this section with property detach handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_detach" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+			on_change {
+				// optional C code block
+				// replace content of this section with property change handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_change" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+		}
+		number XXXXX { // replace XXXXX with number property base name without _PROPERTY suffix, repeat block as many times as you need (mandatory identifier literal)
+			label = XXXXX; // mandatory attribute; replace XXXXX with descriptive property label (C string expression)
+			name = XXXXX;  // mandatory attribute; replace XXXXX with item name  (string literal)
+			group = XXXXX; // optional attribute, default is MAIN_GROUP; replace XXXXX with group name (C string expression)
+			perm = XXXXX; // optional attribute, default is INDIGO_RW_PERM;replace XXXXX with permission (C int expression)
+			persistent = true; // optional attribute, default is false; use this if property can be saved in driver configuration (bool literal)
+			handle_change = false; // optional attribute, default depend on perm; use this if property change shouldn't be handled (bool C expression)
+			asynchronous_change = false; // optional attribute, default is true; use this if property change should be asynchronous and serialized (bool C expression)
+			always_defined = true; // optional attribute, default is false; use this if property should be always defined (bool literal)
+			hidden = true; // optional attribute, default is false; use if this property should be initially hidden (bool literal)
+			preserve_values = true; // optional attribute, default is false; preserve values and set only target
+			item XXXXX { // replace XXXXX with item base name without _ITEM suffix, repeat block as many times as you need (mandatory identifier literal)
+				label = XXXXX; // mandatory attribute; replace XXXXX with descriptive item label (C string expression)
+				value = XXXXX; // optional attribute, default value is 0; replace XXXXX with item initial value (C double expression)
+				min = XXXXX; // optional attribute, default value is 0; replace XXXXX with item initial value (C double expression)
+				max = XXXXX; // optional attribute, default value is 0; replace XXXXX with item initial value (C double expression)
+				step = XXXXX; // optional attribute, default value is 0; replace XXXXX with item initial value (C double expression)
+				format = XXXXX; // optional attribute; replace XXXXX with format for item (C string expression)
+			}
+			on_attach {
+				// optional C code block
+				// replace content of this section with property attach handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_attach" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+			on_detach {
+				// optional C code block
+				// replace content of this section with property detach handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_detach" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+			on_change {
+				// optional C code block
+				// replace content of this section with property change handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_change" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+		}
+		light XXXXX { // replace XXXXX with light property base name without _PROPERTY suffix, repeat block as many times as you need (mandatory identifier literal)
+			label = XXXXX; // mandatory attribute; replace XXXXX with descriptive property label (C string expression)
+			name = XXXXX;  // mandatory attribute; replace XXXXX with item name  (string literal)
+			group = XXXXX; // optional attribute, default is MAIN_GROUP; replace XXXXX with group name (C string expression)
+			always_defined = true; // optional attribute, default is false; use this if property should be always defined (bool literal)
+			hidden = true; // optional attribute, default is false; use if this property should be initially hidden (bool literal)
+			item XXXXX { // replace XXXXX with item base name without _ITEM suffix, repeat block as many times as you need (mandatory identifier literal)
+				label = XXXXX; // mandatory attribute; replace XXXXX with descriptive item label (C string expression)
+				value = XXXXX; // optional attribute, default value is INDIGO_IDLE_STATE; replace XXXXX with item initial value (C int expression)
+			}
+			on_attach {
+				// optional C code block
+				// replace content of this section with property attach handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_attach" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+			on_detach {
+				// optional C code block
+				// replace content of this section with property detach handling code
+				// the code will be surrounded by "//+ XXXXX.YYYYY.on_detach" and "//-" markers in the generated code where XXXXX is device type and YYYYY is property base name
+			}
+		}
+	}
+}
+

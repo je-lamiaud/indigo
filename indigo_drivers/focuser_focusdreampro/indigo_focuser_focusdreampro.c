@@ -1,4 +1,4 @@
-// Copyright (c) 2019 CloudMakers, s. r. o.
+// Copyright (c) 2019-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -18,27 +18,24 @@
 
 // version history
 // 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 /** INDIGO AGadget FocusDream focuser driver
  \file indigo_focuser_focusdreampro.c
  */
 
-#define DRIVER_VERSION 0x0005
+#define DRIVER_VERSION 0x03000006
 #define DRIVER_NAME "indigo_focuser_focusdreampro"
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
-#include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
 
-#include <sys/time.h>
-
 #include <indigo/indigo_driver_xml.h>
-#include <indigo/indigo_io.h>
+#include <indigo/indigo_uni_io.h>
 
 #include "indigo_focuser_focusdreampro.h"
 
@@ -48,7 +45,7 @@
 #define X_FOCUSER_DUTY_CYCLE_ITEM							(X_FOCUSER_DUTY_CYCLE_PROPERTY->items+0)
 
 typedef struct {
-	int handle;
+	indigo_uni_handle *handle;
 	indigo_property *duty_cycle_property;
 	indigo_timer *timer;
 	pthread_mutex_t mutex;
@@ -59,14 +56,17 @@ static int SPEED[] = { 500, 250, 110, 40, 10, 5 };
 
 // -------------------------------------------------------------------------------- Low level communication routines
 
-static bool focusdreampro_command(indigo_device *device, char *command, char *response, int length) {
-	if (indigo_write(PRIVATE_DATA->handle, command, strlen(command)) && indigo_write(PRIVATE_DATA->handle, "\n", 1) && indigo_read_line(PRIVATE_DATA->handle, response, length) < 0) {
-		*response = 0;
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command %s failed", command);
-		return false;
+static bool focusdreampro_command(indigo_device *device, char *command, char *response, int max) {
+	if (indigo_uni_discard(PRIVATE_DATA->handle) >= 0) {
+		if (indigo_uni_write(PRIVATE_DATA->handle, command, (long)strlen(command)) > 0) {
+			if (response != NULL) {
+				if (indigo_uni_read_line(PRIVATE_DATA->handle, response, max) > 0) {
+					return true;
+				}
+			}
+		}
 	}
-	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command %s -> %s", command, response);
-	return true;
+	return false;
 }
 
 // -------------------------------------------------------------------------------- INDIGO focuser device implementation
@@ -79,16 +79,18 @@ static indigo_result focuser_attach(indigo_device *device) {
 	if (indigo_focuser_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		// -------------------------------------------------------------------------------- X_FOCUSER_FREQUENCY
 		X_FOCUSER_DUTY_CYCLE_PROPERTY = indigo_init_number_property(NULL, device->name, "X_FOCUSER_DUTY_CYCLE", FOCUSER_MAIN_GROUP, "Duty cycle", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (X_FOCUSER_DUTY_CYCLE_PROPERTY == NULL)
+		if (X_FOCUSER_DUTY_CYCLE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_FOCUSER_DUTY_CYCLE_ITEM, "DUTY_CYCLE", "Duty cycle", 0, 100, 1, 20);
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -98,7 +100,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 #endif
 		// -------------------------------------------------------------------------------- INFO
 		INFO_PROPERTY->count = 5;
-		strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
 		// -------------------------------------------------------------------------------- FOCUSER_REVERSE_MOTION
 		FOCUSER_REVERSE_MOTION_PROPERTY->hidden = true;
 		// -------------------------------------------------------------------------------- FOCUSER_TEMPERATURE
@@ -129,7 +131,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_LIMITS_MIN_POSITION_ITEM->number.max =
 		FOCUSER_POSITION_ITEM->number.max = 1000000;
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return focuser_enumerate_properties(device, NULL, NULL);
@@ -139,9 +141,9 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_FOCUSER_DUTY_CYCLE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_DUTY_CYCLE_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static void focuser_timer_callback(indigo_device *device) {
@@ -205,26 +207,25 @@ static void focuser_connection_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[16], response[16];
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
-		PRIVATE_DATA->handle = indigo_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 9600);
-		if (PRIVATE_DATA->handle > 0) {
+		PRIVATE_DATA->handle = indigo_uni_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 9600, INDIGO_LOG_DEBUG);
+		if (PRIVATE_DATA->handle != NULL) {
 			if (focusdreampro_command(device, "#", response, sizeof(response))) {
 				if (!strcmp(response, "FD")) {
 					INDIGO_DRIVER_LOG(DRIVER_NAME, "FocusDreamPro detected");
 					PRIVATE_DATA->fdp = true;
-					strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "AGadget FocusDreamPro");
+					INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "AGadget FocusDreamPro");
 				} else if (!strncmp(response, "Jolo", 4)) {
 					INDIGO_DRIVER_LOG(DRIVER_NAME, "Astrojolo detected");
 					PRIVATE_DATA->jolo = true;
-					strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "ASCOM Jolo focuser");
+					INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "ASCOM Jolo focuser");
 				}
 				indigo_update_property(device, INFO_PROPERTY, NULL);
 			} else {
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "FocusDreamPro not detected");
-				close(PRIVATE_DATA->handle);
-				PRIVATE_DATA->handle = 0;
+				indigo_uni_close(&PRIVATE_DATA->handle);
 			}
 		}
-		if (PRIVATE_DATA->handle > 0) {
+		if (PRIVATE_DATA->handle != NULL) {
 			if (focusdreampro_command(device, "T", response, sizeof(response)) && *response == 'T') {
 				if (!strcmp(response, "T:false")) {
 					FOCUSER_TEMPERATURE_PROPERTY->hidden = true;
@@ -269,13 +270,12 @@ static void focuser_connection_handler(indigo_device *device) {
 			indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		}
 	} else {
-		if (PRIVATE_DATA->handle > 0) {
+		if (PRIVATE_DATA->handle != NULL) {
 			indigo_cancel_timer_sync(device, &PRIVATE_DATA->timer);
 			focusdreampro_command(device, "H", response, sizeof(response));
 			indigo_delete_property(device, X_FOCUSER_DUTY_CYCLE_PROPERTY, NULL);
 			INDIGO_DRIVER_LOG(DRIVER_NAME, "Disconnected");
-			close(PRIVATE_DATA->handle);
-			PRIVATE_DATA->handle = 0;
+			indigo_uni_close(&PRIVATE_DATA->handle);
 		}
 		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 	}
@@ -300,10 +300,12 @@ static void focuser_position_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[16], response[16];
 	int position = (int)FOCUSER_POSITION_ITEM->number.target;
-	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.target)
-		position = FOCUSER_LIMITS_MIN_POSITION_ITEM->number.target;
-	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target)
-		position = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target;
+	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.target) {
+		position = (int)FOCUSER_LIMITS_MIN_POSITION_ITEM->number.target;
+	}
+	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target) {
+		position = (int)FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target;
+	}
 	FOCUSER_POSITION_ITEM->number.target = position;
 	indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
 	snprintf(command, sizeof(command), "%c:%d", FOCUSER_ON_POSITION_SET_SYNC_ITEM->sw.value ? 'R': 'M', position);
@@ -322,10 +324,12 @@ static void focuser_steps_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[16], response[16];
 	int position = (int)FOCUSER_POSITION_ITEM->number.value + (FOCUSER_DIRECTION_MOVE_INWARD_ITEM->sw.value ? -(int)FOCUSER_STEPS_ITEM->number.value : (int)FOCUSER_STEPS_ITEM->number.value);
-	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.target)
-		position = FOCUSER_LIMITS_MIN_POSITION_ITEM->number.target;
-	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target)
-		position = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target;
+	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.target) {
+		position = (int)FOCUSER_LIMITS_MIN_POSITION_ITEM->number.target;
+	}
+	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target) {
+		position = (int)FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target;
+	}
 	snprintf(command, sizeof(command), "M:%d", position);
 	if (focusdreampro_command(device, command, response, sizeof(response)) && *response == *command) {
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
@@ -394,7 +398,7 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(FOCUSER_POSITION_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- FOCUSER_POSITION
-		int position = FOCUSER_POSITION_ITEM->number.value;
+		int position = (int)FOCUSER_POSITION_ITEM->number.value;
 		indigo_property_copy_values(FOCUSER_POSITION_PROPERTY, property, false);
 		FOCUSER_POSITION_ITEM->number.value = position;
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
@@ -422,7 +426,7 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 		indigo_update_property(device, X_FOCUSER_DUTY_CYCLE_PROPERTY, NULL);
 		indigo_set_timer(device, 0, duty_cycle_handler, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, X_FOCUSER_DUTY_CYCLE_PROPERTY);
@@ -461,8 +465,9 @@ indigo_result indigo_focuser_focusdreampro(indigo_driver_action action, indigo_d
 
 	SET_DRIVER_INFO(info, "AGadget FocusDreamPro Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

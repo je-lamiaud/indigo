@@ -15,7 +15,7 @@
 //#include "indigo_timer.h"
 #include "indigo_mount_synscan_driver.h"
 
-#define DRIVER_VERSION			0x0013
+#define DRIVER_VERSION 0x02000013
 #define DRIVER_NAME					"indigo_mount_synscan"
 
 #define PRIVATE_DATA        ((synscan_private_data *)device->private_data)
@@ -108,6 +108,7 @@ typedef struct {
 	pthread_cond_t ha_pulse_cond;
 	pthread_cond_t dec_pulse_cond;
 	bool guiding_thread_exit;
+	int guider_thread_count;
 	int ha_pulse_ms;
 	int dec_pulse_ms;
 	

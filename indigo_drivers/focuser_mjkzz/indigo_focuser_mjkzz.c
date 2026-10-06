@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_focuser_mjkzz.c
  */
 
-#define DRIVER_VERSION 0x0004
+#define DRIVER_VERSION 0x02000004
 #define DRIVER_NAME "indigo_focuser_mjkzz"
 
 #include <stdlib.h>
@@ -105,10 +105,11 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -168,8 +169,9 @@ static void focuser_connect_callback(indigo_device *device) {
 				message.ucCMD = CMD_GSPD;
 				if (mjkzz_command(device, &message)) {
 					int speed = mjkzz_get_int(&message);
-					if (speed > FOCUSER_SPEED_ITEM->number.max)
+					if (speed > FOCUSER_SPEED_ITEM->number.max) {
 						speed = (int)FOCUSER_SPEED_ITEM->number.max;
+					}
 					FOCUSER_SPEED_ITEM->number.target = FOCUSER_SPEED_ITEM->number.value = speed;
 				}
 			} else {
@@ -227,16 +229,18 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 	} else if (indigo_property_match_changeable(FOCUSER_STEPS_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- FOCUSER_STEPS
 		indigo_property_copy_values(FOCUSER_STEPS_PROPERTY, property, false);
-		if (FOCUSER_DIRECTION_MOVE_OUTWARD_ITEM->sw.value)
+		if (FOCUSER_DIRECTION_MOVE_OUTWARD_ITEM->sw.value) {
 			FOCUSER_POSITION_ITEM->number.target = FOCUSER_POSITION_ITEM->number.value + FOCUSER_STEPS_ITEM->number.value;
-		else
+		} else {
 			FOCUSER_POSITION_ITEM->number.target = FOCUSER_POSITION_ITEM->number.value - FOCUSER_STEPS_ITEM->number.value;
+		}
 		message.ucCMD = CMD_SPOS;
 		mjkzz_set_int(&message, FOCUSER_POSITION_ITEM->number.target);
 		if (mjkzz_command(device, &message)) {
 			FOCUSER_STEPS_PROPERTY->state = INDIGO_BUSY_STATE;
-			if (PRIVATE_DATA->timer == NULL)
+			if (PRIVATE_DATA->timer == NULL) {
 				indigo_set_timer(device, 0.0, timer_callback, &PRIVATE_DATA->timer);
+			}
 		} else {
 			FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
@@ -249,8 +253,9 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 		mjkzz_set_int(&message, FOCUSER_POSITION_ITEM->number.target);
 		if (mjkzz_command(device, &message)) {
 			FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
-			if (PRIVATE_DATA->timer == NULL)
+			if (PRIVATE_DATA->timer == NULL) {
 				indigo_set_timer(device, 0.0, timer_callback, &PRIVATE_DATA->timer);
+			}
 		} else {
 			FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
@@ -305,8 +310,9 @@ indigo_result indigo_focuser_mjkzz(indigo_driver_action action, indigo_driver_in
 
 	SET_DRIVER_INFO(info, FOCUSER_MJKZZ_NAME, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

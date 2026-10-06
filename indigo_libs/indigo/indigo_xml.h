@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -29,6 +29,16 @@
 #include <stdio.h>
 #include <indigo/indigo_bus.h>
 
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,15 +46,45 @@ extern "C" {
 /** Use <enableBLOB>URL</enableBLOB> for remote INDIGO servers;
  */
 
-extern bool indigo_use_blob_urls;
+INDIGO_EXTERN bool indigo_use_blob_urls;
 
 /** XML wire protocol parser.
  */
-extern void indigo_xml_parse(indigo_device *device, indigo_client *client);
+INDIGO_EXTERN void indigo_xml_parse(indigo_device *device, indigo_client *client);
 
-/** Escape XML string.
+/** Escape XML string into buffer identified by index (0-4).
  */
-extern const char *indigo_xml_escape(const char *string);
+INDIGO_EXTERN const char *indigo_xml_escape_b(int index, const char *string);
+
+#define indigo_xml_escape(string) indigo_xml_escape_b(0, string)
+
+/** Generate enumerate request.
+ */
+INDIGO_EXTERN indigo_result indigo_xml_client_parser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
+
+/** Generate change request.
+ */
+INDIGO_EXTERN indigo_result indigo_xml_client_parser_change_property(indigo_device *device, indigo_client *client, indigo_property *property);
+
+/** Generate enable BLOB request.
+ */
+INDIGO_EXTERN indigo_result indigo_xml_client_parser_enable_blob(indigo_device *device, indigo_client *client, indigo_property *property, indigo_enable_blob_mode mode);
+
+/** Generate define message.
+ */
+INDIGO_EXTERN indigo_result indigo_xml_device_adapter_define_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
+
+/** Generate update message.
+ */
+INDIGO_EXTERN indigo_result indigo_xml_device_adapter_update_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
+
+/** Generate delete message.
+ */
+INDIGO_EXTERN indigo_result indigo_xml_device_adapter_delete_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
+
+/** Generate send message.
+ */
+INDIGO_EXTERN indigo_result indigo_xml_device_adapter_send_message(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
 
 #ifdef __cplusplus
 }

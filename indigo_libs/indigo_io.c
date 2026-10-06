@@ -1,5 +1,5 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
-// Copyright (c) 2016 Rumen G.Bogdanovski
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -33,7 +33,6 @@
 #include <pthread.h>
 #include <sys/types.h>
 #if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
-#include <unistd.h>
 #include <termios.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -116,6 +115,7 @@ static int configure_tty_options(struct termios *options, const char *baudrate) 
 	char *mode;
 	char copy[32];
 	strncpy(copy, baudrate, sizeof(copy));
+	copy[sizeof(copy) - 1] = '\0';
 
 	/* format is 9600-8N1, so split baudrate from the rest */
 	mode = strchr(copy, '-');
@@ -240,8 +240,9 @@ int indigo_open_serial_with_config(const char *dev_file, const char *baudconfig)
 	struct termios to;
 
 	int res = configure_tty_options(&to, baudconfig);
-	if (res == -1)
+	if (res == -1) {
 		return res;
+	}
 
 	return open_tty(dev_file, &to, NULL);
 }
@@ -251,22 +252,30 @@ int indigo_open_serial_with_config(const char *dev_file, const char *baudconfig)
 #if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
 
 static int open_socket(const char *host, int port, int type) {
-	struct addrinfo *address_list, *address;
-	if (getaddrinfo(host, NULL, NULL, &address_list) != 0) {
+	struct addrinfo hints = {0}, *address_list, *address;
+	char port_string[16];
+	snprintf(port_string, sizeof(port_string), "%d", port);
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = type;
+	if (getaddrinfo(host, port_string, &hints, &address_list) != 0) {
 		return -1;
 	}
 	int handle = -1;
 	for (address = address_list; address != NULL; address = address->ai_next) {
-		handle = socket(AF_INET, type, 0);
-		if (handle == -1)
-			return handle;
-		*(uint16_t *)(address->ai_addr->sa_data) = htons(port);
+		handle = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+		if (handle == -1) {
+			continue;
+		}
 		if (connect(handle, address->ai_addr, address->ai_addrlen) == 0) {
 			struct timeval timeout;
 			timeout.tv_sec = 5;
 			timeout.tv_usec = 0;
 			setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
 			setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
+			struct linger ling;
+			ling.l_onoff = 1;
+			ling.l_linger = 0;
+			setsockopt(handle, SOL_SOCKET, SO_LINGER, &ling, sizeof(ling));
 			break;
 		}
 		indigo_error("Can't connect socket (%s)", strerror(errno));
@@ -329,7 +338,7 @@ bool indigo_is_device_url(const char *name, const char *prefix) {
 
 	if (prefix) {
 		char prefix_full[INDIGO_NAME_SIZE];
-		sprintf(prefix_full, "%s://", prefix);
+		snprintf(prefix_full, sizeof(prefix_full), "%s://", prefix);
 		return ((!strncmp(name, "tcp://", 6)) || (!strncmp(name, "udp://", 6)) || (!strncmp(name, prefix_full, strlen(prefix_full))));
 	}
 	return ((!strncmp(name, "tcp://", 6)) || (!strncmp(name, "udp://", 6)));
@@ -359,7 +368,7 @@ int indigo_open_network_device(const char *url, int default_port, indigo_network
 		host_name[colon - host] = 0;
 		port = atoi(colon + 1);
 	} else {
-		indigo_copy_name(host_name, host);
+		INDIGO_COPY_NAME(host_name, host);
 	}
 
 	INDIGO_DEBUG(indigo_debug("Trying to open: '%s', port = %d, protocol = %d", host_name, port, *protocol_hint));
@@ -385,8 +394,9 @@ int indigo_read(int handle, char *buffer, long length) {
 		long bytes_read = read(handle, buffer, remains);
 #endif
 		if (bytes_read <= 0) {
-			if (bytes_read < 0)
+			if (bytes_read < 0) {
 				INDIGO_ERROR(indigo_error("%d -> // %s", handle, strerror(errno)));
+			}
 			return (int)bytes_read;
 		}
 		total_bytes += bytes_read;
@@ -418,7 +428,7 @@ int indigo_close(int handle) {
 int indigo_read_line(int handle, char *buffer, int length) {
 	char c = '\0';
 	long total_bytes = 0;
-	while (total_bytes < length) {
+	while (total_bytes < length - 1) {
 #if defined(INDIGO_WINDOWS)
 		long bytes_read = recv(handle, &c, 1, 0);
 		if (bytes_read == -1 && WSAGetLastError() == WSAETIMEDOUT) {
@@ -429,12 +439,13 @@ int indigo_read_line(int handle, char *buffer, int length) {
 		long bytes_read = read(handle, &c, 1);
 #endif
 		if (bytes_read > 0) {
-			if (c == '\r')
+			if (c == '\r') {
 				;
-			else if (c != '\n')
+			} else if (c != '\n') {
 				buffer[total_bytes++] = c;
-			else
+			} else {
 				break;
+			}
 		} else {
 			errno = ECONNRESET;
 			INDIGO_TRACE_PROTOCOL(indigo_trace("%d -> // Connection reset", handle));
@@ -459,8 +470,9 @@ bool indigo_write(int handle, const char *buffer, long length) {
 			INDIGO_ERROR(indigo_error("%d <- // %s", handle, strerror(errno)));
 			return false;
 		}
-		if (bytes_written == remains)
+		if (bytes_written == remains) {
 			return true;
+		}
 		buffer += bytes_written;
 		remains -= bytes_written;
 	}
@@ -506,42 +518,3 @@ int indigo_select(int handle, long usec) {
 	tv.tv_usec = (int)(usec % 1000000);
 	return select(handle + 1, &readout, NULL, NULL, &tv);
 }
-
-#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
-
-void indigo_compress(char *name, char *in_buffer, unsigned in_size, unsigned char *out_buffer, unsigned *out_size) {
-	z_stream defstream;
-	defstream.zalloc = Z_NULL;
-	defstream.zfree = Z_NULL;
-	defstream.opaque = Z_NULL;
-	defstream.avail_in = in_size;
-	defstream.next_in = (Bytef *)in_buffer;
-	defstream.avail_out = *out_size;
-	defstream.next_out = (Bytef *)out_buffer;
-	gz_header header = { 0 };
-	header.name = (Bytef *)name;
-	header.comment = Z_NULL;
-	header.extra = Z_NULL;
-	int r = deflateInit2(&defstream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 9, Z_DEFAULT_STRATEGY);
-	r = deflateSetHeader(&defstream, &header);
-	r = deflate(&defstream, Z_FINISH);
-	r = deflateEnd(&defstream);
-	*out_size = (unsigned)((unsigned char *)defstream.next_out - (unsigned char *)out_buffer);
-}
-
-void indigo_decompress(char *in_buffer, unsigned in_size, unsigned char *out_buffer, unsigned *out_size) {
-	z_stream infstream;
-	infstream.zalloc = Z_NULL;
-	infstream.zfree = Z_NULL;
-	infstream.opaque = Z_NULL;
-	infstream.avail_in = in_size;
-	infstream.next_in = (Bytef *)in_buffer;
-	infstream.avail_out = *out_size;
-	infstream.next_out = (Bytef *)out_buffer;
-	int r = inflateInit2(&infstream, MAX_WBITS + 16);
-	r = inflate(&infstream, Z_NO_FLUSH);
-	r = inflateEnd(&infstream);
-	*out_size = (unsigned)((unsigned char *)infstream.next_out - (unsigned char *)out_buffer);
-}
-
-#endif

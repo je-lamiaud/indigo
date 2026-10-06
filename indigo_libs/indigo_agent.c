@@ -1,4 +1,4 @@
-// Copyright (c) 2017 CloudMakers, s. r. o.
+// Copyright (c) 2017-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -25,19 +25,16 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <assert.h>
 #include <string.h>
 #include <errno.h>
 #include <time.h>
 #include <math.h>
-#include <fcntl.h>
 #include <sys/stat.h>
 
 #include <indigo/indigo_agent.h>
 
 indigo_result indigo_agent_attach(indigo_device *device, const char* driver_name, unsigned version) {
-	assert(device != NULL);
 	assert(device != NULL);
 	if (AGENT_CONTEXT == NULL) {
 		device->device_context = indigo_safe_malloc(sizeof(indigo_agent_context));
@@ -72,11 +69,13 @@ indigo_result indigo_agent_detach(indigo_device *device) {
 }
 
 indigo_result indigo_add_snoop_rule(indigo_property *target, const char *source_device, const char *source_property) {
-	if (*source_device == 0)
+	if (*source_device == 0) {
 		return INDIGO_OK;
+	}
 	indigo_property *property = indigo_init_text_property(NULL, SNOOP_AGENT_NAME, SNOOP_ADD_RULE_PROPERTY_NAME, NULL, NULL, INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
-	if (property == NULL)
+	if (property == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_text_item(property->items + 0, SNOOP_ADD_RULE_SOURCE_DEVICE_ITEM_NAME, NULL, source_device);
 	indigo_init_text_item(property->items + 1, SNOOP_ADD_RULE_SOURCE_PROPERTY_ITEM_NAME, NULL, source_property);
 	indigo_init_text_item(property->items + 2, SNOOP_ADD_RULE_TARGET_DEVICE_ITEM_NAME, NULL, target->device);
@@ -88,11 +87,13 @@ indigo_result indigo_add_snoop_rule(indigo_property *target, const char *source_
 }
 
 indigo_result indigo_remove_snoop_rule(indigo_property *target, const char *source_device, const char *source_property) {
-	if (*source_device == 0)
+	if (*source_device == 0) {
 		return INDIGO_OK;
+	}
 	indigo_property *property = indigo_init_text_property(NULL, SNOOP_AGENT_NAME, SNOOP_REMOVE_RULE_PROPERTY_NAME, NULL, NULL, INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
-	if (property == NULL)
+	if (property == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_text_item(property->items + 0, SNOOP_REMOVE_RULE_SOURCE_DEVICE_ITEM_NAME, NULL, source_device);
 	indigo_init_text_item(property->items + 1, SNOOP_REMOVE_RULE_SOURCE_PROPERTY_ITEM_NAME, NULL, source_property);
 	indigo_init_text_item(property->items + 2, SNOOP_REMOVE_RULE_TARGET_DEVICE_ITEM_NAME, NULL, target->device);

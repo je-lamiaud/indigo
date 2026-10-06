@@ -1,0 +1,193 @@
+// Copyright (c) 2019-2026 Rumen G. Bogdanovski
+// All rights reserved.
+//
+// You can use this software under the terms of 'INDIGO Astronomy
+// open-source license' (see LICENSE.md).
+//
+// THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
+// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+// GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+// NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// Lacerta FBC driver definition
+
+// version history
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+
+driver fbc {
+	label = "Lacerta FBC";
+	author = "Rumen G. Bogdanovski <rumenastro@gmail.com>";
+	copyright = "Copyright (c) 2019-2026 Rumen G. Bogdanovski";
+	version = 7;
+	serial {
+		pattern {
+			vid = 0x0403;
+			pid = 0x6001;
+		}
+	}
+	define {
+		#define INTENSITY(val) ((int)floor((100 - (int)(val) - 0) * (220 - 20) / (100 - 0) + 20))
+	}
+	data {
+		char response[80];
+	}
+	code {
+		static bool fbc_command(indigo_device *device, char *command, int response, ...) {
+			long result = 1;
+			if (response) {
+				indigo_usleep(20000);
+				result = indigo_uni_discard(PRIVATE_DATA->handle);
+			}
+			if (result >= 0) {
+				va_list args;
+				va_start(args, response);
+				result = indigo_uni_vprintf(PRIVATE_DATA->handle, command, args);
+				va_end(args);
+				while (result > 0 && response) {
+					result = indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response), "\n", "\r\n", INDIGO_DELAY(1));
+					if (result > 0 && strncmp("D -", PRIVATE_DATA->response, 3)) {
+						break;
+					}
+				}
+			}
+			return result > 0;
+		}
+
+		static bool fbc_open(indigo_device *device) {
+			PRIVATE_DATA->handle = indigo_uni_open_serial(DEVICE_PORT_ITEM->text.value, INDIGO_LOG_DEBUG);
+			if (PRIVATE_DATA->handle != NULL) {
+				indigo_uni_set_rts(PRIVATE_DATA->handle, false);
+				INDIGO_DRIVER_LOG(DRIVER_NAME, "Connected on %s", DEVICE_PORT_ITEM->text.value);
+				if (fbc_command(device, ": I #", true) && !strcmp("I FBC", PRIVATE_DATA->response)) {
+					if (fbc_command(device, ": P #", true)) {
+						if (!strcmp("P SerialMode", PRIVATE_DATA->response)) {
+							if (fbc_command(device, ": V #", true)) {
+								INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, DRIVER_LABEL);
+								INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, PRIVATE_DATA->response + 2);
+								indigo_update_property(device, INFO_PROPERTY, NULL);
+								return true;
+							}
+						}
+						indigo_send_message(device, ALERT_PROPERTY, "FBC is not in SerialMode. Turn all knobs to 0 and powercycle the device.");
+					}
+				}
+				indigo_uni_close(&PRIVATE_DATA->handle);
+			}
+			return false;
+		}
+
+		static void fbc_close(indigo_device *device) {
+			fbc_command(device, ": E 0 #", false);
+			fbc_command(device, ": F 0 #", false);
+			INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
+			INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Unknown");
+			indigo_update_property(device, INFO_PROPERTY, NULL);
+			indigo_uni_close(&PRIVATE_DATA->handle);
+		}
+	}
+	aux {
+		name = "Lacerta FBC";
+		interface = INDIGO_INTERFACE_AUX_LIGHTBOX;
+		additional_instances = true;
+		on_connect {
+			fbc_command(device, ": E 0 #", false);
+			fbc_command(device, ": F 0 #", false);
+			fbc_command(device, ": B %d #", false, (int)AUX_LIGHT_INTENSITY_ITEM->number.value);
+		}
+		on_attach {
+			INFO_PROPERTY->count = 6;
+			INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Unknown");
+			INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, "Unknown");
+		}
+		number AUX_LIGHT_INTENSITY {
+			name = AUX_LIGHT_INTENSITY_PROPERTY_NAME;
+			group = AUX_MAIN_GROUP;
+			label = "Light intensity";
+			persistent = true;
+			on_change {
+				if (!fbc_command(device, ": B %d #", false, (int)AUX_LIGHT_INTENSITY_ITEM->number.value)) {
+					AUX_LIGHT_INTENSITY_PROPERTY->state = INDIGO_ALERT_STATE;
+				}
+			}
+			item AUX_LIGHT_INTENSITY {
+				name = AUX_LIGHT_INTENSITY_ITEM_NAME;
+				label = "Intensity (%)";
+				value = 50;
+				min = 0;
+				max = 100;
+				step = 1;
+				format = "%g";
+			}
+		}
+		number AUX_LIGHT_IMPULSE {
+			name = AUX_LIGHT_IMPULSE_PROPERTY_NAME;
+			group = AUX_MAIN_GROUP;
+			label = "Light impulse";
+			on_change {
+				if (fbc_command(device, ": F %d #", false, (int)(AUX_LIGHT_IMPULSE_DURATION_ITEM->number.value * 1000))) {
+					AUX_LIGHT_IMPULSE_PROPERTY->state = INDIGO_BUSY_STATE;
+					while (AUX_LIGHT_IMPULSE_DURATION_ITEM->number.value > 0) {
+						indigo_update_property(device, AUX_LIGHT_IMPULSE_PROPERTY, NULL);
+						if (AUX_LIGHT_IMPULSE_DURATION_ITEM->number.value > 1) {
+							indigo_usleep(INDIGO_DELAY(1));
+							AUX_LIGHT_IMPULSE_DURATION_ITEM->number.value -= 1;
+						} else if (AUX_LIGHT_IMPULSE_DURATION_ITEM->number.value >= 0) {
+							indigo_usleep(INDIGO_DELAY(AUX_LIGHT_IMPULSE_DURATION_ITEM->number.value));
+							AUX_LIGHT_IMPULSE_DURATION_ITEM->number.value = 0;
+						}
+					}
+					AUX_LIGHT_IMPULSE_PROPERTY->state = INDIGO_OK_STATE;
+				} else {
+					AUX_LIGHT_IMPULSE_PROPERTY->state = INDIGO_ALERT_STATE;
+				}
+			}
+			item AUX_LIGHT_IMPULSE_DURATION {
+				name = AUX_LIGHT_IMPULSE_DURATION_ITEM_NAME;
+				label = "Duration (s)";
+				value = 0;
+				min = 0;
+				max = 30;
+				step = 1;
+			}
+		}
+		number CCD_EXPOSURE {
+			name = CCD_EXPOSURE_PROPERTY_NAME;
+			group = AUX_MAIN_GROUP;
+			label = "Shutter Control";
+			on_change {
+				if (fbc_command(device, ": E %d #", false, (int)(CCD_EXPOSURE_ITEM->number.value * 1000))) {
+					CCD_EXPOSURE_PROPERTY->state = INDIGO_BUSY_STATE;
+					while (CCD_EXPOSURE_ITEM->number.value > 0) {
+						indigo_update_property(device, CCD_EXPOSURE_PROPERTY, NULL);
+						if (CCD_EXPOSURE_ITEM->number.value > 1) {
+							indigo_usleep(INDIGO_DELAY(1));
+							CCD_EXPOSURE_ITEM->number.value -= 1;
+						} else if (CCD_EXPOSURE_ITEM->number.value >= 0) {
+							indigo_usleep(INDIGO_DELAY(CCD_EXPOSURE_ITEM->number.value));
+							CCD_EXPOSURE_ITEM->number.value = 0;
+						}
+					}
+					CCD_EXPOSURE_PROPERTY->state = INDIGO_OK_STATE;
+				} else {
+					CCD_EXPOSURE_PROPERTY->state = INDIGO_ALERT_STATE;
+				}
+			}
+			item CCD_EXPOSURE {
+				name = CCD_EXPOSURE_ITEM_NAME;
+				label = "Exposure (s)";
+				value = 0;
+				min = 0;
+				max = 30;
+				step = 1;
+			}
+		}
+	}
+}

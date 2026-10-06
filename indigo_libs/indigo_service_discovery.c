@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G. Bogdanovski
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -284,7 +284,7 @@ static void WINAPI resolver_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
 		if ((dot = strchr(name, '.'))) {
 			*dot = 0;
 		}
-		indigo_copy_name(host, host_name);
+		INDIGO_COPY_NAME(host, host_name);
 		if (*(dot = host + strlen(host) - 1) == '.') {
 			*dot = 0;
 		}

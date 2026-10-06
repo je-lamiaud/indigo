@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Rumen G.Bogdanvski
+// Copyright (c) 2024-2025 Rumen G.Bogdanvski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,7 +17,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen G.Bogdanovski <rumenastro@gmail.com>
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** Least Squares Polynomial Fitting
  \file indigo_polynomial_fit.h
@@ -25,6 +25,16 @@
 
 #ifndef indigo_polynomial_fit_h
 #define indigo_polynomial_fit_h
+
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,7 +53,7 @@ extern "C" {
  *
  * Returns 0 if success.
  */
-int indigo_polynomial_fit(int point_count, double *x_values, double *y_values, int coefficient_count, double *polynomial_coefficients);
+INDIGO_EXTERN int indigo_polynomial_fit(int point_count, double *x_values, double *y_values, int coefficient_count, double *polynomial_coefficients);
 
 /**
  * Calculate polynomial value for a given x
@@ -52,7 +62,7 @@ int indigo_polynomial_fit(int point_count, double *x_values, double *y_values, i
  * \param coefficient_count - number of coefficients (order + 1)
  * \param polynomial_coefficients - array of coefficients (order + 1)
  */
-double indigo_polynomial_value(double x, int coefficient_count, double *polynomial_coefficients);
+INDIGO_EXTERN double indigo_polynomial_value(double x, int coefficient_count, double *polynomial_coefficients);
 
 /**
  * Calculate polynomial derivative (returns a polinomial of degree - 1)
@@ -61,7 +71,7 @@ double indigo_polynomial_value(double x, int coefficient_count, double *polynomi
  * \param polynomial_coefficients - array of coefficients (order + 1)
  * \param derivative_coefficients - array of the coefficients of the first derivative (order)
  */
-void indigo_polynomial_derivative(int coefficient_count, double *polynomial_coefficients, double *derivative_coefficients);
+INDIGO_EXTERN void indigo_polynomial_derivative(int coefficient_count, double *polynomial_coefficients, double *derivative_coefficients);
 
 /**
  * Calculate polynomial extremums (minimums and maximums)
@@ -71,7 +81,7 @@ void indigo_polynomial_derivative(int coefficient_count, double *polynomial_coef
  * \param polynomial_coefficients - array of coefficients (order + 1)
  * \param extremums - array of the extremums
  */
-int indigo_polynomial_extremums(int coefficient_count, double *polynomial_coefficients, double *extremums);
+INDIGO_EXTERN int indigo_polynomial_extremums(int coefficient_count, double *polynomial_coefficients, double *extremums);
 
 /**
  * Return x at polinomial minimum in the range [low, high] with a given tolerance
@@ -82,8 +92,7 @@ int indigo_polynomial_extremums(int coefficient_count, double *polynomial_coeffi
  * \param high - high limit
  * \param tolerance - tolerance
  */
-double indigo_polynomial_min_x(int coefficient_count, double* polynomial_coefficients, double low, double high, double tolerance);
-
+INDIGO_EXTERN double indigo_polynomial_min_x(int coefficient_count, double* polynomial_coefficients, double low, double high, double tolerance);
 
 /**
  * Converts the polynomial coefficients into a string representation.
@@ -92,7 +101,7 @@ double indigo_polynomial_min_x(int coefficient_count, double* polynomial_coeffic
  * \param polynomial_coefficients An array of polynomial coefficients.
  * \param polynomial_string The buffer to store the string representation of the polynomial.
  */
-void indigo_polynomial_string(int coefficient_count, double *polynomial_coefficients, char *polynomial_string);
+INDIGO_EXTERN void indigo_polynomial_string(int coefficient_count, double *polynomial_coefficients, char *polynomial_string);
 
 #ifdef __cplusplus
 }

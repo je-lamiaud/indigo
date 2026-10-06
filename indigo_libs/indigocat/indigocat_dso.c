@@ -1,4 +1,4 @@
-// Copyright (c) 2019 CloudMakers, s. r. o.
+// Copyright (c) 2019-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,13 +23,16 @@
  \file indigo_cat_data.c
  */
 
-
 #include <stdio.h>
 #include <stdbool.h>
 
 #include <indigo/indigocat/indigocat_dso.h>
 
 #include <indigo/indigocat/indigocat_precession.h>
+
+#if defined(INDIGO_WINDOWS)
+#pragma warning(disable:4305)
+#endif
 
 static bool dso_data_updated = false;
 

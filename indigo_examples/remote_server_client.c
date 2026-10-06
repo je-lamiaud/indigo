@@ -1,4 +1,4 @@
-// Copyright (c) 2020 CloudMakers, s. r. o. & Rumen G.Bogdanovski
+// Copyright (c) 2020-2025 CloudMakers, s. r. o. & Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -18,29 +18,24 @@
 
 // version history
 // 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
-//      & Rumen G.Bogdanovski <rumenastro@gmail.com>
+//      & Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
-#include <unistd.h>
-#endif
-#if defined(INDIGO_WINDOWS)
-#include <windows.h>
-#pragma warning(disable:4996)
-#endif
+
 #include <indigo/indigo_bus.h>
+#include <indigo/indigo_names.h>
 #include <indigo/indigo_client.h>
 
-#define CCD_SIMULATOR "CCD Imager Simulator @ indigosky"
+#define SERVICE	"W11"
+#define CCD_SIMULATOR "CCD Imager Simulator @ " SERVICE
 
 static bool connected = false;
 static int count = 1;
 
 static indigo_result client_attach(indigo_client *client) {
 	indigo_log("attached to INDIGO bus...");
-	indigo_enumerate_properties(client, &INDIGO_ALL_PROPERTIES);
 	return INDIGO_OK;
 }
 
@@ -160,14 +155,14 @@ int main(int argc, const char * argv[]) {
 //	freopen("indigo.log", "w", stderr);
 //#endif
 
-	indigo_set_log_level(INDIGO_LOG_INFO);
+	indigo_set_log_level(INDIGO_LOG_DEBUG);
 	indigo_start();
 
 	indigo_server_entry *server;
 	indigo_attach_client(&client);
-	indigo_connect_server("indigosky", "indigosky.local", 7624, &server); // Check correct host name in 2nd arg!!!
+	indigo_connect_server(SERVICE, SERVICE ".local", 7624, &server, NULL); // Check correct host name in 2nd arg!!!
 	while (count > 0) {
-		  indigo_usleep(ONE_SECOND_DELAY);
+		  indigo_sleep(1);
 	}
 	indigo_disconnect_server(server);
 	indigo_detach_client(&client);

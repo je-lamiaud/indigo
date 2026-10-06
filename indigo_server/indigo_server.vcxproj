@@ -1,0 +1,391 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|ARM64">
+      <Configuration>Debug</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64">
+      <Configuration>Release</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{92c45e91-5d4c-4ad8-970c-975ba4141759}</ProjectGuid>
+    <RootNamespace>indigoserver</RootNamespace>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>..\build\$(Configuration)\$(Platform)\</OutDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
+    <OutDir>..\build\$(Configuration)\$(Platform)\</OutDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
+    <OutDir>..\build\$(Configuration)\$(Platform)\</OutDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>..\build\$(Configuration)\$(Platform)\</OutDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;INDIGO_WINDOWS;MDNS_DEBUGMSGS=0;WIN32_LEAN_AND_MEAN;USE_TCP_LOOPBACK;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;NOT_HAVE_SA_LEN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>..\indigo_libs\bin_externals\pthreads4w\include\;..\indigo_libs\bin_externals\zlib\include;..\indigo_libs\externals\bonjour-sdk;..\indigo_libs\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>ws2_32.lib;pthreadVC3.lib;libusb-1.0.lib;zlib.lib;indigo.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\build\$(Configuration)\$(Platform)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+    <PostBuildEvent>
+      <Command>
+      </Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;INDIGO_WINDOWS;MDNS_DEBUGMSGS=0;WIN32_LEAN_AND_MEAN;USE_TCP_LOOPBACK;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;NOT_HAVE_SA_LEN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>..\indigo_libs\bin_externals\pthreads4w\include\;..\indigo_libs\bin_externals\zlib\include;..\indigo_libs\externals\bonjour-sdk;..\indigo_libs\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>..\build\$(Configuration)\$(Platform)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ws2_32.lib;pthreadVC3.lib;libusb-1.0.lib;zlib.lib;indigo.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>
+      </Command>
+    </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>
+      </Command>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
+    <ClCompile>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;INDIGO_WINDOWS;MDNS_DEBUGMSGS=0;WIN32_LEAN_AND_MEAN;USE_TCP_LOOPBACK;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;NOT_HAVE_SA_LEN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>..\indigo_libs\bin_externals\pthreads4w\include\;..\indigo_libs\bin_externals\zlib\include;..\indigo_libs\externals\bonjour-sdk;..\indigo_libs\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>ws2_32.lib;pthreadVC3.lib;libusb-1.0.lib;zlib.lib;indigo.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\build\$(Configuration)\$(Platform)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+    <PostBuildEvent>
+      <Command>
+      </Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
+    <ClCompile>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;INDIGO_WINDOWS;MDNS_DEBUGMSGS=0;WIN32_LEAN_AND_MEAN;USE_TCP_LOOPBACK;_CRT_SECURE_NO_DEPRECATE;_CRT_SECURE_CPP_OVERLOAD_STANDARD_NAMES=1;NOT_HAVE_SA_LEN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>..\indigo_libs\bin_externals\pthreads4w\include\;..\indigo_libs\bin_externals\zlib\include;..\indigo_libs\externals\bonjour-sdk;..\indigo_libs\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>ws2_32.lib;pthreadVC3.lib;libusb-1.0.lib;zlib.lib;indigo.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\build\$(Configuration)\$(Platform)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+    <PostBuildEvent>
+      <Command>
+      </Command>
+    </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>
+      </Command>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\indigo_drivers\agent_alpaca\indigo_agent_alpaca.vcxproj">
+      <Project>{9d858526-ac14-45a3-a8e4-f0945dc9b21f}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\agent_auxiliary\indigo_agent_auxiliary.vcxproj">
+      <Project>{5f021221-5611-4173-9af4-87b43fd3e3a5}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\agent_config\indigo_agent_config.vcxproj">
+      <Project>{619339be-bfcc-41fe-b258-ea9db15cb26c}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\agent_guider\indigo_agent_guider.vcxproj">
+      <Project>{5d9b3665-d3aa-45a0-9b78-4fcd2f052773}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\agent_imager\indigo_agent_imager.vcxproj">
+      <Project>{ea94f382-c7ab-4d8a-8eaa-5beb01a0d112}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\agent_mount\indigo_agent_mount.vcxproj">
+      <Project>{d7058517-71df-4f6b-865d-6038b2d6085c}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\agent_scripting\indigo_agent_scripting.vcxproj">
+      <Project>{a7c0bbe9-e5f8-43d3-adc1-7a0c04b4a9ad}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ao_sx\indigo_ao_sx.vcxproj">
+      <Project>{96d12488-1b9b-4cad-b128-86ed0cde5dbe}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_arteskyflat\indigo_aux_arteskyflat.vcxproj">
+      <Project>{420c4d15-9009-4d5a-977b-a098b3aa735d}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_astromechanics\indigo_aux_astromechanics.vcxproj">
+      <Project>{f0f408a1-e902-4d89-b65a-da709f06afa7}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_fbc\indigo_aux_fbc.vcxproj">
+      <Project>{f27f54e7-3508-4f54-89ee-30b3e6d0f41a}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_flatmaster\indigo_aux_flatmaster.vcxproj">
+      <Project>{c0733c8e-b8cd-4112-8658-c69f48d874b0}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_flipflat\indigo_aux_flipflat.vcxproj">
+      <Project>{958feabf-5888-4f4d-8116-fd3454ca4953}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_geoptikflat\indigo_aux_geoptikflat.vcxproj">
+      <Project>{e6edd577-8378-4a16-b4b1-11384dc146db}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_mgbox\indigo_aux_mgbox.vcxproj">
+      <Project>{cfdba0f3-022c-44de-b23b-372d90062965}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_ppb\indigo_aux_ppb.vcxproj">
+      <Project>{f6b5c900-07ce-4d6b-a39a-3b9ea3b01486}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_rts\indigo_aux_rts.vcxproj">
+      <Project>{eaf171cf-5f71-4230-a709-2c7f3ba8c25b}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_skyalert\indigo_aux_skyalert.vcxproj">
+      <Project>{21ae094d-56c6-4f38-9dc6-fca76b3dc516}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_sqm\indigo_aux_sqm.vcxproj">
+      <Project>{1194c633-e067-4fc2-b480-261b01631725}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_uch\indigo_aux_uch.vcxproj">
+      <Project>{78ed976b-8d12-43eb-9c73-3951c0faf73f}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_upb3\indigo_aux_upb3.vcxproj">
+      <Project>{7037feb0-4408-41e2-b59f-0ee192152993}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_upb\indigo_aux_upb.vcxproj">
+      <Project>{0955b910-1425-4589-91fa-33b6cba63fa6}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_usbdp\indigo_aux_usbdp.vcxproj">
+      <Project>{d9ff580c-3dee-44a3-b133-cd246a46403d}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_wbplusv3\indigo_aux_wbplusv3.vcxproj">
+      <Project>{d9bdb240-4c75-4a37-9902-8b99662e2e4a}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_wbprov3\indigo_aux_wbprov3.vcxproj">
+      <Project>{84a7dcac-2f26-4483-9426-ff321598a7ce}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\aux_wcv4ec\indigo_aux_wcv4ec.vcxproj">
+      <Project>{7480e4f5-0bfe-4b76-9a6d-c6b0251eec19}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_altair\indigo_ccd_altair.vcxproj">
+      <Project>{72e231d8-8732-41c6-a813-bf061fd9083d}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_asi\indigo_ccd_asi.vcxproj">
+      <Project>{89c15051-7b4e-41c7-b1f1-37b33199f347}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_atik\indigo_ccd_atik.vcxproj">
+      <Project>{81a0b228-0fab-45fc-b890-efe29d722b64}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_bresser\indigo_ccd_bresser.vcxproj">
+      <Project>{028c4593-58b9-4523-af0a-f5ac7d4fba13}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_dsi\indigo_ccd_dsi.vcxproj">
+      <Project>{aef790a2-beb0-4c40-90af-24a40e583f75}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_fli\indigo_ccd_fli.vcxproj">
+      <Project>{612227fd-de31-43db-9c7c-69da003d9265}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_mallin\indigo_ccd_mallin.vcxproj">
+      <Project>{b3a3b858-0016-43f5-b4d2-703289885b5b}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_ogma\indigo_ccd_ogma.vcxproj">
+      <Project>{8dd6949a-dcab-4dd2-8c81-cf3f82a654c8}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_omegonpro\indigo_ccd_omegonpro.vcxproj">
+      <Project>{f10ee54d-fa61-46db-9586-efb35c735209}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_playerone\indigo_ccd_playerone.vcxproj">
+      <Project>{add5495d-88fd-473c-83af-934b358608ea}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_qhy2\indigo_ccd_qhy2.vcxproj">
+      <Project>{92188d54-fe2c-4ba6-bcc2-9a473e73fbe5}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_rising\indigo_ccd_rising.vcxproj">
+      <Project>{ad38f44e-9b0a-4003-b654-393de71dfed7}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_ssag\indigo_ccd_ssag.vcxproj">
+      <Project>{146ec52d-ee47-4a7d-88b4-1f0054fb50f2}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_ssg\indigo_ccd_ssg.vcxproj">
+      <Project>{2ec31342-35cd-4620-96fe-a37342685ac1}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_sx\indigo_ccd_sx.vcxproj">
+      <Project>{fe4c6f8b-8358-404e-9b8b-422d2005bdd0}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_touptek\indigo_ccd_touptek.vcxproj">
+      <Project>{ea4a6814-7826-40bb-8f43-dcace07fc586}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\dome_simulator\indigo_dome_simulator.vcxproj">
+      <Project>{bed3f6c7-d374-49bb-9004-eaf521129a8c}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\focuser_asi\indigo_focuser_asi.vcxproj">
+      <Project>{6e012146-7be8-4567-860b-c11515b7a287}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\focuser_astroasis\indigo_focuser_astroasis.vcxproj">
+      <Project>{255a446f-c41e-4846-95d2-398422d68025}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\focuser_astromechanics\indigo_focuser_astromechanics.vcxproj">
+      <Project>{20db922c-8667-4316-815d-d3fdfc18618a}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\focuser_dmfc\indigo_focuser_dmfc.vcxproj">
+      <Project>{f2bfcb49-4c62-431a-8900-e895ba2a00f4}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\focuser_fc3\indigo_focuser_fc3.vcxproj">
+      <Project>{08b423fc-85f3-4a77-9fbb-f350a00b9036}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\focuser_fli\indigo_focuser_fli.vcxproj">
+      <Project>{3ac3f27f-8763-4533-a948-43373e5deef9}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\focuser_focusdreampro\indigo_focuser_focusdreampro.vcxproj">
+      <Project>{31aba8a9-f4d6-4a19-a797-8545c2e0b1bb}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\focuser_ioptron\indigo_focuser_ioptron.vcxproj">
+      <Project>{8b4d45fc-1ec0-46e6-9a95-3ba68860e440}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\gps_nmea\indigo_gps_nmea.vcxproj">
+      <Project>{a2c83e5f-7089-4217-b4e3-fd60fee14645}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\mount_asi\indigo_mount_asi.vcxproj">
+      <Project>{8fc22a4e-eee4-4bd8-9639-b1198b1a7c96}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\mount_ioptron\indigo_mount_ioptron.vcxproj">
+      <Project>{d2b427c2-b6d4-4354-bddf-92041036799f}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\mount_lx200\indigo_mount_lx200.vcxproj">
+      <Project>{7c84806a-6f8a-49ac-b9ed-476d4b36eb58}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\mount_rainbow\indigo_mount_rainbow.vcxproj">
+      <Project>{76dac9b0-19cb-4986-8af2-ca5c52bf3622}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\rotator_falcon\indigo_rotator_falcon.vcxproj">
+      <Project>{827bb928-02bf-4df7-9c0f-4e141dec7406}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\rotator_simulator\indigo_rotator_simulator.vcxproj">
+      <Project>{88bcddef-e256-437d-a5ad-9ef58e6752fa}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_asi\indigo_wheel_asi.vcxproj">
+      <Project>{60bc6dfb-7773-4865-b9cd-933816cb234e}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_astroasis\indigo_wheel_astroasis.vcxproj">
+      <Project>{ae6d9352-9c40-4a7f-88f3-7343003f7cd6}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_fli\indigo_wheel_fli.vcxproj">
+      <Project>{b2060a29-c06d-4b00-9bad-8442bdcf31b6}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_indigo\indigo_wheel_indigo.vcxproj">
+      <Project>{2103cf27-9e6c-4a04-ad34-0116ec9f5d08}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_manual\indigo_wheel_manual.vcxproj">
+      <Project>{b0c449bd-eae9-4ade-a3c7-349086d15ce2}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_optec\indigo_wheel_optec.vcxproj">
+      <Project>{209d5a91-d11f-433a-89cb-fe3ffc78fdbd}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_playerone\indigo_wheel_playerone.vcxproj">
+      <Project>{44f16a32-7552-4113-93a0-fbf9537dc783}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_quantum\indigo_wheel_quantum.vcxproj">
+      <Project>{73e8f060-8e11-4f9a-8870-b0d6d316cad3}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_trutek\indigo_wheel_trutek.vcxproj">
+      <Project>{448d3540-28f1-4def-98dd-0b4be29d1f70}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\wheel_xagyl\indigo_wheel_xagyl.vcxproj">
+      <Project>{8d2e5b8c-ce39-4f58-a75d-a836b5af20eb}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_libs\indigo.vcxproj">
+      <Project>{aa10be9e-6416-4f58-b821-2d0e479eb81b}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\ccd_simulator\indigo_ccd_simulator.vcxproj">
+      <Project>{1555b53f-7ade-4751-888a-3a3549e3d3d9}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\gps_simulator\indigo_gps_simulator.vcxproj">
+      <Project>{f2f7fd9b-918d-400f-b956-4b61da9ac713}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_drivers\mount_simulator\indigo_mount_simulator.vcxproj">
+      <Project>{8ff4a248-d905-4778-bed8-7caf85e4c6a3}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\indigo_windows\make_indigo_drivers\make_indigo_drivers.vcxproj">
+      <Project>{ee2d3f23-9a54-48c7-901c-5d71f3a7d19f}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="indigo_server.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

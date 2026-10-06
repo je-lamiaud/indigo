@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -21,35 +21,32 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
-#include <syslog.h>
 #include <assert.h>
 #include <signal.h>
-#include <dns_sd.h>
-#include <libgen.h>
 #include <pthread.h>
-#include <dirent.h>
 #include <errno.h>
+#include <dns_sd.h>
 
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #ifdef INDIGO_LINUX
+#include <unistd.h>
+#include <sys/wait.h>
 #include <sys/prctl.h>
-#endif
-#ifdef INDIGO_MACOS
+#elif defined(INDIGO_MACOS)
 #include <CoreFoundation/CoreFoundation.h>
 #endif
 
-#if defined(__APPLE__) || defined(__MACH__)
-  #define OS_NAME "macOS"
-#elif defined(__linux__)
-  #define OS_NAME "Linux"
-#elif defined(__unix__)
-  #define OS_NAME "Unix"
+#if defined(INDIGO_MACOS)
+#define OS_NAME "macOS"
+#define ADDITIONAL_DRIVERS "indigo_mac_drivers"
+#elif defined(INDIGO_LINUX)
+#define OS_NAME "Linux"
+#define ADDITIONAL_DRIVERS "indigo_linux_drivers"
+#elif defined(INDIGO_WINDOWS)
+#define OS_NAME "Windows"
+#define ADDITIONAL_DRIVERS "indigo_win_drivers"
 #else
-  #define OS_NAME "Unknown OS"
+#define OS_NAME "Unknown OS"
 #endif
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -65,7 +62,7 @@
 #endif
 
 #include <indigo/indigo_bus.h>
-#include <indigo/indigo_io.h>
+#include <indigo/indigo_uni_io.h>
 #include <indigo/indigo_server_tcp.h>
 #include <indigo/indigo_driver.h>
 #include <indigo/indigo_client.h>
@@ -76,11 +73,12 @@
 #include <indigo/indigocat/indigocat_dso.h>
 #include <indigo/indigocat/indigocat_ss.h>
 
+#ifdef STATIC_DRIVERS
+#include "agent_test/indigo_agent_test.h"
 #include "ccd_simulator/indigo_ccd_simulator.h"
 #include "mount_simulator/indigo_mount_simulator.h"
 #include "gps_simulator/indigo_gps_simulator.h"
 #include "dome_simulator/indigo_dome_simulator.h"
-#ifdef STATIC_DRIVERS
 #include "ccd_sx/indigo_ccd_sx.h"
 #include "wheel_sx/indigo_wheel_sx.h"
 #include "ccd_ssag/indigo_ccd_ssag.h"
@@ -173,6 +171,7 @@
 #include "aux_astromechanics/indigo_aux_astromechanics.h"
 #include "aux_geoptikflat/indigo_aux_geoptikflat.h"
 #include "ccd_svb/indigo_ccd_svb.h"
+#include "ccd_svb2/indigo_ccd_svb2.h"
 #include "agent_astap/indigo_agent_astap.h"
 #include "rotator_optec/indigo_rotator_optec.h"
 #include "mount_starbook/indigo_mount_starbook.h"
@@ -201,6 +200,10 @@
 #include "rotator_asi/indigo_rotator_asi.h"
 #include "focuser_astroasis/indigo_focuser_astroasis.h"
 #include "wheel_astroasis/indigo_wheel_astroasis.h"
+#include "focuser_qhy/indigo_focuser_qhy.h"
+#include "aux_svbpowerbox/indigo_aux_svbpowerbox.h"
+#include "polaralign_simulator/indigo_polaralign_simulator.h"
+#include "focuser_askar/indigo_focuser_askar.h"
 #ifndef __aarch64__
 #include "ccd_sbig/indigo_ccd_sbig.h"
 #endif
@@ -216,9 +219,6 @@
 #endif
 #include "agent_snoop/indigo_agent_snoop.h"
 #include "agent_scripting/indigo_agent_scripting.h"
-#ifdef INDIGO_MACOS
-#include "ccd_atik2/indigo_ccd_atik2.h"
-#endif
 #endif
 
 #define SERVER_NAME         "INDIGO Server"
@@ -235,6 +235,7 @@ driver_entry_point static_drivers[] = {
 	indigo_agent_scripting,
 	indigo_agent_mount,
 	indigo_agent_snoop,
+	indigo_agent_test,
 	indigo_ao_sx,
 	indigo_aux_arteskyflat,
 	indigo_aux_astromechanics,
@@ -251,6 +252,7 @@ driver_entry_point static_drivers[] = {
 	indigo_aux_rts,
 	indigo_aux_skyalert,
 	indigo_aux_sqm,
+	indigo_aux_svbpowerbox,
 	indigo_aux_uch,
 	indigo_aux_upb,
 	indigo_aux_upb3,
@@ -262,9 +264,6 @@ driver_entry_point static_drivers[] = {
 	indigo_ccd_apogee,
 	indigo_ccd_asi,
 	indigo_ccd_atik,
-#ifdef INDIGO_MACOS
-	indigo_ccd_atik2,
-#endif
 	indigo_ccd_bresser,
 	indigo_ccd_dsi,
 	indigo_ccd_fli,
@@ -288,6 +287,7 @@ driver_entry_point static_drivers[] = {
 	indigo_ccd_ssag,
 	indigo_ccd_ssg,
 	indigo_ccd_svb,
+	indigo_ccd_svb2,
 	indigo_ccd_sx,
 	indigo_ccd_touptek,
 	indigo_ccd_uvc,
@@ -299,6 +299,7 @@ driver_entry_point static_drivers[] = {
 	indigo_dome_simulator,
 	indigo_dome_skyroof,
 	indigo_dome_talon6ror,
+	indigo_focuser_askar,
 	indigo_focuser_asi,
 	indigo_focuser_astroasis,
 	indigo_focuser_astromechanics,
@@ -324,6 +325,7 @@ driver_entry_point static_drivers[] = {
 	indigo_focuser_optec,
 	indigo_focuser_optecfl,
 	indigo_focuser_primaluce,
+	indigo_focuser_qhy,
 	indigo_focuser_prodigy,
 	indigo_focuser_robofocus,
 	indigo_focuser_usbv3,
@@ -349,6 +351,7 @@ driver_entry_point static_drivers[] = {
 	indigo_mount_starbook,
 	indigo_mount_synscan,
 	indigo_mount_temma,
+	indigo_polaralign_simulator,
 	indigo_rotator_asi,
 	indigo_rotator_falcon,
 	indigo_rotator_lunatico,
@@ -414,7 +417,7 @@ static void *dso_data = NULL;
 static void *constellation_data = NULL;
 
 #ifdef INDIGO_MACOS
-static bool runLoop = true;
+static volatile sig_atomic_t runLoop = true;
 #endif
 
 #define SERVER_INFO_PROPERTY											info_property
@@ -466,8 +469,8 @@ static bool runLoop = true;
 #define SERVER_WIFI_CHANNEL_PROPERTY							wifi_channel_property
 #define SERVER_WIFI_CHANNEL_ITEM									(SERVER_WIFI_CHANNEL_PROPERTY->items + 0)
 
-#define SERVER_WIFI_COUNTRY_CODE_PROPERTY				wifi_country_code_property
-#define SERVER_WIFI_COUNTRY_CODE_ITEM					(SERVER_WIFI_COUNTRY_CODE_PROPERTY->items + 0)
+#define SERVER_WIFI_COUNTRY_CODE_PROPERTY					wifi_country_code_property
+#define SERVER_WIFI_COUNTRY_CODE_ITEM							(SERVER_WIFI_COUNTRY_CODE_PROPERTY->items + 0)
 
 #define SERVER_INTERNET_SHARING_PROPERTY					internet_sharing_property
 #define SERVER_INTERNET_SHARING_DISABLED_ITEM			(SERVER_INTERNET_SHARING_PROPERTY->items + 0)
@@ -486,16 +489,21 @@ static bool runLoop = true;
 
 
 static pid_t server_pid = 0;
-static bool keep_server_running = true;
-static bool use_sigkill = false;
+static volatile sig_atomic_t keep_server_running = true;
+static volatile sig_atomic_t use_sigkill = false;
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
 static bool use_ctrl_panel = true;
 static bool use_web_apps = true;
-
+#elif defined(INDIGO_WINDOWS)
+static bool use_ctrl_panel = false;
+static bool use_web_apps = false;
+#endif
 #ifdef RPI_MANAGEMENT
 static bool use_rpi_management = false;
 #endif /* RPI_MANAGEMENT */
 
-static char const *server_argv[128];
+#define SERVER_ARGV_SIZE 128
+static char const *server_argv[SERVER_ARGV_SIZE];
 static int server_argc = 1;
 
 static indigo_result attach(indigo_device *device);
@@ -512,24 +520,69 @@ static indigo_device server_device = INDIGO_DEVICE_INITIALIZER(
 	detach
 );
 
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+
 static double h2deg(double ra) {
 	return ra > 12 ? (ra - 24) * 15 : ra * 15;
 }
 
+// Escaped-string scratch size and the free-space margin kept in the JSON accumulation buffers.
+// The margin comfortably exceeds the largest single record (fixed text plus two escaped fields).
+#define JSON_ESCAPE_BUFFER_SIZE 2048
+#define JSON_GROW_MARGIN (16 * 1024)
+
+// Escape a string for use inside a JSON string literal, writing at most output_size - 1
+// characters plus a terminating NUL. On overflow the output is truncated but stays a valid,
+// balanced escape sequence. Returns output so it can be used inline in a printf argument list.
+static char *json_escape(const char *input, char *output, size_t output_size) {
+	size_t j = 0;
+	if (output_size == 0) {
+		return output;
+	}
+	for (const char *p = input; *p; p++) {
+		unsigned char c = (unsigned char)*p;
+		if (c == '"' || c == '\\') {
+			if (j + 2 > output_size - 1) {
+				break;
+			}
+			output[j++] = '\\';
+			output[j++] = c;
+		} else if (c == '\n' || c == '\r' || c == '\t') {
+			if (j + 2 > output_size - 1) {
+				break;
+			}
+			output[j++] = '\\';
+			output[j++] = c == '\n' ? 'n' : c == '\r' ? 'r' : 't';
+		} else if (c < 0x20) {
+			if (j + 6 > output_size - 1) {
+				break;
+			}
+			j += sprintf(output + j, "\\u%04x", c);
+		} else {
+			if (j + 1 > output_size - 1) {
+				break;
+			}
+			output[j++] = c;
+		}
+	}
+	output[j] = 0;
+	return output;
+}
+
 static void *indigo_add_star_json_resource(int max_mag) {
 	int buffer_size = 1024 * 1024;
-	char *buffer =  malloc(buffer_size);
-	strcpy(buffer, "{\"type\":\"FeatureCollection\",\"features\": [");
-	unsigned size = (unsigned)strlen(buffer);
+	char *buffer = indigo_safe_malloc(buffer_size);
+	unsigned size = (unsigned)snprintf(buffer, buffer_size, "%s", "{\"type\":\"FeatureCollection\",\"features\": [");
 	char *sep = "";
 	indigocat_star_entry *star_data = indigocat_get_star_data();
 	for (int i = 0; star_data[i].hip; i++) {
-		if (star_data[i].mag > max_mag)
+		if (star_data[i].mag > max_mag) {
 			continue;
+		}
 		char desig[256] = "";
 		char *name = "";
 		if (star_data[i].name) {
-			strcpy(desig, star_data[i].name);
+			snprintf(desig, sizeof(desig), "%s", star_data[i].name);
 			name = strrchr(desig, ',');
 			if (name) {
 				*name = 0;
@@ -538,8 +591,11 @@ static void *indigo_add_star_json_resource(int max_mag) {
 				name = "";
 			}
 		}
-		size += sprintf(buffer + size, "%s{\"type\":\"Feature\",\"id\":%d,\"properties\":{\"name\": \"%s\",\"desig\":\"%s\",\"mag\": %.2f},\"geometry\":{\"type\":\"Point\",\"coordinates\":[%.4f,%.4f]}}", sep, star_data[i].hip, name, desig, star_data[i].mag, h2deg(star_data[i].ra), star_data[i].dec);
-		if (buffer_size - size < 1024) {
+		char name_esc[JSON_ESCAPE_BUFFER_SIZE], desig_esc[JSON_ESCAPE_BUFFER_SIZE];
+		json_escape(name, name_esc, sizeof(name_esc));
+		json_escape(desig, desig_esc, sizeof(desig_esc));
+		size += snprintf(buffer + size, buffer_size - size, "%s{\"type\":\"Feature\",\"id\":%d,\"properties\":{\"name\": \"%s\",\"desig\":\"%s\",\"mag\": %.2f},\"geometry\":{\"type\":\"Point\",\"coordinates\":[%.4f,%.4f]}}", sep, star_data[i].hip, name_esc, desig_esc, star_data[i].mag, h2deg(star_data[i].ra), star_data[i].dec);
+		if (buffer_size - size < JSON_GROW_MARGIN) {
 			buffer = indigo_safe_realloc(buffer, buffer_size *= 2);
 		}
 		sep = ",";
@@ -548,19 +604,22 @@ static void *indigo_add_star_json_resource(int max_mag) {
 	indigocat_ss_entry *ss_data = indigocat_get_ss_data();
 	for (int i = 0; ss_data[i].id; i++) {
 		double mag = ss_data[i].mag;
-		if (mag < -4.5)
+		if (mag < -4.5) {
 			mag = -4.5;
-		size += sprintf(buffer + size, "%s{\"type\":\"Feature\",\"id\":%d,\"properties\":{\"name\": \"%s\",\"desig\": \"\",\"mag\": %.2f,\"bv\":-5},\"geometry\":{\"type\":\"Point\",\"coordinates\":[%.4f,%.4f]}}", sep, -ss_data[i].id, ss_data[i].name, mag, h2deg(ss_data[i].ra), ss_data[i].dec);
-		if (buffer_size - size < 1024) {
+		}
+		char name_esc[JSON_ESCAPE_BUFFER_SIZE];
+		json_escape(ss_data[i].name, name_esc, sizeof(name_esc));
+		size += snprintf(buffer + size, buffer_size - size, "%s{\"type\":\"Feature\",\"id\":%d,\"properties\":{\"name\": \"%s\",\"desig\": \"\",\"mag\": %.2f,\"bv\":-5},\"geometry\":{\"type\":\"Point\",\"coordinates\":[%.4f,%.4f]}}", sep, -ss_data[i].id, name_esc, mag, h2deg(ss_data[i].ra), ss_data[i].dec);
+		if (buffer_size - size < JSON_GROW_MARGIN) {
 			buffer = indigo_safe_realloc(buffer, buffer_size *= 2);
 		}
 	}
 
 
-	size += sprintf(buffer + size, "]}");
+	size += snprintf(buffer + size, buffer_size - size, "]}");
 	unsigned char *data = indigo_safe_malloc(buffer_size);
 	unsigned data_size = buffer_size;
-	indigo_compress("stars.json", buffer, size, data, &data_size);
+	indigo_uni_compress("stars.json", buffer, size, data, &data_size);
 	free(buffer);
 	indigo_server_add_resource("/data/stars.json", data, (int)data_size, "application/json; charset=utf-8");
 	return data;
@@ -568,189 +627,226 @@ static void *indigo_add_star_json_resource(int max_mag) {
 
 static void *indigo_add_dso_json_resource(int max_mag) {
 	int buffer_size = 1024 * 1024;
-	char *buffer =  malloc(buffer_size);
-	strcpy(buffer, "{\"type\":\"FeatureCollection\",\"features\": [");
-	unsigned size = (unsigned)strlen(buffer);
+	char *buffer = indigo_safe_malloc(buffer_size);
+	unsigned size = (unsigned)snprintf(buffer, buffer_size, "%s", "{\"type\":\"FeatureCollection\",\"features\": [");
 	char *sep = "";
 	indigocat_dso_entry *dso_data = indigocat_get_dso_data();
 	for (int i = 0; dso_data[i].id; i++) {
 		/* Filter by magnitude, but remove objects without name or mesier designation*/
-		if (
-			dso_data[i].mag > max_mag
-			|| dso_data[i].name[0] == '\0'
-			|| (dso_data[i].name[0] == 'I' && dso_data[i].name[1] == 'C')
-			//|| (dso_data[i].name[0] == 'N' && dso_data[i].name[1] == 'G' && dso_data[i].name[2] == 'C')
-		) continue;
-		size += sprintf(buffer + size, "%s{\"type\":\"Feature\",\"id\":\"%s\",\"properties\":{\"name\": \"%s\",\"desig\": \"%s\",\"type\":\"oc\",\"mag\": %.2f},\"geometry\":{\"type\":\"Point\",\"coordinates\":[%.4f,%.4f]}}", sep, dso_data[i].id, dso_data[i].id, dso_data[i].name, dso_data[i].mag, h2deg(dso_data[i].ra), dso_data[i].dec);
-		if (buffer_size - size < 1024) {
+		if (dso_data[i].mag > max_mag || dso_data[i].name[0] == '\0' || (dso_data[i].name[0] == 'I' && dso_data[i].name[1] == 'C')) {
+			continue;
+		}
+		char id_esc[JSON_ESCAPE_BUFFER_SIZE], name_esc[JSON_ESCAPE_BUFFER_SIZE];
+		json_escape(dso_data[i].id, id_esc, sizeof(id_esc));
+		json_escape(dso_data[i].name, name_esc, sizeof(name_esc));
+		size += snprintf(buffer + size, buffer_size - size, "%s{\"type\":\"Feature\",\"id\":\"%s\",\"properties\":{\"name\": \"%s\",\"desig\": \"%s\",\"type\":\"oc\",\"mag\": %.2f},\"geometry\":{\"type\":\"Point\",\"coordinates\":[%.4f,%.4f]}}", sep, id_esc, id_esc, name_esc, dso_data[i].mag, h2deg(dso_data[i].ra), dso_data[i].dec);
+		if (buffer_size - size < JSON_GROW_MARGIN) {
 			buffer = indigo_safe_realloc(buffer, buffer_size *= 2);
 		}
 		sep = ",";
 	}
-	size += sprintf(buffer + size, "]}");
+	size += snprintf(buffer + size, buffer_size - size, "]}");
 	unsigned char *data = indigo_safe_malloc(buffer_size);
 	unsigned data_size = buffer_size;
-	indigo_compress("stars.json", buffer, size, data, &data_size);
+	indigo_uni_compress("stars.json", buffer, size, data, &data_size);
 	free(buffer);
 	indigo_server_add_resource("/data/dsos.json", data, (int)data_size, "application/json; charset=utf-8");
 	return data;
 }
 
-static int add_multiline(char *buffer, ...) {
+static int add_multiline(char *buffer, size_t buffer_size, ...) {
 	int size = 0;
 	va_list ap;
-	va_start(ap, buffer);
+	va_start(ap, buffer_size);
 	char *sep = "";
 	indigocat_star_entry *star_data = indigocat_get_star_data();
 	static char *sep2 = "";
-	size += sprintf(buffer, "%s[", sep2);
+	size += snprintf(buffer, buffer_size, "%s[", sep2);
 	sep2 = ",";
 	for (int hip = va_arg(ap, int); hip; hip = va_arg(ap, int)) {
 		for (int i = 0; star_data[i].hip; i++) {
 			if (star_data[i].hip == hip) {
-				size += sprintf(buffer + size, "%s[%.4f,%.4f]", sep, h2deg(star_data[i].ra), star_data[i].dec);
+				size_t remaining = (size_t)size < buffer_size ? buffer_size - size : 0;
+				size += snprintf(buffer + size, remaining, "%s[%.4f,%.4f]", sep, h2deg(star_data[i].ra), star_data[i].dec);
 				sep = ",";
 				break;
 			}
 		}
 	}
-	size += sprintf(buffer + size, "]");
+	size_t remaining = (size_t)size < buffer_size ? buffer_size - size : 0;
+	size += snprintf(buffer + size, remaining, "]");
+	va_end(ap);
 	return size;
 }
 
 static void *indigo_add_constellations_lines_json_resource() {
 	int buffer_size = 1024 * 1024;
-	char *buffer =  malloc(buffer_size);
-	strcpy(buffer, "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"id\":\"Const\",\"properties\":{},\"geometry\":{\"type\":\"MultiLineString\",\"coordinates\":[");
-	unsigned size = (unsigned)strlen(buffer);
-	size += add_multiline(buffer + size, 25428, 20889, 20455, 20205, 20894, 21421, 26451, 0);
-	size += add_multiline(buffer + size, 114341, 113136, 112716, 112961, 111497, 110960, 110395, 109074, 106278, 102618, 0);
-	size += add_multiline(buffer + size, 78384, 76297, 75264, 74376, 74395, 0);
-	size += add_multiline(buffer + size, 71860, 73273, 75141, 75177, 0);
-	size += add_multiline(buffer + size, 76297, 75141, 0);
-	size += add_multiline(buffer + size, 76127, 75695, 76267, 76952, 77512, 78159, 0);
-	size += add_multiline(buffer + size, 93747, 97649, 98036, 99473, 97804, 95501, 93747, 0);
-	size += add_multiline(buffer + size, 97278, 97649, 95501, 93805, 0);
-	size += add_multiline(buffer + size, 93174, 93825, 94114, 94160, 94005, 93542, 0);
-	size += add_multiline(buffer + size, 76333, 74785, 72622, 73714, 0);
-	size += add_multiline(buffer + size, 93506, 93864, 92855, 92041, 90496, 89931, 90185, 89642, 0);
-	size += add_multiline(buffer + size, 89931, 88635, 0);
-	size += add_multiline(buffer + size, 90496, 89341, 0);
-	size += add_multiline(buffer + size, 92855, 93683, 94141, 0);
-	size += add_multiline(buffer + size, 93683, 93085, 0);
-	size += add_multiline(buffer + size, 7083, 6867, 2081, 5165, 7083, 0);
-	size += add_multiline(buffer + size, 100751, 102395, 98495, 91792, 86929, 92609, 99240, 102395, 0);
-	size += add_multiline(buffer + size, 98337, 97365, 96837, 0);
-	size += add_multiline(buffer + size, 97365, 96757, 0);
-	size += add_multiline(buffer + size, 81852, 81065, 80047, 72370, 0);
-	size += add_multiline(buffer + size, 14879, 13147, 0);
-	size += add_multiline(buffer + size, 42515, 42828, 43409, 0);
-	size += add_multiline(buffer + size, 19893, 21281, 26069, 0);
-	size += add_multiline(buffer + size, 75323, 71908, 74824, 0);
-	size += add_multiline(buffer + size, 11767, 85822, 82080, 77055, 72607, 75097, 79822, 77055, 0);
-	size += add_multiline(buffer + size, 7097, 8198, 9487, 8833, 7884, 7007, 5737, 4906, 3786, 118268, 116771, 115830, 114971, 0);
-	size += add_multiline(buffer + size, 8796, 10064, 10670, 8796, 0);
-	size += add_multiline(buffer + size, 64241, 64394, 60742, 0);
-	size += add_multiline(buffer + size, 25859, 26634, 27628, 28199, 30277, 0);
-	size += add_multiline(buffer + size, 67301, 65378, 62956, 59774, 58001, 53910, 54061, 59774, 0);
-	size += add_multiline(buffer + size, 58001, 57399, 54539, 50801, 0);
-	size += add_multiline(buffer + size, 54061, 46733, 41704, 0);
-	size += add_multiline(buffer + size, 46733, 48319, 46853, 44127, 0);
-	size += add_multiline(buffer + size, 74666, 72105, 69673, 71053, 71075, 73555, 74666, 0);
-	size += add_multiline(buffer + size, 67927, 69673, 0);
-	size += add_multiline(buffer + size, 101772, 102333, 103227, 100751, 0);
-	size += add_multiline(buffer + size, 44816, 39953, 42913, 44816, 45941, 42913, 0);
-	size += add_multiline(buffer + size, 110538, 111169, 110609, 111022, 110351, 0);
-	size += add_multiline(buffer + size, 63121, 61317, 0);
-	size += add_multiline(buffer + size, 28360, 28380, 25428, 23015, 23179, 23416, 24608, 28360, 0);
-	size += add_multiline(buffer + size, 91262, 91971, 92420, 93194, 92791, 91971, 0);
-	size += add_multiline(buffer + size, 45860, 45688, 44248, 41075, 0);
-	size += add_multiline(buffer + size, 90422, 90568, 0);
-	size += add_multiline(buffer + size, 92946, 89962, 88404, 88048, 86263, 84012, 0);
-	size += add_multiline(buffer + size, 77450, 77233, 78072, 0);
-	size += add_multiline(buffer + size, 77233, 76276, 77070, 77622, 79593, 0);
-	size += add_multiline(buffer + size, 17440, 19780, 19921, 18772, 18597, 17440, 0);
-	size += add_multiline(buffer + size, 24436, 24674, 25930, 25336, 0);
-	size += add_multiline(buffer + size, 27366, 26727, 27989, 0);
-	size += add_multiline(buffer + size, 26727, 26311, 25930, 0);
-	size += add_multiline(buffer + size, 111954, 113368, 113246, 112948, 111188, 0);
-	size += add_multiline(buffer + size, 14328, 15863, 17358, 18532, 18246, 0);
-	size += add_multiline(buffer + size, 15863, 14576, 0);
-	size += add_multiline(buffer + size, 40702, 51839, 52633, 0);
-	size += add_multiline(buffer + size, 82273, 77952, 76440, 74946, 82273, 0);
-	size += add_multiline(buffer + size, 44066, 42911, 42806, 43100, 0);
-	size += add_multiline(buffer + size, 42911, 40526, 0);
-	size += add_multiline(buffer + size, 8886, 6686, 4427, 3179, 746, 0);
-	size += add_multiline(buffer + size, 9236, 17678, 2021, 0);
-	size += add_multiline(buffer + size, 113881, 677, 1067, 113963, 0);
-	size += add_multiline(buffer + size, 107315, 109427, 112029, 112447, 113963, 113881, 112158, 0);
-	size += add_multiline(buffer + size, 45556, 48002, 45238, 50099, 52419, 51576, 50371, 45556, 41037, 30438, 0);
-	size += add_multiline(buffer + size, 53229, 51233, 0);
-	size += add_multiline(buffer + size, 100027, 100345, 101027, 102485, 102978, 104234, 105881, 106723, 107556, 106985, 105515, 104139, 100345, 0);
-	size += add_multiline(buffer + size, 9640, 5447, 3092, 677, 0);
-	size += add_multiline(buffer + size, 23522, 22783, 0);
-	size += add_multiline(buffer + size, 68895, 64962, 57936, 56343, 54682, 53740, 52943, 51069, 49841, 48356, 46390, 47431, 45336, 43813, 43109, 42313, 42402, 42799, 43234, 43109, 0);
-	size += add_multiline(buffer + size, 24305, 25985, 27288, 28103, 0);
-	size += add_multiline(buffer + size, 25985, 25606, 0);
-	size += add_multiline(buffer + size, 27654, 27072, 25606, 23685, 0);
-	size += add_multiline(buffer + size, 47908, 48455, 50335, 50583, 49583, 49669, 54879, 57632, 54872, 50583, 0);
-	size += add_multiline(buffer + size, 108085, 109111, 109908, 110997, 111043, 112122, 112623, 0);
-	size += add_multiline(buffer + size, 109268, 111043, 0);
-	size += add_multiline(buffer + size, 57380, 57757, 60129, 61941, 63090, 63608, 0);
-	size += add_multiline(buffer + size, 61941, 64238, 66249, 0);
-	size += add_multiline(buffer + size, 65474, 64238, 0);
-	size += add_multiline(buffer + size, 44382, 41312, 35228, 34473, 37504, 0);
-	size += add_multiline(buffer + size, 92175, 91117, 0);
-	size += add_multiline(buffer + size, 94779, 95853, 97165, 100453, 102488, 104732, 0);
-	size += add_multiline(buffer + size, 102098, 100453, 98110, 95947, 0);
-	size += add_multiline(buffer + size, 78820, 80112, 78265, 0);
-	size += add_multiline(buffer + size, 78401, 80112, 80763, 81266, 82396, 82514, 82729, 84143, 86228, 87073, 86670, 85927, 0);
-	size += add_multiline(buffer + size, 87808, 85112, 84380, 81833, 81126, 79992, 0);
-	size += add_multiline(buffer + size, 81833, 81693, 0);
-	size += add_multiline(buffer + size, 84380, 83207, 0);
-	size += add_multiline(buffer + size, 80170, 80816, 81693, 83207, 84379, 85693, 86974, 87933, 88794, 0);
-	size += add_multiline(buffer + size, 59316, 59803, 60965, 61359, 59316, 0);
-	size += add_multiline(buffer + size, 60718, 61084, 0);
-	size += add_multiline(buffer + size, 62434, 59747, 0);
-	size += add_multiline(buffer + size, 23875, 22109, 21444, 19587, 18543, 17378, 16537, 13701, 12770, 12843, 14146, 15474, 16611, 17651, 21393, 20535, 20042, 17797, 13847, 12486, 11407, 10602, 9007, 7588, 0);
-	size += add_multiline(buffer + size, 55705, 54682, 53740, 55282, 55705, 0);
-	size += add_multiline(buffer + size, 88048, 87108, 86742, 86032, 84345, 83000, 80883, 79593, 79882, 81377, 84012, 84970, 0);
-	size += add_multiline(buffer + size, 31681, 34088, 35550, 37826, 36850, 32246, 30343, 29655, 0);
-	size += add_multiline(buffer + size, 107089, 112405, 70638, 0);
-	size += add_multiline(buffer + size, 37279, 36188, 0);
-	size += add_multiline(buffer + size, 110130, 114996, 2484, 0);
-	size += add_multiline(buffer + size, 87585, 85819, 85670, 87833, 87585, 94376, 97433, 89937, 83895, 80331, 78527, 75458, 68756, 61281, 56211, 0);
-	size += add_multiline(buffer + size, 104987, 104858, 104521, 0);
-	size += add_multiline(buffer + size, 30324, 32349, 33977, 34444, 33856, 33579, 30122, 0);
-	size += add_multiline(buffer + size, 34444, 35904, 0);
-	size += add_multiline(buffer + size, 12706, 14135, 0);
-	size += add_multiline(buffer + size, 12828, 11484, 12706, 12387, 10826, 8645, 6537, 5364, 1562, 3419, 5364, 0);
-	size += add_multiline(buffer + size, 8645, 8102, 0);
-	size += add_multiline(buffer + size, 9884, 8903, 8832, 0);
-	size += add_multiline(buffer + size, 101421, 101769, 102281, 102532, 101958, 101769, 0);
-	size += add_multiline(buffer + size, 32768, 31685, 35264, 39429, 36377, 32768, 0);
-	size += add_multiline(buffer + size, 39757, 38835, 38170, 37229, 36917, 35264, 0);
-	size += add_multiline(buffer + size, 102422, 105199, 106032, 116727, 112724, 110991, 109492, 105199, 0);
-	size += add_multiline(buffer + size, 32607, 27530, 27321, 0);
-	size += add_multiline(buffer + size, 71683, 68702, 66657, 68002, 67472, 67464, 68933, 71352, 73334, 0);
-	size += add_multiline(buffer + size, 66657, 61932, 59196, 0);
-	size += add_multiline(buffer + size, 67464, 65109, 0);
-	size += add_multiline(buffer + size, 80582, 80000, 0);
-	size += add_multiline(buffer + size, 85727, 85267, 85258, 85792, 0);
-	size += add_multiline(buffer + size, 83153, 83081, 82363, 0);
-	size += add_multiline(buffer + size, 83081, 85258, 0);
-	size += add_multiline(buffer + size, 37447, 34769, 30867, 29651, 0);
-	size += add_multiline(buffer + size, 61585, 61199, 63613, 62322, 61585, 59929, 57363, 0);
-	size += sprintf(buffer + size, "]}}]}");
+	char *buffer = indigo_safe_malloc(buffer_size);
+	unsigned size = (unsigned)snprintf(buffer, buffer_size, "%s", "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"id\":\"Const\",\"properties\":{},\"geometry\":{\"type\":\"MultiLineString\",\"coordinates\":[");
+	size += add_multiline(buffer + size, buffer_size - size,25428, 20889, 20455, 20205, 20894, 21421, 26451, 0);
+	size += add_multiline(buffer + size, buffer_size - size,114341, 113136, 112716, 112961, 111497, 110960, 110395, 109074, 106278, 102618, 0);
+	size += add_multiline(buffer + size, buffer_size - size,78384, 76297, 75264, 74376, 74395, 0);
+	size += add_multiline(buffer + size, buffer_size - size,71860, 73273, 75141, 75177, 0);
+	size += add_multiline(buffer + size, buffer_size - size,76297, 75141, 0);
+	size += add_multiline(buffer + size, buffer_size - size,76127, 75695, 76267, 76952, 77512, 78159, 0);
+	size += add_multiline(buffer + size, buffer_size - size,93747, 97649, 98036, 99473, 97804, 95501, 93747, 0);
+	size += add_multiline(buffer + size, buffer_size - size,97278, 97649, 95501, 93805, 0);
+	size += add_multiline(buffer + size, buffer_size - size,93174, 93825, 94114, 94160, 94005, 93542, 0);
+	size += add_multiline(buffer + size, buffer_size - size,76333, 74785, 72622, 73714, 0);
+	size += add_multiline(buffer + size, buffer_size - size,93506, 93864, 92855, 92041, 90496, 89931, 90185, 89642, 0);
+	size += add_multiline(buffer + size, buffer_size - size,89931, 88635, 0);
+	size += add_multiline(buffer + size, buffer_size - size,90496, 89341, 0);
+	size += add_multiline(buffer + size, buffer_size - size,92855, 93683, 94141, 0);
+	size += add_multiline(buffer + size, buffer_size - size,93683, 93085, 0);
+	size += add_multiline(buffer + size, buffer_size - size,7083, 6867, 2081, 5165, 7083, 0);
+	size += add_multiline(buffer + size, buffer_size - size,100751, 102395, 98495, 91792, 86929, 92609, 99240, 102395, 0);
+	size += add_multiline(buffer + size, buffer_size - size,98337, 97365, 96837, 0);
+	size += add_multiline(buffer + size, buffer_size - size,97365, 96757, 0);
+	size += add_multiline(buffer + size, buffer_size - size,81852, 81065, 80047, 72370, 0);
+	size += add_multiline(buffer + size, buffer_size - size,14879, 13147, 0);
+	size += add_multiline(buffer + size, buffer_size - size,42515, 42828, 43409, 0);
+	size += add_multiline(buffer + size, buffer_size - size,19893, 21281, 26069, 0);
+	size += add_multiline(buffer + size, buffer_size - size,75323, 71908, 74824, 0);
+	size += add_multiline(buffer + size, buffer_size - size,11767, 85822, 82080, 77055, 72607, 75097, 79822, 77055, 0);
+	size += add_multiline(buffer + size, buffer_size - size,7097, 8198, 9487, 8833, 7884, 7007, 5737, 4906, 3786, 118268, 116771, 115830, 114971, 0);
+	size += add_multiline(buffer + size, buffer_size - size,8796, 10064, 10670, 8796, 0);
+	size += add_multiline(buffer + size, buffer_size - size,64241, 64394, 60742, 0);
+	size += add_multiline(buffer + size, buffer_size - size,25859, 26634, 27628, 28199, 30277, 0);
+	size += add_multiline(buffer + size, buffer_size - size,67301, 65378, 62956, 59774, 58001, 53910, 54061, 59774, 0);
+	size += add_multiline(buffer + size, buffer_size - size,58001, 57399, 54539, 50801, 0);
+	size += add_multiline(buffer + size, buffer_size - size,54061, 46733, 41704, 0);
+	size += add_multiline(buffer + size, buffer_size - size,46733, 48319, 46853, 44127, 0);
+	size += add_multiline(buffer + size, buffer_size - size,74666, 72105, 69673, 71053, 71075, 73555, 74666, 0);
+	size += add_multiline(buffer + size, buffer_size - size,67927, 69673, 0);
+	size += add_multiline(buffer + size, buffer_size - size,101772, 102333, 103227, 100751, 0);
+	size += add_multiline(buffer + size, buffer_size - size,44816, 39953, 42913, 44816, 45941, 42913, 0);
+	size += add_multiline(buffer + size, buffer_size - size,110538, 111169, 110609, 111022, 110351, 0);
+	size += add_multiline(buffer + size, buffer_size - size,63121, 61317, 0);
+	size += add_multiline(buffer + size, buffer_size - size,28360, 28380, 25428, 23015, 23179, 23416, 24608, 28360, 0);
+	size += add_multiline(buffer + size, buffer_size - size,91262, 91971, 92420, 93194, 92791, 91971, 0);
+	size += add_multiline(buffer + size, buffer_size - size,45860, 45688, 44248, 41075, 0);
+	size += add_multiline(buffer + size, buffer_size - size,90422, 90568, 0);
+	size += add_multiline(buffer + size, buffer_size - size,92946, 89962, 88404, 88048, 86263, 84012, 0);
+	size += add_multiline(buffer + size, buffer_size - size,77450, 77233, 78072, 0);
+	size += add_multiline(buffer + size, buffer_size - size,77233, 76276, 77070, 77622, 79593, 0);
+	size += add_multiline(buffer + size, buffer_size - size,17440, 19780, 19921, 18772, 18597, 17440, 0);
+	size += add_multiline(buffer + size, buffer_size - size,24436, 24674, 25930, 25336, 0);
+	size += add_multiline(buffer + size, buffer_size - size,27366, 26727, 27989, 0);
+	size += add_multiline(buffer + size, buffer_size - size,26727, 26311, 25930, 0);
+	size += add_multiline(buffer + size, buffer_size - size,111954, 113368, 113246, 112948, 111188, 0);
+	size += add_multiline(buffer + size, buffer_size - size,14328, 15863, 17358, 18532, 18246, 0);
+	size += add_multiline(buffer + size, buffer_size - size,15863, 14576, 0);
+	size += add_multiline(buffer + size, buffer_size - size,40702, 51839, 52633, 0);
+	size += add_multiline(buffer + size, buffer_size - size,82273, 77952, 76440, 74946, 82273, 0);
+	size += add_multiline(buffer + size, buffer_size - size,44066, 42911, 42806, 43100, 0);
+	size += add_multiline(buffer + size, buffer_size - size,42911, 40526, 0);
+	size += add_multiline(buffer + size, buffer_size - size,8886, 6686, 4427, 3179, 746, 0);
+	size += add_multiline(buffer + size, buffer_size - size,9236, 17678, 2021, 0);
+	size += add_multiline(buffer + size, buffer_size - size,113881, 677, 1067, 113963, 0);
+	size += add_multiline(buffer + size, buffer_size - size,107315, 109427, 112029, 112447, 113963, 113881, 112158, 0);
+	size += add_multiline(buffer + size, buffer_size - size,45556, 48002, 45238, 50099, 52419, 51576, 50371, 45556, 41037, 30438, 0);
+	size += add_multiline(buffer + size, buffer_size - size,53229, 51233, 0);
+	size += add_multiline(buffer + size, buffer_size - size,100027, 100345, 101027, 102485, 102978, 104234, 105881, 106723, 107556, 106985, 105515, 104139, 100345, 0);
+	size += add_multiline(buffer + size, buffer_size - size,9640, 5447, 3092, 677, 0);
+	size += add_multiline(buffer + size, buffer_size - size,23522, 22783, 0);
+	size += add_multiline(buffer + size, buffer_size - size,68895, 64962, 57936, 56343, 54682, 53740, 52943, 51069, 49841, 48356, 46390, 47431, 45336, 43813, 43109, 42313, 42402, 42799, 43234, 43109, 0);
+	size += add_multiline(buffer + size, buffer_size - size,24305, 25985, 27288, 28103, 0);
+	size += add_multiline(buffer + size, buffer_size - size,25985, 25606, 0);
+	size += add_multiline(buffer + size, buffer_size - size,27654, 27072, 25606, 23685, 0);
+	size += add_multiline(buffer + size, buffer_size - size,47908, 48455, 50335, 50583, 49583, 49669, 54879, 57632, 54872, 50583, 0);
+	size += add_multiline(buffer + size, buffer_size - size,108085, 109111, 109908, 110997, 111043, 112122, 112623, 0);
+	size += add_multiline(buffer + size, buffer_size - size,109268, 111043, 0);
+	size += add_multiline(buffer + size, buffer_size - size,57380, 57757, 60129, 61941, 63090, 63608, 0);
+	size += add_multiline(buffer + size, buffer_size - size,61941, 64238, 66249, 0);
+	size += add_multiline(buffer + size, buffer_size - size,65474, 64238, 0);
+	size += add_multiline(buffer + size, buffer_size - size,44382, 41312, 35228, 34473, 37504, 0);
+	size += add_multiline(buffer + size, buffer_size - size,92175, 91117, 0);
+	size += add_multiline(buffer + size, buffer_size - size,94779, 95853, 97165, 100453, 102488, 104732, 0);
+	size += add_multiline(buffer + size, buffer_size - size,102098, 100453, 98110, 95947, 0);
+	size += add_multiline(buffer + size, buffer_size - size,78820, 80112, 78265, 0);
+	size += add_multiline(buffer + size, buffer_size - size,78401, 80112, 80763, 81266, 82396, 82514, 82729, 84143, 86228, 87073, 86670, 85927, 0);
+	size += add_multiline(buffer + size, buffer_size - size,87808, 85112, 84380, 81833, 81126, 79992, 0);
+	size += add_multiline(buffer + size, buffer_size - size,81833, 81693, 0);
+	size += add_multiline(buffer + size, buffer_size - size,84380, 83207, 0);
+	size += add_multiline(buffer + size, buffer_size - size,80170, 80816, 81693, 83207, 84379, 85693, 86974, 87933, 88794, 0);
+	size += add_multiline(buffer + size, buffer_size - size,59316, 59803, 60965, 61359, 59316, 0);
+	size += add_multiline(buffer + size, buffer_size - size,60718, 61084, 0);
+	size += add_multiline(buffer + size, buffer_size - size,62434, 59747, 0);
+	size += add_multiline(buffer + size, buffer_size - size,23875, 22109, 21444, 19587, 18543, 17378, 16537, 13701, 12770, 12843, 14146, 15474, 16611, 17651, 21393, 20535, 20042, 17797, 13847, 12486, 11407, 10602, 9007, 7588, 0);
+	size += add_multiline(buffer + size, buffer_size - size,55705, 54682, 53740, 55282, 55705, 0);
+	size += add_multiline(buffer + size, buffer_size - size,88048, 87108, 86742, 86032, 84345, 83000, 80883, 79593, 79882, 81377, 84012, 84970, 0);
+	size += add_multiline(buffer + size, buffer_size - size,31681, 34088, 35550, 37826, 36850, 32246, 30343, 29655, 0);
+	size += add_multiline(buffer + size, buffer_size - size,107089, 112405, 70638, 0);
+	size += add_multiline(buffer + size, buffer_size - size,37279, 36188, 0);
+	size += add_multiline(buffer + size, buffer_size - size,110130, 114996, 2484, 0);
+	size += add_multiline(buffer + size, buffer_size - size,87585, 85819, 85670, 87833, 87585, 94376, 97433, 89937, 83895, 80331, 78527, 75458, 68756, 61281, 56211, 0);
+	size += add_multiline(buffer + size, buffer_size - size,104987, 104858, 104521, 0);
+	size += add_multiline(buffer + size, buffer_size - size,30324, 32349, 33977, 34444, 33856, 33579, 30122, 0);
+	size += add_multiline(buffer + size, buffer_size - size,34444, 35904, 0);
+	size += add_multiline(buffer + size, buffer_size - size,12706, 14135, 0);
+	size += add_multiline(buffer + size, buffer_size - size,12828, 11484, 12706, 12387, 10826, 8645, 6537, 5364, 1562, 3419, 5364, 0);
+	size += add_multiline(buffer + size, buffer_size - size,8645, 8102, 0);
+	size += add_multiline(buffer + size, buffer_size - size,9884, 8903, 8832, 0);
+	size += add_multiline(buffer + size, buffer_size - size,101421, 101769, 102281, 102532, 101958, 101769, 0);
+	size += add_multiline(buffer + size, buffer_size - size,32768, 31685, 35264, 39429, 36377, 32768, 0);
+	size += add_multiline(buffer + size, buffer_size - size,39757, 38835, 38170, 37229, 36917, 35264, 0);
+	size += add_multiline(buffer + size, buffer_size - size,102422, 105199, 106032, 116727, 112724, 110991, 109492, 105199, 0);
+	size += add_multiline(buffer + size, buffer_size - size,32607, 27530, 27321, 0);
+	size += add_multiline(buffer + size, buffer_size - size,71683, 68702, 66657, 68002, 67472, 67464, 68933, 71352, 73334, 0);
+	size += add_multiline(buffer + size, buffer_size - size,66657, 61932, 59196, 0);
+	size += add_multiline(buffer + size, buffer_size - size,67464, 65109, 0);
+	size += add_multiline(buffer + size, buffer_size - size,80582, 80000, 0);
+	size += add_multiline(buffer + size, buffer_size - size,85727, 85267, 85258, 85792, 0);
+	size += add_multiline(buffer + size, buffer_size - size,83153, 83081, 82363, 0);
+	size += add_multiline(buffer + size, buffer_size - size,83081, 85258, 0);
+	size += add_multiline(buffer + size, buffer_size - size,37447, 34769, 30867, 29651, 0);
+	size += add_multiline(buffer + size, buffer_size - size,61585, 61199, 63613, 62322, 61585, 59929, 57363, 0);
+	size += snprintf(buffer + size, buffer_size - size, "]}}]}");
 	unsigned char *data = indigo_safe_malloc(buffer_size);
 	unsigned data_size = buffer_size;
-	indigo_compress("constellations.lines.json", buffer, size, data, &data_size);
+	indigo_uni_compress("constellations.lines.json", buffer, size, data, &data_size);
 	free(buffer);
 	indigo_server_add_resource("/data/constellations.lines.json", data, (int)data_size, "application/json; charset=utf-8");
 	return data;
 }
+#endif
 
 #ifdef RPI_MANAGEMENT
+// Quote arg as a single POSIX shell token so client-supplied property text (SSID, password,
+// country code, host time) cannot inject shell metacharacters into the popen() command string.
+// The token is wrapped in single quotes and every embedded single quote is rewritten as '\''.
+// A worst-case value expands by 4x, so callers must size output as INDIGO_VALUE_SIZE * 4 + 3.
+// On overflow the token is truncated but stays balanced, so the command fails rather than injects.
+static char *shell_escape(const char *input, char *output, size_t output_size) {
+	size_t j = 0;
+	if (output_size == 0) {
+		return output;
+	}
+	if (j < output_size - 1) {
+		output[j++] = '\'';
+	}
+	for (const char *p = input; *p; p++) {
+		if (*p == '\'') {
+			if (j + 4 > output_size - 1) {
+				break;
+			}
+			output[j++] = '\'';
+			output[j++] = '\\';
+			output[j++] = '\'';
+			output[j++] = '\'';
+		} else {
+			if (j >= output_size - 1) {
+				break;
+			}
+			output[j++] = *p;
+		}
+	}
+	if (j < output_size - 1) {
+		output[j++] = '\'';
+	}
+	output[j] = 0;
+	return output;
+}
 
 static indigo_result execute_command(indigo_device *device, indigo_property *property, char *command, ...) {
 	char buffer[1024];
@@ -766,8 +862,9 @@ static indigo_result execute_command(indigo_device *device, indigo_property *pro
 		size_t size = 0;
 		if (getline(&line, &size, output) >= 0) {
 			char *nl = strchr(line, '\n');
-			if (nl)
+			if (nl) {
 				*nl = 0;
+			}
 			if (!strncmp(line, "ALERT", 5)) {
 				property->state = INDIGO_ALERT_STATE;
 				char *message = strchr(line, ':');
@@ -781,8 +878,9 @@ static indigo_result execute_command(indigo_device *device, indigo_property *pro
 			property->state = INDIGO_ALERT_STATE;
 			indigo_update_property(device, property, "No reply from rpi_ctrl.sh");
 		}
-		if (line)
+		if (line) {
 			free(line);
+		}
 		pclose(output);
 
 		return INDIGO_OK;
@@ -804,8 +902,9 @@ static char *execute_query(char *command, ...) {
 		size_t size = 0;
 		if (getline(&line, &size, output) >= 0) {
 			char *nl = strchr(line, '\n');
-			if (nl)
+			if (nl) {
 				*nl = 0;
+			}
 			pclose(output);
 			return line;
 		}
@@ -824,27 +923,31 @@ static void check_versions(indigo_device *device) {
 				redefine = true;
 			}
 			pthread_mutex_lock(&install_property_mutex);
-			if (redefine)
+			if (redefine) {
 				indigo_release_property(SERVER_INSTALL_PROPERTY);
+			}
 			SERVER_INSTALL_PROPERTY = indigo_init_switch_property(NULL, server_device.name, SERVER_INSTALL_PROPERTY_NAME, MAIN_GROUP, "Available versions", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 10);
 			SERVER_INSTALL_PROPERTY->count = 0;
 			char *pnt, *versions[10] = { strtok_r(line, " ", &pnt) };
 			int count = 1;
 			while ((versions[count] = strtok_r(NULL, " ", &pnt))) {
-				if (count == 9)
+				if (count == 9) {
 					count = 1;
-				else
+				} else {
 					count++;
+				}
 			}
 			for (int i = 0; i < count; i++) {
 				int smallest = 100000;
 				int ii = 0;
 				for (int j = 0; j < count; j++) {
-					if (versions[j] == NULL)
+					if (versions[j] == NULL) {
 						continue;
+					}
 					char *build = strchr(versions[j], '-');
-					if (build == NULL)
+					if (build == NULL) {
 						continue;
+					}
 					int build_number = atoi(build + 1);
 					if (build_number < smallest) {
 						smallest = build_number;
@@ -858,10 +961,11 @@ static void check_versions(indigo_device *device) {
 			}
 			pthread_mutex_unlock(&install_property_mutex);
 			free(line);
-			if (redefine)
+			if (redefine) {
 				indigo_define_property(device, SERVER_INSTALL_PROPERTY, NULL);
+			}
 		}
-		indigo_usleep(10 * 60 * ONE_SECOND_DELAY);
+		indigo_sleep(10 * 60);
 	}
 }
 
@@ -877,11 +981,11 @@ static void update_wifi_setings(indigo_device *device) {
 		} else {
 			char *pnt, *token = strtok_r(line, "\t", &pnt);
 			if (token) {
-				indigo_copy_value(SERVER_WIFI_AP_SSID_ITEM->text.value, token);
+				INDIGO_COPY_VALUE(SERVER_WIFI_AP_SSID_ITEM->text.value, token);
 			}
 			token = strtok_r(NULL, "\t", &pnt);
 			if (token) {
-				indigo_copy_value(SERVER_WIFI_AP_PASSWORD_ITEM->text.value, token);
+				INDIGO_COPY_VALUE(SERVER_WIFI_AP_PASSWORD_ITEM->text.value, token);
 			} else {
 				SERVER_WIFI_AP_PASSWORD_ITEM->text.value[0] = '\0';
 			}
@@ -904,7 +1008,7 @@ static void update_wifi_setings(indigo_device *device) {
 		} else {
 			char *pnt, *token = strtok_r(line, "\t", &pnt);
 			if (token) {
-				indigo_copy_value(SERVER_WIFI_INFRASTRUCTURE_SSID_ITEM->text.value, token);
+				INDIGO_COPY_VALUE(SERVER_WIFI_INFRASTRUCTURE_SSID_ITEM->text.value, token);
 				SERVER_WIFI_INFRASTRUCTURE_PASSWORD_ITEM->text.value[0] = '\0';
 			}
 		}
@@ -938,7 +1042,7 @@ static void update_wifi_setings(indigo_device *device) {
 			INDIGO_ERROR(indigo_error("%s", line));
 			SERVER_WIFI_COUNTRY_CODE_PROPERTY->state=INDIGO_ALERT_STATE;
 		} else {
-			indigo_copy_value(SERVER_WIFI_COUNTRY_CODE_ITEM->text.value, line);
+			INDIGO_COPY_VALUE(SERVER_WIFI_COUNTRY_CODE_ITEM->text.value, line);
 		}
 		free(line);
 	} else {
@@ -966,10 +1070,12 @@ static indigo_result attach(indigo_device *device) {
 	SERVER_DRIVERS_PROPERTY = indigo_init_switch_property(NULL, server_device.name, SERVER_DRIVERS_PROPERTY_NAME, MAIN_GROUP, "Available drivers", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, INDIGO_MAX_DRIVERS);
 	SERVER_DRIVERS_PROPERTY->count = 0;
 	for (int i = 0; i < INDIGO_MAX_DRIVERS; i++)
-		if (indigo_available_drivers[i].driver != NULL)
+		if (indigo_available_drivers[i].driver != NULL) {
 			indigo_init_switch_item(&SERVER_DRIVERS_PROPERTY->items[SERVER_DRIVERS_PROPERTY->count++], indigo_available_drivers[i].name, indigo_available_drivers[i].description, indigo_available_drivers[i].initialized);
-	for (int i = 0; i < dynamic_drivers_count && SERVER_DRIVERS_PROPERTY->count < INDIGO_MAX_DRIVERS; i++)
+		}
+	for (int i = 0; i < dynamic_drivers_count && SERVER_DRIVERS_PROPERTY->count < INDIGO_MAX_DRIVERS; i++) {
 		indigo_init_switch_item(&SERVER_DRIVERS_PROPERTY->items[SERVER_DRIVERS_PROPERTY->count++], dynamic_drivers[i].name, dynamic_drivers[i].description, false);
+	}
 	indigo_property_sort_items(SERVER_DRIVERS_PROPERTY, 0);
 	SERVER_SERVERS_PROPERTY = indigo_init_light_property(NULL, server_device.name, SERVER_SERVERS_PROPERTY_NAME, MAIN_GROUP, "Configured servers", INDIGO_OK_STATE, 2 * INDIGO_MAX_SERVERS);
 	SERVER_SERVERS_PROPERTY->count = 0;
@@ -977,19 +1083,22 @@ static indigo_result attach(indigo_device *device) {
 		indigo_server_entry *entry = indigo_available_servers + i;
 		if (*entry->host) {
 			char buf[INDIGO_NAME_SIZE];
-			if (entry->port == 7624)
+			if (entry->port == 7624) {
 				strncpy(buf, entry->host, sizeof(buf));
-			else
+			} else {
 				snprintf(buf, sizeof(buf), "%s:%d", entry->host, entry->port);
+			}
 			indigo_init_light_item(&SERVER_SERVERS_PROPERTY->items[SERVER_SERVERS_PROPERTY->count++], buf, buf, INDIGO_OK_STATE);
 		}
 	}
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
 	for (int i = 0; i < INDIGO_MAX_SERVERS; i++) {
 		indigo_subprocess_entry *entry = indigo_available_subprocesses + i;
 		if (*entry->executable) {
 			indigo_init_light_item(&SERVER_SERVERS_PROPERTY->items[SERVER_SERVERS_PROPERTY->count++], entry->executable, entry->executable, INDIGO_OK_STATE);
 		}
 	}
+#endif
 	indigo_property_sort_items(SERVER_SERVERS_PROPERTY, 0);
 	SERVER_LOAD_PROPERTY = indigo_init_text_property(NULL, server_device.name, SERVER_LOAD_PROPERTY_NAME, MAIN_GROUP, "Load driver", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
 	indigo_init_text_item(SERVER_LOAD_ITEM, SERVER_LOAD_ITEM_NAME, "Load driver", "");
@@ -1081,36 +1190,38 @@ static indigo_result attach(indigo_device *device) {
 		default:
 			break;
 	}
-	if (!command_line_drivers)
+	if (!command_line_drivers) {
 		indigo_load_properties(device, false);
+	}
 	INDIGO_LOG(indigo_log("%s attached", device->name));
 	return INDIGO_OK;
 }
 
 static indigo_result enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	assert(device != NULL);
-	indigo_define_property(device, SERVER_INFO_PROPERTY, NULL);
-	indigo_define_property(device, SERVER_DRIVERS_PROPERTY, NULL);
-	if (SERVER_SERVERS_PROPERTY->count > 0)
-		indigo_define_property(device, SERVER_SERVERS_PROPERTY, NULL);
-	indigo_define_property(device, SERVER_LOAD_PROPERTY, NULL);
-	indigo_define_property(device, SERVER_UNLOAD_PROPERTY, NULL);
-	indigo_define_property(device, SERVER_RESTART_PROPERTY, NULL);
-	indigo_define_property(device, SERVER_LOG_LEVEL_PROPERTY, NULL);
-	indigo_define_property(device, SERVER_BLOB_BUFFERING_PROPERTY, NULL);
-	indigo_define_property(device, SERVER_BLOB_PROXY_PROPERTY, NULL);
-	indigo_define_property(device, SERVER_FEATURES_PROPERTY, NULL);
+	INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_INFO_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_DRIVERS_PROPERTY);
+	if (SERVER_SERVERS_PROPERTY->count > 0) {
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_SERVERS_PROPERTY);
+	}
+	INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_LOAD_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_UNLOAD_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_RESTART_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_LOG_LEVEL_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_BLOB_BUFFERING_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_BLOB_PROXY_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_FEATURES_PROPERTY);
 #ifdef RPI_MANAGEMENT
 	if (use_rpi_management) {
-		indigo_define_property(device, SERVER_WIFI_COUNTRY_CODE_PROPERTY, NULL);
-		indigo_define_property(device, SERVER_WIFI_AP_PROPERTY, NULL);
-		indigo_define_property(device, SERVER_WIFI_INFRASTRUCTURE_PROPERTY, NULL);
-		indigo_define_property(device, SERVER_WIFI_CHANNEL_PROPERTY, NULL);
-		indigo_define_property(device, SERVER_INTERNET_SHARING_PROPERTY, NULL);
-		indigo_define_property(device, SERVER_HOST_TIME_PROPERTY, NULL);
-		indigo_define_property(device, SERVER_SHUTDOWN_PROPERTY, NULL);
-		indigo_define_property(device, SERVER_REBOOT_PROPERTY, NULL);
-		indigo_define_property(device, SERVER_INSTALL_PROPERTY, NULL);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_WIFI_COUNTRY_CODE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_WIFI_AP_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_WIFI_INFRASTRUCTURE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_WIFI_CHANNEL_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_INTERNET_SHARING_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_HOST_TIME_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_SHUTDOWN_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_REBOOT_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SERVER_INSTALL_PROPERTY);
 	}
 #endif /* RPI_MANAGEMENT */
 	return INDIGO_OK;
@@ -1118,11 +1229,11 @@ static indigo_result enumerate_properties(indigo_device *device, indigo_client *
 
 static void send_driver_load_error_message(indigo_result result, char *driver_name) {
 	if (result == INDIGO_UNSUPPORTED_ARCH) {
-		indigo_send_message(&server_device, "Driver '%s' failed to load: not supported on this architecture", driver_name);
+		indigo_send_message(&server_device, ALERT_PROPERTY, "Driver '%s' failed to load: not supported on this architecture", driver_name);
 	} else if (result == INDIGO_UNRESOLVED_DEPS) {
-		indigo_send_message(&server_device, "Driver '%s' failed to load: unresolved dependencies", driver_name);
+		indigo_send_message(&server_device, ALERT_PROPERTY, "Driver '%s' failed to load: unresolved dependencies", driver_name);
 	} else if (result != INDIGO_OK){
-		indigo_send_message(&server_device, "Driver '%s' failed to load", driver_name);
+		indigo_send_message(&server_device, ALERT_PROPERTY, "Driver '%s' failed to load", driver_name);
 	}
 }
 
@@ -1168,8 +1279,9 @@ static indigo_result change_property(indigo_device *device, indigo_client *clien
 						indigo_result result = driver->driver(INDIGO_DRIVER_INIT, NULL);
 						SERVER_DRIVERS_PROPERTY->items[i].sw.value = driver->initialized = result == INDIGO_OK;
 						send_driver_load_error_message(result, driver->name);
-						if (driver && !driver->initialized)
+						if (driver && !driver->initialized) {
 							indigo_remove_driver(driver);
+						}
 					}
 				} else {
 					indigo_result result = indigo_load_driver(name, true, &driver);
@@ -1196,26 +1308,26 @@ static indigo_result change_property(indigo_device *device, indigo_client *clien
 				}
 				if (result != INDIGO_OK) {
 					if (result == INDIGO_BUSY) {
-						indigo_send_message(device, "Driver %s is in use, can't be unloaded", name);
+						indigo_send_message(device, ALERT_PROPERTY, "Driver %s is in use, can't be unloaded", name);
 					} else {
-						indigo_send_message(device, "Driver %s failed to unload", name);
+						indigo_send_message(device, ALERT_PROPERTY, "Driver %s failed to unload", name);
 					}
 				}
 			}
 		}
 		SERVER_DRIVERS_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, SERVER_DRIVERS_PROPERTY, NULL);
-		int handle = 0;
+		indigo_uni_handle *handle = { 0 };
 		if (!command_line_drivers) {
 			indigo_save_property(device, &handle, SERVER_DRIVERS_PROPERTY);
-			close(handle);
+			indigo_uni_close(&handle);
 		}
 		return INDIGO_OK;
 	} else if (indigo_property_match(SERVER_LOAD_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- LOAD
 		indigo_property_copy_values(SERVER_LOAD_PROPERTY, property, false);
 		if (*SERVER_LOAD_ITEM->text.value) {
-			char *name = basename(SERVER_LOAD_ITEM->text.value);
+			char *name = indigo_uni_basename(SERVER_LOAD_ITEM->text.value);
 			for (int i = 0; i < INDIGO_MAX_DRIVERS; i++)
 				if (!strcmp(name, indigo_available_drivers[i].name)) {
 					SERVER_LOAD_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -1257,7 +1369,7 @@ static indigo_result change_property(indigo_device *device, indigo_client *clien
 		// -------------------------------------------------------------------------------- UNLOAD
 		indigo_property_copy_values(SERVER_UNLOAD_PROPERTY, property, false);
 		if (*SERVER_UNLOAD_ITEM->text.value) {
-			char *name = basename(SERVER_UNLOAD_ITEM->text.value);
+			char *name = indigo_uni_basename(SERVER_UNLOAD_ITEM->text.value);
 			for (int i = 0; i < INDIGO_MAX_DRIVERS; i++)
 				if (!strcmp(name, indigo_available_drivers[i].name)) {
 					indigo_result result;
@@ -1335,19 +1447,22 @@ static indigo_result change_property(indigo_device *device, indigo_client *clien
 	} else if (indigo_property_match(SERVER_WIFI_COUNTRY_CODE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- WIFI_COUNTRY_CODE
 		indigo_property_copy_values(SERVER_WIFI_COUNTRY_CODE_PROPERTY, property, false);
-		execute_command(device, SERVER_WIFI_COUNTRY_CODE_PROPERTY, "s_rpi_ctrl.sh --set-wifi-country-code \"%s\"", SERVER_WIFI_COUNTRY_CODE_ITEM->text.value);
+		char country_code[INDIGO_VALUE_SIZE * 4 + 3];
+		execute_command(device, SERVER_WIFI_COUNTRY_CODE_PROPERTY, "s_rpi_ctrl.sh --set-wifi-country-code %s", shell_escape(SERVER_WIFI_COUNTRY_CODE_ITEM->text.value, country_code, sizeof(country_code)));
 		update_wifi_setings(device);
 		return INDIGO_OK;
 	} else if (indigo_property_match(SERVER_WIFI_AP_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- WIFI_AP
 		indigo_property_copy_values(SERVER_WIFI_AP_PROPERTY, property, false);
-		execute_command(device, SERVER_WIFI_AP_PROPERTY, "s_rpi_ctrl.sh --set-wifi-server \"%s\" \"%s\"", SERVER_WIFI_AP_SSID_ITEM->text.value, SERVER_WIFI_AP_PASSWORD_ITEM->text.value);
+		char ap_ssid[INDIGO_VALUE_SIZE * 4 + 3], ap_password[INDIGO_VALUE_SIZE * 4 + 3];
+		execute_command(device, SERVER_WIFI_AP_PROPERTY, "s_rpi_ctrl.sh --set-wifi-server %s %s", shell_escape(SERVER_WIFI_AP_SSID_ITEM->text.value, ap_ssid, sizeof(ap_ssid)), shell_escape(SERVER_WIFI_AP_PASSWORD_ITEM->text.value, ap_password, sizeof(ap_password)));
 		update_wifi_setings(device);
 		return INDIGO_OK;
 	} else if (indigo_property_match(SERVER_WIFI_INFRASTRUCTURE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- WIFI_INFRASTRUCTURE
 		indigo_property_copy_values(SERVER_WIFI_INFRASTRUCTURE_PROPERTY, property, false);
-		execute_command(device, SERVER_WIFI_INFRASTRUCTURE_PROPERTY, "s_rpi_ctrl.sh --set-wifi-client \"%s\" \"%s\"", SERVER_WIFI_INFRASTRUCTURE_SSID_ITEM->text.value, SERVER_WIFI_INFRASTRUCTURE_PASSWORD_ITEM->text.value);
+		char infra_ssid[INDIGO_VALUE_SIZE * 4 + 3], infra_password[INDIGO_VALUE_SIZE * 4 + 3];
+		execute_command(device, SERVER_WIFI_INFRASTRUCTURE_PROPERTY, "s_rpi_ctrl.sh --set-wifi-client %s %s", shell_escape(SERVER_WIFI_INFRASTRUCTURE_SSID_ITEM->text.value, infra_ssid, sizeof(infra_ssid)), shell_escape(SERVER_WIFI_INFRASTRUCTURE_PASSWORD_ITEM->text.value, infra_password, sizeof(infra_password)));
 		update_wifi_setings(device);
 		return INDIGO_OK;
 	} else if (indigo_property_match(SERVER_WIFI_CHANNEL_PROPERTY, property)) {
@@ -1367,7 +1482,7 @@ static indigo_result change_property(indigo_device *device, indigo_client *clien
 		// -------------------------------------------------------------------------------- INTERNET_SHARING
 		indigo_property_copy_values(SERVER_INTERNET_SHARING_PROPERTY, property, false);
 		if (SERVER_INTERNET_SHARING_ENABLED_ITEM->sw.value) { /* item[1] is enable forwarding, aka network sharing */
-			indigo_send_message(device, "Internet sharing is potentially dangerous, everyone connected to your INDIGO Sky can access your network!");
+			indigo_send_message(device, BUSY_PROPERTY, "Internet sharing is potentially dangerous, everyone connected to your INDIGO Sky can access your network!");
 			return execute_command(device, SERVER_INTERNET_SHARING_PROPERTY, "s_rpi_ctrl.sh --enable-forwarding");
 		} else {
 			return execute_command(device, SERVER_INTERNET_SHARING_PROPERTY, "s_rpi_ctrl.sh --disable-forwarding");
@@ -1375,7 +1490,8 @@ static indigo_result change_property(indigo_device *device, indigo_client *clien
 	} else if (indigo_property_match(SERVER_HOST_TIME_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- HOST_TIME
 		indigo_property_copy_values(SERVER_HOST_TIME_PROPERTY, property, false);
-		execute_command(device, SERVER_HOST_TIME_PROPERTY, "s_rpi_ctrl.sh --set-date \"%s\"", SERVER_HOST_TIME_ITEM->text.value);
+		char host_time[INDIGO_VALUE_SIZE * 4 + 3];
+		execute_command(device, SERVER_HOST_TIME_PROPERTY, "s_rpi_ctrl.sh --set-date %s", shell_escape(SERVER_HOST_TIME_ITEM->text.value, host_time, sizeof(host_time)));
 		if (SERVER_HOST_TIME_PROPERTY->state == INDIGO_OK_STATE) {
 			indigo_delete_property(device, SERVER_HOST_TIME_PROPERTY, NULL);
 			SERVER_HOST_TIME_PROPERTY->hidden = true;
@@ -1410,8 +1526,9 @@ static indigo_result detach(indigo_device *device) {
 	assert(device != NULL);
 	indigo_delete_property(device, SERVER_INFO_PROPERTY, NULL);
 	indigo_delete_property(device, SERVER_DRIVERS_PROPERTY, NULL);
-	if (SERVER_SERVERS_PROPERTY->count > 0)
+	if (SERVER_SERVERS_PROPERTY->count > 0) {
 		indigo_delete_property(device, SERVER_SERVERS_PROPERTY, NULL);
+	}
 	indigo_delete_property(device, SERVER_LOAD_PROPERTY, NULL);
 	indigo_delete_property(device, SERVER_UNLOAD_PROPERTY, NULL);
 	indigo_delete_property(device, SERVER_RESTART_PROPERTY, NULL);
@@ -1457,69 +1574,80 @@ static indigo_result detach(indigo_device *device) {
 	return INDIGO_OK;
 }
 
+static bool driver_filter(const char *name) {
+	return strcmp(name, "indigo_drivers") == 0 || strcmp(name, ADDITIONAL_DRIVERS) == 0;
+}
+
 static void add_drivers(const char *folder) {
 	char folder_path[PATH_MAX];
-	if(NULL == realpath(folder, folder_path)) {
+	char line[256];
+	if (NULL == indigo_uni_realpath(folder, folder_path)) {
 		INDIGO_DEBUG(indigo_debug("realpath(%s, folder_path): failed", folder));
 		return;
 	}
-	DIR *dir = opendir(folder_path);
-	if (dir) {
-		struct dirent *ent;
-		char *line = NULL;
-		size_t len = 0;
-		while ((ent = readdir (dir)) != NULL) {
-			if (!strncmp(ent->d_name, "indigo_", 7)) {
-				char path[PATH_MAX];
-				sprintf(path, "%s/%s", folder_path, ent->d_name);
-				indigo_log("Loading driver list from %s", path);
-				FILE *list = fopen(path, "r");
-				if (list) {
-					while (getline(&line, &len, list) > 0 && dynamic_drivers_count < INDIGO_MAX_DRIVERS) {
-						char *pnt, *token = strtok_r(line, ",", &pnt);
-						if (token && (token = strchr(token, '"'))) {
-							char *end = strchr(++token, '"');
-							if (end) {
-								*end = 0;
-								for (int i = 0; i < INDIGO_MAX_DRIVERS; i++) {
-									if (!strcmp(indigo_available_drivers[i].name, token)) {
-										token = NULL;
-										break;
-									}
-								}
-								if (token) {
-									for (int i = 0; i < dynamic_drivers_count; i++) {
-										//indigo_error("dynamic_drivers[%d].name = %s", i, dynamic_drivers[i].name);
-										if (!strcmp(dynamic_drivers[i].name, token)) {
-											token = NULL;
-											break;
-										}
-									}
-								}
-								if (token) {
-									dynamic_drivers[dynamic_drivers_count].name = strdup(token);
-								} else {
-									continue;
-								}
-							}
+	char **list;
+	int count = indigo_uni_scandir(folder_path, &list, driver_filter);
+	if (count >= 0) {
+		for (int i = 0; i < count; i++) {
+			char path[PATH_MAX];
+			snprintf(path, sizeof(path), "%s%c%s", folder_path, INDIGO_PATH_SEPATATOR, list[i]);
+			indigo_log("Loading driver list from %s", path);
+			indigo_uni_handle *file = indigo_uni_open_file(path, INDIGO_LOG_TRACE);
+			if (file != NULL) {
+				while (indigo_uni_read_line(file, line, sizeof(line)) > 0 && dynamic_drivers_count < INDIGO_MAX_DRIVERS) {
+					// parse the driver name from the first quoted, comma-separated field
+					char *pnt, *token = strtok_r(line, ",", &pnt);
+					char *name = NULL;
+					if (token && (token = strchr(token, '"'))) {
+						char *end = strchr(++token, '"');
+						if (end) {
+							*end = 0;
+							name = token;
 						}
-						token = strtok_r(NULL, ",", &pnt);
-						if (token && (token = strchr(token, '"'))) {
-							char *end = strchr(token + 1, '"');
-							if (end) {
-								*end = 0;
-								dynamic_drivers[dynamic_drivers_count].description = strdup(token + 1);
-							}
-						}
-						dynamic_drivers_count++;
 					}
-					fclose(list);
+					if (name == NULL) {
+						continue; // malformed line without a driver name
+					}
+					// skip drivers already available statically or already added dynamically
+					bool duplicate = false;
+					for (int i = 0; i < INDIGO_MAX_DRIVERS; i++) {
+						if (!strcmp(indigo_available_drivers[i].name, name)) {
+							duplicate = true;
+							break;
+						}
+					}
+					for (int i = 0; !duplicate && i < dynamic_drivers_count; i++) {
+						if (!strcmp(dynamic_drivers[i].name, name)) {
+							duplicate = true;
+							break;
+						}
+					}
+					if (duplicate) {
+						continue;
+					}
+					// parse the driver description from the second quoted field
+					char *description = NULL;
+					token = strtok_r(NULL, ",", &pnt);
+					if (token && (token = strchr(token, '"'))) {
+						char *end = strchr(token + 1, '"');
+						if (end) {
+							*end = 0;
+							description = token + 1;
+						}
+					}
+					if (description == NULL) {
+						continue; // malformed line without a driver description
+					}
+					// store name once and only count the entry when both fields are valid
+					dynamic_drivers[dynamic_drivers_count].name = strdup(name);
+					dynamic_drivers[dynamic_drivers_count].description = strdup(description);
+					dynamic_drivers_count++;
 				}
+				indigo_uni_close(&file);
 			}
+			indigo_safe_free(list[i]);
 		}
-		closedir(dir);
-		if (line)
-			free(line);
+		indigo_safe_free(list);
 	}
 }
 
@@ -1527,9 +1655,7 @@ static void server_main() {
 	indigo_start_usb_event_handler();
 	indigo_start();
 	indigo_log("INDIGO server %d.%d-%s %s/%s built on %s %s", (INDIGO_VERSION_CURRENT >> 8) & 0xFF, INDIGO_VERSION_CURRENT & 0xFF, INDIGO_BUILD, OS_NAME, ARCH_NAME, INDIGO_BUILD_TIME, INDIGO_BUILD_COMMIT);
-
 	indigo_use_blob_caching = true;
-
 	/* Make sure master token and ACL are loaded before drivers */
 	for (int i = 1; i < server_argc; i++) {
 		if ((!strcmp(server_argv[i], "-T") || !strcmp(server_argv[i], "--master-token")) && i < server_argc - 1) {
@@ -1546,7 +1672,7 @@ static void server_main() {
 			i++;
 		} else if ((!strcmp(server_argv[i], "-r") || !strcmp(server_argv[i], "--remote-server")) && i < server_argc - 1) {
 			char host[INDIGO_NAME_SIZE];
-			indigo_copy_name(host, server_argv[i + 1]);
+			INDIGO_COPY_NAME(host, server_argv[i + 1]);
 			char *colon = strchr(host, ':');
 			int port = 7624;
 			if (colon != NULL) {
@@ -1554,14 +1680,16 @@ static void server_main() {
 				port = atoi(colon);
 			}
 			indigo_reshare_remote_devices = true;
-			indigo_connect_server(NULL, host, port, NULL);
+			indigo_connect_server(NULL, host, port, NULL, NULL);
 			i++;
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
 		} else if ((!strcmp(server_argv[i], "-i") || !strcmp(server_argv[i], "--indi-driver")) && i < server_argc - 1) {
 			char executable[INDIGO_NAME_SIZE];
-			indigo_copy_name(executable, server_argv[i + 1]);
+			INDIGO_COPY_NAME(executable, server_argv[i + 1]);
 			indigo_reshare_remote_devices = true;
-			indigo_start_subprocess(executable, NULL);
+			indigo_start_subprocess(executable, NULL, NULL);
 			i++;
+#endif
 		} else if ((!strcmp(server_argv[i], "-T") || !strcmp(server_argv[i], "--master-token")) && i < server_argc - 1) {
 			/* just skip it - handled above */
 			i++;
@@ -1570,8 +1698,8 @@ static void server_main() {
 			i++;
 		} else if (!strcmp(server_argv[i], "-b-") || !strcmp(server_argv[i], "--disable-bonjour")) {
 			indigo_use_bonjour = false;
-		} else if (!strcmp(server_argv[i], "-b") || !strcmp(server_argv[i], "--bonjour")) {
-			indigo_copy_name(indigo_local_service_name, server_argv[i + 1]);
+		} else if ((!strcmp(server_argv[i], "-b") || !strcmp(server_argv[i], "--bonjour")) && i < server_argc - 1) {
+			INDIGO_COPY_NAME(indigo_local_service_name, server_argv[i + 1]);
 			i++;
 		} else if (!strcmp(server_argv[i], "-c-") || !strcmp(server_argv[i], "--disable-control-panel")) {
 			use_ctrl_panel = false;
@@ -1606,9 +1734,8 @@ static void server_main() {
 			command_line_drivers = true;
 		}
 	}
-
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
 	use_ctrl_panel |= use_web_apps;
-
 	if (use_ctrl_panel) {
 		// INDIGO Server Manager
 		static unsigned char mng_html[] = {
@@ -1669,9 +1796,9 @@ static void server_main() {
 		indigo_server_add_resource("/jquery.min.js", jquery_js, sizeof(jquery_js), "text/javascript");
 		// VueJS
 		static unsigned char vue_js[] = {
-			#include "resource/vue.min.js.data"
+			#include "resource/vue.global.prod.js.data"
 		};
-		indigo_server_add_resource("/vue.min.js", vue_js, sizeof(vue_js), "text/javascript");
+		indigo_server_add_resource("/vue.global.prod.js", vue_js, sizeof(vue_js), "text/javascript");
 	}
 	if (use_web_apps) {
 		// INDIGO Imager
@@ -1729,26 +1856,41 @@ static void server_main() {
 		indigo_server_add_resource("/guider.html", guider_html, sizeof(guider_html), "text/html");
 		static unsigned char guider_png[] = {
 			#include "resource/guider.png.data"
-		};
-		indigo_server_add_resource("/guider.png", guider_png, sizeof(guider_png), "image/png");
-		// INDIGO Script
-		static unsigned char script_html[] = {
-			#include "resource/script.html.data"
-		};
+			};
+			indigo_server_add_resource("/guider.png", guider_png, sizeof(guider_png), "image/png");
+			// INDIGO Astrometry
+			static unsigned char astrometry_html[] = {
+				#include "resource/astrometry.html.data"
+			};
+			indigo_server_add_resource("/astrometry.html", astrometry_html, sizeof(astrometry_html), "text/html");
+			static unsigned char astrometry_png[] = {
+				#include "resource/astrometry.png.data"
+			};
+			indigo_server_add_resource("/astrometry.png", astrometry_png, sizeof(astrometry_png), "image/png");
+			// INDIGO Script
+			static unsigned char script_html[] = {
+				#include "resource/script.html.data"
+			};
 		indigo_server_add_resource("/script.html", script_html, sizeof(script_html), "text/html");
 		static unsigned char script_png[] = {
 			#include "resource/script.png.data"
 		};
 		indigo_server_add_resource("/script.png", script_png, sizeof(script_png), "image/png");
+		static unsigned char sequencer_js[] = {
+			#include "resource/Sequencer.js.data"
+		};
+		indigo_server_add_resource("/Sequencer.js", sequencer_js, sizeof(sequencer_js), "text/javascript");
 	}
-
+#ifdef RPI_MANAGEMENT
 	indigo_server_add_file_resource("/log", "indigo.log", "text/plain; charset=UTF-8");
-
+#endif
+#endif
 	if (!command_line_drivers) {
 		for (static_drivers_count = 0; static_drivers[static_drivers_count]; static_drivers_count++) {
 			indigo_add_driver(static_drivers[static_drivers_count], false, NULL);
 		}
-		char *last = strrchr(server_argv[0], '/');
+		char *last = strrchr(server_argv[0], INDIGO_PATH_SEPATATOR);
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
 		if (last) {
 			char path[PATH_MAX];
 			long len = last - server_argv[0];
@@ -1759,13 +1901,14 @@ static void server_main() {
 		}
 		add_drivers("/usr/share/indigo");
 		add_drivers("/usr/local/share/indigo");
+#elif defined(INDIGO_WINDOWS)
+		add_drivers(".");
+#endif
 	}
 	indigo_attach_device(&server_device);
-
-#ifdef INDIGO_LINUX
+#if defined(INDIGO_LINUX) || defined(INDIGO_WINDOWS)
 	indigo_server_start(NULL);
-#endif
-#ifdef INDIGO_MACOS
+#elif defined(INDIGO_MACOS)
 	if (!indigo_async((void * (*)(void *))indigo_server_start, NULL)) {
 		INDIGO_ERROR(indigo_error("Error creating thread for server"));
 	}
@@ -1774,110 +1917,179 @@ static void server_main() {
 		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1, true);
 	}
 #endif
-
 	for (int i = 0; i < INDIGO_MAX_DRIVERS; i++) {
 		if (indigo_available_drivers[i].driver) {
 			indigo_remove_driver(&indigo_available_drivers[i]);
 		}
 	}
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
 	for (int i = 0; i < INDIGO_MAX_SERVERS; i++) {
-		if (indigo_available_subprocesses[i].thread_started)
+		if (indigo_available_subprocesses[i].thread_started) {
 			indigo_kill_subprocess(&indigo_available_subprocesses[i]);
+		}
 	}
+#endif
 	indigo_detach_device(&server_device);
 	indigo_stop();
 	indigo_server_remove_resources();
-	if (star_data)
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+	if (star_data) {
 		free(star_data);
-	if (dso_data)
+	}
+	if (dso_data) {
 		free(dso_data);
-	if (constellation_data)
+	}
+	if (constellation_data) {
 		free(constellation_data);
+	}
+#endif
 	for (int i = 0; i < INDIGO_MAX_SERVERS; i++) {
-		if (indigo_available_servers[i].thread_started)
+		if (indigo_available_servers[i].thread_started) {
 			indigo_disconnect_server(&indigo_available_servers[i]);
+		}
 	}
 	exit(EXIT_SUCCESS);
 }
 
-static void signal_handler(int signo) {
-	if (signo == SIGCHLD) {
-		int status;
-		while ((waitpid(-1, &status, WNOHANG)) > 0);
-		return;
-	}
-	if (server_pid == 0) {
-		/* SIGINT is delivered twise with CTRL-C
-		   this leads to freeze during shutdown so
-		   we ignore the second SIGINT */
-		if (signo == SIGINT) {
-			signal(SIGINT, SIG_IGN);
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+// Signals are handled by dedicated threads that consume them synchronously with sigwait()
+// rather than by an async signal handler. sigwait() returns in ordinary thread context, so the
+// handling code below may safely log, reap children, and call indigo_server_shutdown() — none of
+// which are async-signal-safe and all of which the previous async handler performed illegally.
+// The managed signals are blocked process-wide (see main()) so they are delivered only here.
+
+// Runs in the worker process (the forked child, or the whole process when --do-not-fork is set):
+// reaps exited driver/INDI subprocesses on SIGCHLD and initiates shutdown on SIGINT/SIGTERM/SIGHUP.
+static void *server_signal_thread(void *arg) {
+	indigo_rename_thread("Signals");
+	sigset_t set;
+	sigemptyset(&set);
+	sigaddset(&set, SIGINT);
+	sigaddset(&set, SIGTERM);
+	sigaddset(&set, SIGHUP);
+	sigaddset(&set, SIGCHLD);
+	while (true) {
+		int signo;
+		if (sigwait(&set, &signo) != 0) {
+			continue;
+		}
+		if (signo == SIGCHLD) {
+			int status;
+			while (waitpid(-1, &status, WNOHANG) > 0);
+			continue;
 		}
 		INDIGO_LOG(indigo_log("Shutdown initiated (signal %d)...", signo));
 		indigo_server_shutdown();
 #ifdef INDIGO_MACOS
 		runLoop = false;
 #endif
-	} else {
+		// Further shutdown signals stay blocked and pending until the process exits, which
+		// reproduces the old handler's "ignore the second CTRL-C" behavior without racing.
+		return NULL;
+	}
+	return NULL;
+}
+
+// Runs in the supervising parent process: forwards shutdown signals to the worker and records
+// whether the worker should be restarted (SIGHUP) or the server should exit (SIGINT/SIGTERM).
+// SIGCHLD is left to the parent's explicit waitpid(server_pid) loop, avoiding a reap race.
+static void *supervisor_signal_thread(void *arg) {
+	indigo_rename_thread("Signals");
+	sigset_t set;
+	sigemptyset(&set);
+	sigaddset(&set, SIGINT);
+	sigaddset(&set, SIGTERM);
+	sigaddset(&set, SIGHUP);
+	while (true) {
+		int signo;
+		if (sigwait(&set, &signo) != 0) {
+			continue;
+		}
 		INDIGO_LOG(indigo_log("Signal %d received...", signo));
 		keep_server_running = (signo == SIGHUP);
-		if (use_sigkill)
-			kill(server_pid, SIGKILL);
-		else
-			kill(server_pid, SIGINT);
-		use_sigkill = true;
+		if (server_pid > 0) {
+			kill(server_pid, use_sigkill ? SIGKILL : SIGINT);
+			use_sigkill = true;
+		}
 	}
+	return NULL;
 }
+#endif
 
 int main(int argc, const char * argv[]) {
 	bool do_fork = true;
 	server_argv[0] = argv[0];
 	indigo_main_argc = argc;
 	indigo_main_argv = argv;
-
+	
 	for (int i = 1; i < argc; i++) {
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
 		if (!strcmp(argv[i], "--") || !strcmp(argv[i], "--do-not-fork")) {
 			do_fork = false;
 		} else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--use-syslog")) {
 			indigo_use_syslog = true;
-		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+		} else
+#endif
+			if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
 			printf("INDIGO server v.%d.%d-%s %s/%s built on %s %s.\n", (INDIGO_VERSION_CURRENT >> 8) & 0xFF, INDIGO_VERSION_CURRENT & 0xFF, INDIGO_BUILD, OS_NAME, ARCH_NAME, __DATE__, __TIME__);
 			printf("usage: %s [-h | --help]\n", argv[0]);
 			printf("       %s [options] indigo_driver_name indigo_driver_name ...\n", argv[0]);
 			printf("options:\n"
-			       "       --  | --do-not-fork\n"
-			       "       -l  | --use-syslog\n"
-			       "       -p  | --port port                     (default: 7624)\n"
-			       "       -b  | --bonjour name                  (default: hostname)\n"
-			       "       -T  | --master-token token            (master token for devce access default: 0 = none)\n"
-			       "       -a  | --acl-file file\n"
-			       "       -b- | --disable-bonjour\n"
-			       "       -u- | --disable-blob-urls\n"
-			       "       -d- | --disable-blob-buffering\n"
-			       "       -C  | --enable-blob-compression\n"
-			       "       -w- | --disable-web-apps\n"
-			       "       -c- | --disable-control-panel\n"
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+						 "       --  | --do-not-fork\n"
+						 "       -l  | --use-syslog\n"
+#endif
+						 "       -p  | --port port                     (default: 7624)\n"
+						 "       -b  | --bonjour name                  (default: hostname)\n"
+						 "       -T  | --master-token token            (master token for devce access default: 0 = none)\n"
+						 "       -a  | --acl-file file\n"
+						 "       -b- | --disable-bonjour\n"
+						 "       -u- | --disable-blob-urls\n"
+						 "       -d- | --disable-blob-buffering\n"
+						 "       -C  | --enable-blob-compression\n"
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+						 "       -w- | --disable-web-apps\n"
+						 "       -c- | --disable-control-panel\n"
 #ifdef RPI_MANAGEMENT
-			       "       -f  | --enable-rpi-management\n"
+						 "       -f  | --enable-rpi-management\n"
 #endif /* RPI_MANAGEMENT */
-			       "       -v  | --enable-info\n"
-			       "       -vv | --enable-debug\n"
+#endif
+						 "       -v  | --enable-info\n"
+						 "       -vv | --enable-debug\n"
 						 "       -vvb| --enable-trace-bus\n"
-			       "       -vvv| --enable-trace\n"
-			       "       -r  | --remote-server host[:port]     (default port: 7624)\n"
-			       "       -x  | --enable-blob-proxy\n"
-			       "       -i  | --indi-driver driver_executable\n"
-			);
+						 "       -vvv| --enable-trace\n"
+						 "       -r  | --remote-server host[:port]     (default port: 7624)\n"
+						 "       -x  | --enable-blob-proxy\n"
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+						 "       -i  | --indi-driver driver_executable\n"
+#endif
+						 );
 			return 0;
-		} else {
+		} else if (server_argc < SERVER_ARGV_SIZE) {
 			server_argv[server_argc++] = argv[i];
+		} else {
+			fprintf(stderr, "Too many arguments, at most %d are supported\n", SERVER_ARGV_SIZE - 1);
+			return 1;
 		}
 	}
-	signal(SIGINT, signal_handler);
-	signal(SIGTERM, signal_handler);
-	signal(SIGHUP, signal_handler);
-	signal(SIGCHLD, signal_handler);
+#if defined(INDIGO_LINUX) || defined(INDIGO_MACOS)
+	// Block the signals we manage so they are delivered synchronously to a dedicated signal
+	// thread through sigwait(), instead of interrupting arbitrary code in an async handler. The
+	// mask is inherited across fork() and by every thread created afterwards, so the managed
+	// signals reach only the sigwait thread of each process.
+	sigset_t signal_set;
+	sigemptyset(&signal_set);
+	sigaddset(&signal_set, SIGINT);
+	sigaddset(&signal_set, SIGTERM);
+	sigaddset(&signal_set, SIGHUP);
+	sigaddset(&signal_set, SIGCHLD);
+	pthread_sigmask(SIG_BLOCK, &signal_set, NULL);
+	pthread_t signal_thread;
 	if (do_fork) {
+		// The supervisor signal thread is created on the first parent iteration below (after the
+		// initial single-threaded fork) so the first fork stays single-threaded; on restart forks
+		// the child inherits only this thread, which is idle inside sigwait() and holds no locks.
+		bool supervisor_started = false;
 		while(keep_server_running) {
 			server_pid = fork();
 			if (server_pid == -1) {
@@ -1905,9 +2117,14 @@ int main(int argc, const char * argv[]) {
 					prctl(PR_SET_NAME, process_name, 0, 0, 0);
 				}
 #endif
+				pthread_create(&signal_thread, NULL, server_signal_thread, NULL);
 				server_main();
 				return EXIT_SUCCESS;
 			} else {
+				if (!supervisor_started) {
+					pthread_create(&signal_thread, NULL, supervisor_signal_thread, NULL);
+					supervisor_started = true;
+				}
 				while (waitpid(server_pid, NULL, 0) == -1 && keep_server_running) {
 					if (errno == EINTR) {
 						INDIGO_ERROR(indigo_error("waitpid(%d) interrupted: %s", server_pid, strerror(errno)));
@@ -1919,12 +2136,17 @@ int main(int argc, const char * argv[]) {
 				use_sigkill = false;
 				if (keep_server_running) {
 					INDIGO_LOG(indigo_log("Shutdown complete! Starting up..."));
-					indigo_usleep(2 * ONE_SECOND_DELAY);
+					indigo_sleep(2);
 				}
 			}
 		}
 		INDIGO_LOG(indigo_log("Shutdown complete! See you!"));
 	} else {
+		// No fork: this process is the worker.
+		pthread_create(&signal_thread, NULL, server_signal_thread, NULL);
 		server_main();
 	}
+#elif defined(INDIGO_WINDOWS)
+	server_main();
+#endif
 }

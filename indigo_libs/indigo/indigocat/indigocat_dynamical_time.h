@@ -1,4 +1,5 @@
-// Created by Rumen Bogdanovski, 2022
+// Copyright (c) 2022-2025 Rumen G. Bogdanovski
+// All rights reserved.
 //
 // THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
 // OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
@@ -12,20 +13,30 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
-//	Created by Rumen Bogdanovski, based on Liam Girdwood's code.
+//	Created by Rumen G. Bogdanovski, based on Liam Girdwood's code.
 
 #ifndef __DYNAMICAL_TIME_H
 #define __DYNAMICAL_TIME_H
+
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Calculate approximate dynamical time difference from julian day in seconds */
-double  indigocat_get_dynamical_time_diff(double JD);
+INDIGO_EXTERN double  indigocat_get_dynamical_time_diff(double JD);
 
 /* brief Calculate julian ephemeris day (JDE) */
-double  indigocat_jd_to_jde(double JD);
+INDIGO_EXTERN double  indigocat_jd_to_jde(double JD);
 
 #ifdef __cplusplus
 };

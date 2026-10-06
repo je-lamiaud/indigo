@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -25,13 +25,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <assert.h>
 #include <string.h>
 #include <errno.h>
 #include <time.h>
 #include <math.h>
-#include <fcntl.h>
 #include <sys/stat.h>
 
 #include <indigo/indigo_wheel_driver.h>
@@ -45,13 +43,15 @@ indigo_result indigo_wheel_attach(indigo_device *device, const char* driver_name
 		if (indigo_device_attach(device, driver_name, version, INDIGO_INTERFACE_WHEEL) == INDIGO_OK) {
 			// -------------------------------------------------------------------------------- WHEEL_SLOT
 			WHEEL_SLOT_PROPERTY = indigo_init_number_property(NULL, device->name, WHEEL_SLOT_PROPERTY_NAME, WHEEL_MAIN_GROUP, "Current slot", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-			if (WHEEL_SLOT_PROPERTY == NULL)
+			if (WHEEL_SLOT_PROPERTY == NULL) {
 				return INDIGO_FAILED;
+			}
 			indigo_init_number_item(WHEEL_SLOT_ITEM, WHEEL_SLOT_ITEM_NAME, "Slot number", 1, 16, 1, 0);
 			// -------------------------------------------------------------------------------- WHEEL_SLOT_NAME
-			WHEEL_SLOT_NAME_PROPERTY = indigo_init_text_property(NULL, device->name, WHEEL_SLOT_NAME_PROPERTY_NAME, WHEEL_MAIN_GROUP, "Slot names", INDIGO_OK_STATE, INDIGO_RW_PERM, WHEEL_SLOT_ITEM->number.max);
-			if (WHEEL_SLOT_NAME_PROPERTY == NULL)
+			WHEEL_SLOT_NAME_PROPERTY = indigo_init_text_property(NULL, device->name, WHEEL_SLOT_NAME_PROPERTY_NAME, WHEEL_MAIN_GROUP, "Slot names", INDIGO_OK_STATE, INDIGO_RW_PERM, (int)WHEEL_SLOT_ITEM->number.max);
+			if (WHEEL_SLOT_NAME_PROPERTY == NULL) {
 				return INDIGO_FAILED;
+			}
 			for (int i = 0; i < WHEEL_SLOT_NAME_PROPERTY->count; i++) {
 				char name[16];
 				char label[16];
@@ -60,10 +60,11 @@ indigo_result indigo_wheel_attach(indigo_device *device, const char* driver_name
 				indigo_init_text_item(WHEEL_SLOT_NAME_1_ITEM + i, name, label, "Filter #%d", i + 1);
 			}
 			// -------------------------------------------------------------------------------- WHEEL_SLOT_OFFSET
-			WHEEL_SLOT_OFFSET_PROPERTY = indigo_init_number_property(NULL, device->name, WHEEL_SLOT_OFFSET_PROPERTY_NAME, WHEEL_MAIN_GROUP, "Slot focus offsets", INDIGO_OK_STATE, INDIGO_RW_PERM, WHEEL_SLOT_ITEM->number.max);
-			if (WHEEL_SLOT_NAME_PROPERTY == NULL)
+			WHEEL_SLOT_OFFSET_PROPERTY = indigo_init_number_property(NULL, device->name, WHEEL_SLOT_OFFSET_PROPERTY_NAME, WHEEL_MAIN_GROUP, "Slot focus offsets", INDIGO_OK_STATE, INDIGO_RW_PERM, (int)WHEEL_SLOT_ITEM->number.max);
+			if (WHEEL_SLOT_OFFSET_PROPERTY == NULL) {
 				return INDIGO_FAILED;
-			for (int i = 0; i < WHEEL_SLOT_NAME_PROPERTY->count; i++) {
+			}
+			for (int i = 0; i < WHEEL_SLOT_OFFSET_PROPERTY->count; i++) {
 				char name[16];
 				char label[16];
 				snprintf(name, 16, WHEEL_SLOT_OFFSET_ITEM_NAME, i + 1);
@@ -81,9 +82,9 @@ indigo_result indigo_wheel_enumerate_properties(indigo_device *device, indigo_cl
 	assert(device != NULL);
 	assert(DEVICE_CONTEXT != NULL);
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(WHEEL_SLOT_PROPERTY);
-		indigo_define_matching_property(WHEEL_SLOT_NAME_PROPERTY);
-		indigo_define_matching_property(WHEEL_SLOT_OFFSET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(WHEEL_SLOT_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(WHEEL_SLOT_NAME_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(WHEEL_SLOT_OFFSET_PROPERTY);
 	}
 	return indigo_device_enumerate_properties(device, client, property);
 }
@@ -124,7 +125,7 @@ indigo_result indigo_wheel_change_property(indigo_device *device, indigo_client 
 		WHEEL_SLOT_OFFSET_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, WHEEL_SLOT_OFFSET_PROPERTY, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, WHEEL_SLOT_NAME_PROPERTY);

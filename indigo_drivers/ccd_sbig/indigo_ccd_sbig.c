@@ -1,4 +1,4 @@
-// Copyright (c) 2017 Rumen G. Bogdanovski
+// Copyright (c) 2017-2025 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -17,14 +17,14 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // version history
-// 2.0 by Rumen Bogdanovski <rumenastro@gmail.com>
+// 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 /** INDIGO CCD SBIG driver
  \file indigo_ccd_sbig.c
  */
 
 
-#define DRIVER_VERSION 0x0012
+#define DRIVER_VERSION 0x02000012
 #define DRIVER_NAME "indigo_ccd_sbig"
 
 #include <stdlib.h>
@@ -37,20 +37,13 @@
 #include <sys/time.h>
 
 #include <indigo/indigo_driver_xml.h>
+#include <indigo/indigo_usb_utils.h>
+
 #include "indigo_ccd_sbig.h"
 
 #if !(defined(__APPLE__) && defined(__arm64__))
 
 #include <sbigudrv.h>
-
-#if defined(INDIGO_MACOS)
-#include <libusb-1.0/libusb.h>
-#include <dlfcn.h>
-#elif defined(INDIGO_FREEBSD)
-#include <libusb.h>
-#else
-#include <libusb-1.0/libusb.h>
-#endif
 
 #include <netdb.h>
 #include <sys/types.h>
@@ -210,10 +203,11 @@ static char *sbig_error_string(long err) {
 static short get_sbig_handle() {
 	GetDriverHandleResults gdhr;
 	int res = sbig_command(CC_GET_DRIVER_HANDLE, NULL, &gdhr);
-	if (res == CE_NO_ERROR)
+	if (res == CE_NO_ERROR) {
 		return gdhr.handle;
-	else
+	} else {
 		return INVALID_HANDLE_VALUE;
+	}
 }
 
 
@@ -257,8 +251,9 @@ static short close_driver(short *handle) {
 	}
 
 	res = sbig_command(CC_CLOSE_DRIVER, NULL, NULL);
-	if (res == CE_NO_ERROR)
+	if (res == CE_NO_ERROR) {
 		*handle = INVALID_HANDLE_VALUE;
+	}
 
 	return res;
 }
@@ -460,14 +455,14 @@ static int sbig_ao_center() {
 
 static indigo_result sbig_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if ((CONNECTION_CONNECTED_ITEM->sw.value) && (PRIMARY_CCD)) {
-		indigo_define_matching_property(SBIG_FREEZE_TEC_PROPERTY);
-		indigo_define_matching_property(SBIG_ABG_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SBIG_FREEZE_TEC_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SBIG_ABG_PROPERTY);
 	}
 	if (PRIMARY_CCD) {
-		indigo_define_matching_property(SBIG_ADD_WHEEL_PROPERTY);
-		indigo_define_matching_property(SBIG_ADD_AO_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SBIG_ADD_WHEEL_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(SBIG_ADD_AO_PROPERTY);
 	}
-	return indigo_ccd_enumerate_properties(device, NULL, NULL);
+	return indigo_ccd_enumerate_properties(device, client, property);
 }
 
 
@@ -1171,7 +1166,7 @@ static void ccd_connect_callback(indigo_device *device) {
 						INDIGO_DRIVER_ERROR(DRIVER_NAME, "CC_GET_CCD_INFO(%d) = %d (%s)", cip.request, res, sbig_error_string(res));
 					}
 
-					indigo_copy_value(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, PRIVATE_DATA->imager_ccd_extended_info1.serialNumber);
+					INDIGO_COPY_VALUE(INFO_DEVICE_SERIAL_NUM_ITEM->text.value, PRIVATE_DATA->imager_ccd_extended_info1.serialNumber);
 
 					cip.request = CCD_INFO_EXTENDED3; /* imaging CCD */
 					res = sbig_command(CC_GET_CCD_INFO, &cip, &(PRIVATE_DATA->imager_ccd_extended_info6));
@@ -1405,8 +1400,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		return INDIGO_OK;
 	// -------------------------------------------------------------------------------- CCD_EXPOSURE
 	} else if (indigo_property_match_changeable(CCD_EXPOSURE_PROPERTY, property)) {
-		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE) {
 			return INDIGO_OK;
+		}
 		indigo_property_copy_values(CCD_EXPOSURE_PROPERTY, property, false);
 		if (CONNECTION_CONNECTED_ITEM->sw.value) {
 			CCD_EXPOSURE_PROPERTY->state = INDIGO_BUSY_STATE;
@@ -1567,7 +1563,7 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		indigo_update_property(device, SBIG_ADD_AO_PROPERTY, NULL);
 		return INDIGO_OK;
 	// -------------------------------------------------------------------------------- CONFIG
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, SBIG_FREEZE_TEC_PROPERTY);
 			indigo_save_property(device, NULL, SBIG_ABG_PROPERTY);
@@ -1752,10 +1748,11 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 			}
 		}
 
-		if (PRIVATE_DATA->relay_map & (RELAY_NORTH | RELAY_SOUTH))
+		if (PRIVATE_DATA->relay_map & (RELAY_NORTH | RELAY_SOUTH)) {
 			GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_BUSY_STATE;
-		else
+		} else {
 			GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_OK_STATE;
+		}
 
 		indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
 		return INDIGO_OK;
@@ -1783,10 +1780,11 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 			}
 		}
 
-		if (PRIVATE_DATA->relay_map & (RELAY_EAST | RELAY_WEST))
+		if (PRIVATE_DATA->relay_map & (RELAY_EAST | RELAY_WEST)) {
 			GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_BUSY_STATE;
-		else
+		} else {
 			GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_OK_STATE;
+		}
 
 		indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, NULL);
 		return INDIGO_OK;
@@ -1842,9 +1840,9 @@ static indigo_result eth_attach(indigo_device *device) {
 		INFO_PROPERTY->count = 2;
 		// -------------------------------------------------------------------------------- DEVICE_PORT
 		DEVICE_PORT_PROPERTY->hidden = false;
-		indigo_copy_value(DEVICE_PORT_ITEM->text.value, "192.168.0.100");
-		indigo_copy_value(DEVICE_PORT_PROPERTY->label, "Remote camera");
-		indigo_copy_value(DEVICE_PORT_ITEM->label, "IP address / hostname");
+		INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, "192.168.0.100");
+		INDIGO_COPY_VALUE(DEVICE_PORT_PROPERTY->label, "Remote camera");
+		INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->label, "IP address / hostname");
 		// -------------------------------------------------------------------------------- DEVICE_PORTS
 		DEVICE_PORTS_PROPERTY->hidden = true;
 		// --------------------------------------------------------------------------------
@@ -1888,10 +1886,11 @@ static void eth_connect_callback(indigo_device *device) {
 			clear_connected_flag(device);
 		}
 	}
-	if (message[0] == '\0')
+	if (message[0] == '\0') {
 		indigo_device_change_property(device, NULL, CONNECTION_PROPERTY);
-	else
+	} else {
 		indigo_device_change_property(device, NULL, CONNECTION_PROPERTY);
+	}
 	indigo_unlock_master_device(device);
 }
 
@@ -2391,11 +2390,7 @@ static void unplug_wheel(char *master_name, int fw_model) {
 			continue;
 		}
 		if (PRIVATE_DATA) {
-			if (
-				!strncmp(master_name, PRIVATE_DATA->dev_name, MAX_PATH) &&
-				(fw_model == PRIVATE_DATA->fw_device) &&
-				(device->attach == wheel_attach)
-			) {
+			if (!strncmp(master_name, PRIVATE_DATA->dev_name, MAX_PATH) && (fw_model == PRIVATE_DATA->fw_device) && (device->attach == wheel_attach)) {
 				indigo_detach_device(device);
 				free(device);
 				devices[i] = NULL;
@@ -2416,11 +2411,7 @@ static void unplug_ao(char *master_name) {
 			continue;
 		}
 		if (PRIVATE_DATA) {
-			if (
-				!strncmp(master_name, PRIVATE_DATA->dev_name, MAX_PATH) &&
-				(device->attach == ao_attach) &&
-				(PRIVATE_DATA->ao_non_auto)
-			) {
+			if (!strncmp(master_name, PRIVATE_DATA->dev_name, MAX_PATH) && (device->attach == ao_attach) && (PRIVATE_DATA->ao_non_auto)) {
 				indigo_detach_device(device);
 				free(device);
 				devices[i] = NULL;
@@ -2767,7 +2758,7 @@ static int hotplug_callback(libusb_context *ctx, libusb_device *dev, libusb_hotp
 				INDIGO_DRIVER_LOG(DRIVER_NAME, "%s", broken_message);
 				indigo_device device;
 				strncpy(device.name, DRIVER_NAME, INDIGO_NAME_SIZE);
-				indigo_send_message(&device, "%s", broken_message);
+				indigo_send_message(&device, ALERT_PROPERTY, "%s", broken_message);
 				//pthread_mutex_unlock(&hotplug_mutex);
 				return 0;
 			}
@@ -2904,82 +2895,84 @@ indigo_result indigo_ccd_sbig(indigo_driver_action action, indigo_driver_info *i
 
 	SET_DRIVER_INFO(info, "SBIG Camera", __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		sbig_command = SBIGUnivDrvCommand;
+		case INDIGO_DRIVER_INIT:
+			sbig_command = SBIGUnivDrvCommand;
 
-		pthread_mutexattr_t attr;
-		pthread_mutexattr_init(&attr);
-		pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-		pthread_mutex_init(&driver_mutex, &attr);
-		pthread_mutexattr_destroy(&attr);
+			pthread_mutexattr_t attr;
+			pthread_mutexattr_init(&attr);
+			pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+			pthread_mutex_init(&driver_mutex, &attr);
+			pthread_mutexattr_destroy(&attr);
 
-		GetDriverInfoParams di_req = {
-			.request = DRIVER_STD
-		};
-		GetDriverInfoResults0 di;
+			GetDriverInfoParams di_req = {
+				.request = DRIVER_STD
+			};
+			GetDriverInfoResults0 di;
 
-		int res = sbig_command(CC_OPEN_DRIVER, NULL, NULL);
-		if (res != CE_NO_ERROR) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "CC_OPEN_DRIVER error = %d (%s)", res, sbig_error_string(res));
+			int res = sbig_command(CC_OPEN_DRIVER, NULL, NULL);
+			if (res != CE_NO_ERROR) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "CC_OPEN_DRIVER error = %d (%s)", res, sbig_error_string(res));
+				return INDIGO_FAILED;
+			}
+
+			global_handle = get_sbig_handle();
+			if (global_handle == INVALID_HANDLE_VALUE) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "error get_sbig_handle() = %d", global_handle);
+			}
+
+			res = sbig_command(CC_GET_DRIVER_INFO, &di_req, &di);
+			if (res != CE_NO_ERROR) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "CC_GET_DRIVER_INFO error = %d (%s)", res, sbig_error_string(res));
+			} else {
+				INDIGO_DRIVER_LOG(DRIVER_NAME, "Driver: %s (%x.%x)", di.name, di.version >> 8, di.version & 0x00ff);
+			}
+
+			sbig_eth = indigo_safe_malloc_copy(sizeof(indigo_device), &sbig_eth_template);
+			sbig_eth->private_data = NULL;
+			indigo_attach_device(sbig_eth);
+
+			indigo_start_usb_event_handler();
+			int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, SBIG_VENDOR_ID, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
+			if (rc >= 0) {
+				last_action = action;
+				return INDIGO_OK;
+			}
 			return INDIGO_FAILED;
-		}
 
-		global_handle = get_sbig_handle();
-		if (global_handle == INVALID_HANDLE_VALUE) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "error get_sbig_handle() = %d", global_handle);
-		}
-
-		res = sbig_command(CC_GET_DRIVER_INFO, &di_req, &di);
-		if (res != CE_NO_ERROR) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "CC_GET_DRIVER_INFO error = %d (%s)", res, sbig_error_string(res));
-		} else {
-			INDIGO_DRIVER_LOG(DRIVER_NAME, "Driver: %s (%x.%x)", di.name, di.version >> 8, di.version & 0x00ff);
-		}
-
-		sbig_eth = indigo_safe_malloc_copy(sizeof(indigo_device), &sbig_eth_template);
-		sbig_eth->private_data = NULL;
-		indigo_attach_device(sbig_eth);
-
-		indigo_start_usb_event_handler();
-		int rc = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, SBIG_VENDOR_ID, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_register_callback ->  %s", rc < 0 ? libusb_error_name(rc) : "OK");
-		if (rc >= 0) {
+		case INDIGO_DRIVER_SHUTDOWN:
+			for (int i = 0; i < MAX_DEVICES; i++) {
+				VERIFY_NOT_CONNECTED(devices[i]);
+			}
 			last_action = action;
-			return INDIGO_OK;
-		}
-		return INDIGO_FAILED;
+			libusb_hotplug_deregister_callback(NULL, callback_handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
+			remove_usb_devices();
+			remove_eth_devices();
+			indigo_detach_device(sbig_eth);
+			free(sbig_eth);
 
-	case INDIGO_DRIVER_SHUTDOWN:
-		for (int i = 0; i < MAX_DEVICES; i++)
-			VERIFY_NOT_CONNECTED(devices[i]);
-		last_action = action;
-		libusb_hotplug_deregister_callback(NULL, callback_handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "libusb_hotplug_deregister_callback");
-		remove_usb_devices();
-		remove_eth_devices();
-		indigo_detach_device(sbig_eth);
-		free(sbig_eth);
+			pthread_mutex_destroy(&driver_mutex);
 
-		pthread_mutex_destroy(&driver_mutex);
+			res = set_sbig_handle(global_handle);
+			if (res != CE_NO_ERROR) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "error set_sbig_handle() = %d (%s)", res, sbig_error_string(res));
+			}
 
-		res = set_sbig_handle(global_handle);
-		if (res != CE_NO_ERROR) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "error set_sbig_handle() = %d (%s)", res, sbig_error_string(res));
-		}
+			res = sbig_command(CC_CLOSE_DRIVER, NULL, NULL);
+			if (res != CE_NO_ERROR) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "CC_CLOSE_DRIVER error = %d (%s)", res, sbig_error_string(res));
+			}
 
-		res = sbig_command(CC_CLOSE_DRIVER, NULL, NULL);
-		if (res != CE_NO_ERROR) {
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "CC_CLOSE_DRIVER error = %d (%s)", res, sbig_error_string(res));
-		}
+			break;
 
-		break;
-
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

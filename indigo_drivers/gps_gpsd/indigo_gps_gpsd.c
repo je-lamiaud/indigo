@@ -1,4 +1,4 @@
-// Copyright (c) 2019 Thomas Stibor
+// Copyright (c) 2019-2025 Thomas Stibor
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -24,7 +24,7 @@
  \file indigo_gps_gpsd.c
  */
 
-#define DRIVER_VERSION	0x0004
+#define DRIVER_VERSION 0x02000004
 #define DRIVER_NAME	"indigo_gps_gpsd"
 
 #include <stdlib.h>
@@ -56,9 +56,21 @@ static bool gpsd_open(indigo_device *device) {
 	}
 	char *colon = strchr(text, ':');
 	if (colon == NULL) {
+		if (strlen(text) >= sizeof(host_name)) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Host name too long");
+			return false;
+		}
 		strcpy(host_name, text);
 		strcpy(port, "2947");
 	} else {
+		if (colon - text >= (ptrdiff_t)sizeof(host_name)) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Host name too long");
+			return false;
+		}
+		if (strlen(colon + 1) >= sizeof(port)) {
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Port value too long");
+			return false;
+		}
 		strncpy(host_name, text, colon - text);
 		strcpy(port, colon + 1);
 	}
@@ -80,10 +92,11 @@ static void gpsd_close(indigo_device *device) {
 
 	(void)gps_stream(&PRIVATE_DATA->gps_data, WATCH_DISABLE, NULL);
 	rc = gps_close(&PRIVATE_DATA->gps_data);
-	if (rc)
+	if (rc) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to disconnect from gpsd.");
-	else
+	} else {
 		INDIGO_DRIVER_LOG(DRIVER_NAME, "Disconnected from gpsd.");
+	}
 }
 
 
@@ -136,7 +149,7 @@ static void gps_refresh_callback(indigo_device *device) {
 		if (rc == -1) {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "gps_read(): %s", gps_errstr(rc));
 			GPS_STATUS_PROPERTY->state = INDIGO_ALERT_STATE;
-			indigo_usleep(ONE_SECOND_DELAY);
+			indigo_sleep(1);
 			continue;
 		}
 
@@ -162,7 +175,7 @@ static void gps_refresh_callback(indigo_device *device) {
 
 			indigo_timetoisogm(PRIVATE_DATA->gps_data.fix.time.tv_sec,
 					   isotime, sizeof(isotime));
-			indigo_copy_value(GPS_UTC_ITEM->text.value, isotime);
+			INDIGO_COPY_VALUE(GPS_UTC_ITEM->text.value, isotime);
 			GPS_UTC_TIME_PROPERTY->state = INDIGO_OK_STATE;
 		}
 		if (PRIVATE_DATA->gps_data.set & LATLON_SET) {
@@ -175,17 +188,21 @@ static void gps_refresh_callback(indigo_device *device) {
 			GPS_GEOGRAPHIC_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
 		}
 		if (PRIVATE_DATA->gps_data.set & MODE_SET) {
-			if (PRIVATE_DATA->gps_data.fix.mode == MODE_NO_FIX)
+			if (PRIVATE_DATA->gps_data.fix.mode == MODE_NO_FIX) {
 				GPS_STATUS_NO_FIX_ITEM->light.value = INDIGO_ALERT_STATE;
-			if (PRIVATE_DATA->gps_data.fix.mode == MODE_2D)
+			}
+			if (PRIVATE_DATA->gps_data.fix.mode == MODE_2D) {
 				GPS_STATUS_2D_FIX_ITEM->light.value = INDIGO_BUSY_STATE;
-			if (PRIVATE_DATA->gps_data.fix.mode == MODE_3D)
+			}
+			if (PRIVATE_DATA->gps_data.fix.mode == MODE_3D) {
 				GPS_STATUS_3D_FIX_ITEM->light.value = INDIGO_OK_STATE;
+			}
 
-			if (PRIVATE_DATA->gps_data.fix.mode == MODE_NOT_SEEN)
+			if (PRIVATE_DATA->gps_data.fix.mode == MODE_NOT_SEEN) {
 				GPS_STATUS_PROPERTY->state = INDIGO_BUSY_STATE;
-			else
+			} else {
 				GPS_STATUS_PROPERTY->state = INDIGO_OK_STATE;
+			}
 		}
 		/* DOP_SET does not seem to be set even when there is DOP data */
 		if (!isnan(PRIVATE_DATA->gps_data.dop.pdop))
@@ -198,15 +215,17 @@ static void gps_refresh_callback(indigo_device *device) {
 		if (PRIVATE_DATA->gps_data.set & SATELLITE_SET) {
 			GPS_ADVANCED_STATUS_SVS_IN_USE_ITEM->number.value = PRIVATE_DATA->gps_data.satellites_used;
 			GPS_ADVANCED_STATUS_SVS_IN_VIEW_ITEM->number.value = PRIVATE_DATA->gps_data.satellites_visible;
-			if (PRIVATE_DATA->gps_data.set & DOP_SET)
+			if (PRIVATE_DATA->gps_data.set & DOP_SET) {
 				GPS_ADVANCED_STATUS_PROPERTY->state = INDIGO_OK_STATE;
+			}
 		}
 
 		indigo_update_property(device, GPS_STATUS_PROPERTY, NULL);
 		indigo_update_property(device, GPS_GEOGRAPHIC_COORDINATES_PROPERTY, NULL);
 		indigo_update_property(device, GPS_UTC_TIME_PROPERTY, NULL);
-		if (GPS_ADVANCED_ENABLED_ITEM->sw.value)
+		if (GPS_ADVANCED_ENABLED_ITEM->sw.value) {
 			indigo_update_property(device, GPS_ADVANCED_STATUS_PROPERTY, NULL);
+		}
 	}
 }
 
@@ -271,8 +290,7 @@ static indigo_result gps_detach(indigo_device *device) {
 static gpsd_private_data *private_data = NULL;
 static indigo_device *gps = NULL;
 
-indigo_result indigo_gps_gpsd(indigo_driver_action action, indigo_driver_info *info)
-{
+indigo_result indigo_gps_gpsd(indigo_driver_action action, indigo_driver_info *info) {
 	static indigo_device gps_template = INDIGO_DEVICE_INITIALIZER(
 		GPS_GPSD_DEVICE_NAME,
 		gps_attach,
@@ -286,34 +304,35 @@ indigo_result indigo_gps_gpsd(indigo_driver_action action, indigo_driver_info *i
 
 	SET_DRIVER_INFO(info, GPS_GPSD_DRIVER_DESCRIPTION, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		last_action = action;
-		private_data = indigo_safe_malloc(sizeof(gpsd_private_data));
-		gps = indigo_safe_malloc_copy(sizeof(indigo_device), &gps_template);
-		gps->private_data = private_data;
-		indigo_attach_device(gps);
-		break;
+		case INDIGO_DRIVER_INIT:
+			last_action = action;
+			private_data = indigo_safe_malloc(sizeof(gpsd_private_data));
+			gps = indigo_safe_malloc_copy(sizeof(indigo_device), &gps_template);
+			gps->private_data = private_data;
+			indigo_attach_device(gps);
+			break;
 
-	case INDIGO_DRIVER_SHUTDOWN:
-		VERIFY_NOT_CONNECTED(gps);
-		last_action = action;
-		if (gps != NULL) {
-			indigo_detach_device(gps);
-			free(gps);
-			gps = NULL;
-		}
-		if (private_data != NULL) {
-			free(private_data);
-			private_data = NULL;
-		}
-		break;
+		case INDIGO_DRIVER_SHUTDOWN:
+			VERIFY_NOT_CONNECTED(gps);
+			last_action = action;
+			if (gps != NULL) {
+				indigo_detach_device(gps);
+				free(gps);
+				gps = NULL;
+			}
+			if (private_data != NULL) {
+				free(private_data);
+				private_data = NULL;
+			}
+			break;
 
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

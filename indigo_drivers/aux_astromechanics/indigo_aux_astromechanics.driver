@@ -1,0 +1,85 @@
+// Copyright (c) 2021-2026 CloudMakers, s. r. o.
+// All rights reserved.
+//
+// You can use this software under the terms of 'INDIGO Astronomy
+// open-source license' (see LICENSE.md).
+//
+// THIS SOFTWARE IS PROVIDED BY THE AUTHORS 'AS IS' AND ANY EXPRESS
+// OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+// GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+// WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+// NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// ASTROMECHANICS LPM driver definition
+
+// version history
+// 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+
+driver astromechanics {
+	label = "ASTROMECHANICS LPM";
+	author = "Peter Polakovic <peter.polakovic@cloudmakers.eu>";
+	copyright = "Copyright (c) 2021-2026 CloudMakers, s. r. o.";
+	version = 5;
+	serial;
+	data {
+		char response[16];
+	}
+	code {
+		static bool astromechanics_command(indigo_device *device, char *command) {
+			long result = indigo_uni_discard(PRIVATE_DATA->handle);
+			if (result >= 0) {
+				result = indigo_uni_printf(PRIVATE_DATA->handle, command);
+				if (result > 0) {
+					result = indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response), "\n#", "\n#", INDIGO_DELAY(1));
+				}
+			}
+			return result > 0;
+		}
+
+		static bool astromechanics_open(indigo_device *device) {
+			PRIVATE_DATA->handle = indigo_uni_open_serial_with_speed(DEVICE_PORT_ITEM->text.value, 38400, INDIGO_LOG_DEBUG);
+			return PRIVATE_DATA->handle != NULL;
+		}
+
+		static void astromechanics_close(indigo_device *device) {
+			indigo_uni_close(&PRIVATE_DATA->handle);
+		}
+	}
+	aux {
+		name = "ASTROMECHANICS LPM";
+		interface = INDIGO_INTERFACE_AUX_SQM;
+		additional_instances = true;
+		on_timer {
+			if (astromechanics_command(device, "V#")) {
+				AUX_WEATHER_SKY_BRIGHTNESS_ITEM->number.value = indigo_atod(PRIVATE_DATA->response);
+				AUX_WEATHER_SKY_BORTLE_CLASS_ITEM->number.value = indigo_aux_sky_bortle(AUX_WEATHER_SKY_BRIGHTNESS_ITEM->number.value);
+				AUX_WEATHER_PROPERTY->state = INDIGO_OK_STATE;
+			} else {
+				AUX_WEATHER_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
+			indigo_update_property(device, AUX_WEATHER_PROPERTY, NULL);
+			indigo_execute_handler_in(device, 10, aux_timer_callback);
+		}
+		number AUX_WEATHER {
+			name = AUX_WEATHER_PROPERTY_NAME;
+			group = AUX_MAIN_GROUP;
+			label = "Sky quality";
+			perm = INDIGO_RO_PERM;
+			item AUX_WEATHER_SKY_BRIGHTNESS {
+				name = AUX_WEATHER_SKY_BRIGHTNESS_ITEM_NAME;
+				label = "Sky brightness [m/arcsec\u00B2]";
+			}
+			item AUX_WEATHER_SKY_BORTLE_CLASS {
+				name = AUX_WEATHER_SKY_BORTLE_CLASS_ITEM_NAME;
+				label = "Sky Bortle class";
+			}
+		}
+	}
+}

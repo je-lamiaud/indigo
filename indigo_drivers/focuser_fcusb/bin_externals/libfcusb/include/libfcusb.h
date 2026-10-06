@@ -1,7 +1,7 @@
 /*
  * libfcusb - interface library for Shoestring FCUSB motor controllers
  *
- * Copyright (c) 2016 CloudMakers, s. r. o. All Rights Reserved.
+ * Copyright (c) 2016-2025 CloudMakers, s. r. o. All Rights Reserved.
  *
  * Redistribution and use in binary forms are permitted provided that
  * the above copyright notice and this paragraph are duplicated in all
@@ -20,7 +20,11 @@
 
 #include <stdbool.h>
 #include <pthread.h>
+#if defined(INDIGO_WINDOWS)
+#include <libusb.h>
+#else
 #include <libusb-1.0/libusb.h>
+#endif
 #include <hidapi/hidapi.h>
 
 #define FCUSB_VID	0x134A

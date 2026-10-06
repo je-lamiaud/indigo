@@ -1,4 +1,4 @@
-// Copyright (c) 2024 CloudMakers, s. r. o.
+// Copyright (c) 2024-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_focuser_lacerta.c
  */
 
-#define DRIVER_VERSION 0x0001
+#define DRIVER_VERSION 0x02000001
 #define DRIVER_NAME "indigo_focuser_lacerta"
 
 #include <stdlib.h>
@@ -110,15 +110,15 @@ static bool lacerta_open(indigo_device *device) {
 		if (lacerta_command(device, ": i #", response, sizeof(response), 'i')) {
 			if (!strcmp(response + 2, "FMC")) {
 				PRIVATE_DATA->model = FMC;
-				strcpy(INFO_DEVICE_MODEL_ITEM->text.value, response + 2);
+				INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, response + 2);
 			} else if (!strcmp(response + 2, "MFOC")) {
 				PRIVATE_DATA->model = MFOC;
 			} else {
 				PRIVATE_DATA->model = UNKNOWN;
 			}
-			strcpy(INFO_DEVICE_MODEL_ITEM->text.value, response + 2);
+			INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, response + 2);
 			if (lacerta_command(device, ": v #", response, sizeof(response), 'v')) {
-				strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, response + 1);
+				INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, response + 1);
 			}
 			indigo_update_property(device, INFO_PROPERTY, NULL);
 		} else {
@@ -313,10 +313,11 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -346,7 +347,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- INFO
 		INFO_PROPERTY->count = 6;
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->port_mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return focuser_enumerate_properties(device, NULL, NULL);
@@ -355,7 +356,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 }
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static indigo_result focuser_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
@@ -448,8 +449,9 @@ indigo_result indigo_focuser_lacerta(indigo_driver_action action, indigo_driver_
 
 	SET_DRIVER_INFO(info, "LACERTA Motorfocus Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

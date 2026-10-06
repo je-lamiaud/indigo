@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // Lakeside focuser command set is extracted from INDI driver written
@@ -27,7 +27,7 @@
  */
 
 
-#define DRIVER_VERSION 0x0006
+#define DRIVER_VERSION 0x02000006
 #define DRIVER_NAME "indigo_focuser_lakeside"
 
 #include <stdlib.h>
@@ -108,8 +108,9 @@ static indigo_result focuser_attach(indigo_device *device) {
 	assert(PRIVATE_DATA != NULL);
 	if (indigo_focuser_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		X_FOCUSER_ACTIVE_SLOPE_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_FOCUSER_ACTIVE_SLOPE", FOCUSER_MAIN_GROUP, "Active slope", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (X_FOCUSER_ACTIVE_SLOPE_PROPERTY == NULL)
+		if (X_FOCUSER_ACTIVE_SLOPE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_FOCUSER_ACTIVE_SLOPE_1_ITEM, "1", "Slope #1", true);
 		indigo_init_switch_item(X_FOCUSER_ACTIVE_SLOPE_2_ITEM, "2", "Slope #2", false);
 		FOCUSER_COMPENSATION_PROPERTY = indigo_resize_property(FOCUSER_COMPENSATION_PROPERTY, 3);
@@ -118,12 +119,13 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_LINUX
 		strcpy(DEVICE_PORT_ITEM->text.value, "/dev/usb_focuser");
 #endif
 		// -------------------------------------------------------------------------------- INFO
 		INFO_PROPERTY->count = 6;
-		strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "Lakeside Focuser");
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Lakeside Focuser");
 		// -------------------------------------------------------------------------------- FOCUSER_TEMPERATURE
 		FOCUSER_TEMPERATURE_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- FOCUSER_SPEED
@@ -142,7 +144,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_COMPENSATION_PROPERTY->hidden = false;
 		FOCUSER_MODE_PROPERTY->hidden = false;
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return focuser_enumerate_properties(device, NULL, NULL);
@@ -152,9 +154,9 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_FOCUSER_ACTIVE_SLOPE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_ACTIVE_SLOPE_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static void focuser_timer_callback(indigo_device *device) {
@@ -531,8 +533,9 @@ indigo_result indigo_focuser_lakeside(indigo_driver_action action, indigo_driver
 
 	SET_DRIVER_INFO(info, "LakesideAstro Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

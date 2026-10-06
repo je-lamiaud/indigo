@@ -1,4 +1,4 @@
-// Copyright (c) 2018 CloudMakers, s. r. o.
+// Copyright (c) 2018-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -18,22 +18,24 @@
 
 // version history
 // 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
-// 2.0 by Rumen Bogdanovski <rumenastro@gmail.com>
+// 2.0 refactoring by Rumen G. Bogdanovski <rumenastro@gmail.com>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 /** INDIGO ToupTek CCD, filter wheel & focuser driver
  \file indigo_ccd_touptek.c
  */
 
-#define DRIVER_VERSION 0x0027
+#define DRIVER_VERSION 0x03000029
+
+/* seems to be fixed in recent SDK versions */
+// #define USB3_EXPOSURE_CLUDGE
 
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <math.h>
 #include <assert.h>
 #include <pthread.h>
 #include <ctype.h>
-#include <sys/time.h>
 
 #include <indigo/indigo_usb_utils.h>
 #include <indigo/indigo_driver_xml.h>
@@ -53,6 +55,21 @@
 
 #include <altaircam.h>
 #include "../ccd_altair/indigo_ccd_altair.h"
+
+#elif defined(BACCAM)
+#define ENTRY_POINT						indigo_ccd_baccam
+#define CAMERA_NAME_PREFIX		"BacCam"
+#define DRIVER_LABEL					"BacCam Camera"
+#define DRIVER_NAME						"indigo_ccd_baccam"
+#define DRIVER_PRIVATE_DATA		baccam_private_data
+
+#define SDK_CALL(x)						Baccam_##x
+#define SDK_DEF(x)						BACCAM_##x
+#define SDK_TYPE(x)						Baccam##x
+#define SDK_HANDLE						HBaccam
+
+#include <baccam.h>
+#include "../ccd_baccam/indigo_ccd_baccam.h"
 
 #elif defined(BRESSER)
 
@@ -133,6 +150,22 @@
 
 #include <mallincam.h>
 #include "../ccd_mallin/indigo_ccd_mallin.h"
+
+#elif defined(MEADE)
+
+#define ENTRY_POINT						indigo_ccd_meade
+#define CAMERA_NAME_PREFIX		"Meade"
+#define DRIVER_LABEL					"Meade Camera"
+#define DRIVER_NAME						"indigo_ccd_meade"
+#define DRIVER_PRIVATE_DATA		meade_private_data
+
+#define SDK_CALL(x)						Toupcam_##x     // Strange - Meade cameras use Toupcam prefix
+#define SDK_DEF(x)						TOUPCAM_##x
+#define SDK_TYPE(x)						Toupcam##x
+#define SDK_HANDLE						HToupCam
+
+#include <meadecam.h>
+#include "../ccd_meade/indigo_ccd_meade.h"
 
 #elif defined(OGMA)
 
@@ -236,12 +269,13 @@ typedef struct {
 	indigo_device *guider;
 	indigo_timer *exposure_watchdog_timer, *temperature_timer, *guider_timer_ra, *guider_timer_dec;
 	double current_temperature;
-	unsigned char *buffer;
+	char *buffer;
 	unsigned bin_mode;
 	int bits;
 	int mode;
 	int left, top, width, height;
 	bool aborting;
+	bool video_mode;
 	pthread_mutex_t mutex;
 	indigo_property *advanced_property;
 	indigo_property *fan_property;
@@ -256,6 +290,7 @@ typedef struct {
 	indigo_property *calibrate_property;
 	indigo_property *wheel_model_property;
 	/* focuser related */
+	bool has_temperature_sensor;
 	int current_position, target_position;
 	int max_position;
 	int backlash;
@@ -263,6 +298,8 @@ typedef struct {
 	indigo_timer *focuser_timer;
 	indigo_property *beep_property;
 } DRIVER_PRIVATE_DATA;
+
+static pthread_mutex_t indigo_device_enumeration_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define ADVANCED_GROUP                 "Advanced"
 
@@ -286,7 +323,7 @@ typedef struct {
 #define MAKEFOURCC(a, b, c, d) ((unsigned)(unsigned char)(a) | ((unsigned)(unsigned char)(b) << 8) | ((unsigned)(unsigned char)(c) << 16) | ((unsigned)(unsigned char)(d) << 24))
 #endif
 
-#define ROUND_BIN(dimention, bin) (2 * ((unsigned)(dimention) / (unsigned)(bin) / 2));
+#define ROUND_BIN(dimention, bin) (2 * ((unsigned)(dimention) / (unsigned)(bin) / 2))
 
 static bool get_blacklevel(indigo_device *device, int *blacklevel, double *scale) {
 	int pixel_format;
@@ -355,7 +392,7 @@ static void handle_offset(indigo_device *device) {
 	}
 }
 
-static void get_bayer_pattern(indigo_device *device, char *bayer_pattern) {
+static void get_bayer_pattern(indigo_device *device) {
 	unsigned fourcc = 0, bitspp = 0;
 	HRESULT result = SDK_CALL(get_RawFormat)(PRIVATE_DATA->handle, &fourcc, &bitspp);
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_RawFormat(->%x, -> %d) = %d", fourcc, bitspp, result);
@@ -377,22 +414,60 @@ static void get_bayer_pattern(indigo_device *device, char *bayer_pattern) {
 	}
 }
 
-static void fnish_exposure_async(indigo_device *device) {
+static void finish_exposure_async(indigo_device *device) {
 	CCD_EXPOSURE_PROPERTY->state = INDIGO_OK_STATE;
 	indigo_update_property(device, CCD_EXPOSURE_PROPERTY, NULL);
 }
 
-static void finish_streaming_async(indigo_device *device) {
-	CCD_STREAMING_PROPERTY->state = INDIGO_OK_STATE;
-	indigo_update_property(device, CCD_STREAMING_PROPERTY, NULL);
+static void stop_video_mode_async(indigo_device *device) {
+	/* put_Option(OPTION_TRIGGER) must only be called from a timer thread:
+	   it internally joins the SDK callback thread, so it MUST NOT be called
+	   while holding bus_mutex or PRIVATE_DATA->mutex (both cause deadlock).
+	   Guard with video_mode flag to ensure it is only called once even if
+	   both a natural end and an abort race to schedule this function.
+	*/
+	if (!PRIVATE_DATA->video_mode) return;
+	PRIVATE_DATA->video_mode = false;
+
+	if (CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE) {
+		/* Abort path: set aborting before stopping so that the final frame
+		   delivered by the SDK during put_Option is caught by the pull
+		   callback, which handles indigo_finalize_video_stream and cleanup.
+		*/
+		PRIVATE_DATA->aborting = true;
+	}
+
+	HRESULT result = SDK_CALL(put_Option)(PRIVATE_DATA->handle, SDK_DEF(OPTION_TRIGGER), 1);
+	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_Option(OPTION_TRIGGER, 1) -> %08x", result);
+
+	if (CCD_STREAMING_PROPERTY->state != INDIGO_BUSY_STATE) {
+		/* Natural end: state already set to OK before scheduling this timer. */
+		indigo_update_property(device, CCD_STREAMING_PROPERTY, NULL);
+	}
+}
+
+static void abort_cleanup_async(indigo_device *device) {
+	indigo_ccd_abort_exposure_cleanup(device);
 }
 
 static void exposure_watchdog_callback(indigo_device *device) {
 	INDIGO_DRIVER_ERROR(DRIVER_NAME, "pull_callback() was not called in time");
+	/* Flush the frame buffer to unstick the SDK pipeline.  With multiple cameras
+	   and short exposures the SDK occasionally stops delivering EVENT_IMAGE, leaving
+	   the buffer full so that every subsequent Trigger() is also silently dropped.
+	   Flushing clears that condition.  We also reset PRIVATE_DATA->mode so that the
+	   next call to setup_exposure() unconditionally re-calls
+	   StartPullModeWithCallback(), recovering from any case where the SDK silently
+	   dropped the callback registration (observed race in the closed-source SDK when
+	   two cameras fire nearly simultaneously). */
+	HRESULT result = SDK_CALL(put_Option)(PRIVATE_DATA->handle, SDK_DEF(OPTION_FLUSH), 3);
+	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_Option(OPTION_FLUSH, 3) -> %08x", result);
+	PRIVATE_DATA->mode = -1;
 	CCD_EXPOSURE_PROPERTY->state = INDIGO_ALERT_STATE;
 	indigo_update_property(device, CCD_EXPOSURE_PROPERTY, "Exposure failed, pull callback was not called");
 }
 
+#ifdef USB3_EXPOSURE_CLUDGE
 /* dummy exposure callback - needed for a workaround */
 static void pull_callback_dummy(unsigned event, void* callbackCtx) {
 	//SDK_TYPE(FrameInfoV2) frameInfo = { 0 };
@@ -409,6 +484,7 @@ static void pull_callback_dummy(unsigned event, void* callbackCtx) {
 		}
 	}
 }
+#endif /* USB3_EXPOSURE_CLUDGE */
 
 static void pull_callback(unsigned event, void* callbackCtx) {
 	SDK_TYPE(FrameInfoV2) frameInfo = { 0 };
@@ -430,25 +506,35 @@ static void pull_callback(unsigned event, void* callbackCtx) {
 
 	switch (event) {
 		case SDK_DEF(EVENT_IMAGE): {
-			pthread_mutex_lock(&PRIVATE_DATA->mutex);
 			result = SDK_CALL(PullImageV2)(PRIVATE_DATA->handle, PRIVATE_DATA->buffer + FITS_HEADER_SIZE, PRIVATE_DATA->bits, &frameInfo);
-			pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 			if (result >= 0) {
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "PullImageV2(%d, ->[%d x %d, %x, %d]) -> %08x", PRIVATE_DATA->bits, frameInfo.width, frameInfo.height, frameInfo.flag, frameInfo.seq, result);
 				if (PRIVATE_DATA->aborting) {
+					/* Abort path (single-exposure or streaming): discard this frame,
+					   finalize any open video file, and clean up.
+					*/
+					PRIVATE_DATA->aborting = false;
 					indigo_finalize_video_stream(device);
+					indigo_set_timer(device, 0, abort_cleanup_async, NULL);
 				} else {
 					if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE) {
 						indigo_process_image(device, PRIVATE_DATA->buffer, frameInfo.width, frameInfo.height, PRIVATE_DATA->bits > 8 && PRIVATE_DATA->bits <= 16 ? 16 : PRIVATE_DATA->bits, true, true, fits_keywords, false);
 						CCD_EXPOSURE_ITEM->number.value = 0;
-						indigo_set_timer(device, 0, fnish_exposure_async, NULL);
+						indigo_set_timer(device, 0, finish_exposure_async, NULL);
 					} else if (CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE) {
 						indigo_process_image(device, PRIVATE_DATA->buffer, frameInfo.width, frameInfo.height, PRIVATE_DATA->bits > 8 && PRIVATE_DATA->bits <= 16 ? 16 : PRIVATE_DATA->bits, true, true, fits_keywords, true);
-						if (--CCD_STREAMING_COUNT_ITEM->number.value == 0) {
+						if (CCD_STREAMING_COUNT_ITEM->number.value > 0) {
+							CCD_STREAMING_COUNT_ITEM->number.value--;
+						}
+						if (CCD_STREAMING_COUNT_ITEM->number.value == 0) {
 							indigo_finalize_video_stream(device);
-							indigo_set_timer(device, 0, finish_streaming_async, NULL);
-						} else if (CCD_STREAMING_COUNT_ITEM->number.value < -1) {
-							CCD_STREAMING_COUNT_ITEM->number.value = -1;
+							CCD_STREAMING_PROPERTY->state = INDIGO_OK_STATE;
+							/* put_Option(OPTION_TRIGGER,1) must run from a timer thread (not the SDK
+							   callback thread). stop_video_mode_async is guarded by video_mode flag
+							   to prevent double-call if an abort races with count reaching 0.
+							*/
+							indigo_set_timer(device, 0, stop_video_mode_async, NULL);
+						} else {
 							indigo_update_property(device, CCD_STREAMING_PROPERTY, NULL);
 						}
 					}
@@ -462,7 +548,7 @@ static void pull_callback(unsigned event, void* callbackCtx) {
 				} else if (CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE) {
 					indigo_finalize_video_stream(device);
 					CCD_STREAMING_PROPERTY->state = INDIGO_ALERT_STATE;
-					indigo_update_property(device, CCD_STREAMING_PROPERTY, NULL);
+					indigo_set_timer(device, 0, stop_video_mode_async, NULL);
 				}
 			}
 			break;
@@ -470,9 +556,17 @@ static void pull_callback(unsigned event, void* callbackCtx) {
 		case SDK_DEF(EVENT_NOFRAMETIMEOUT):
 		case SDK_DEF(EVENT_NOPACKETTIMEOUT):
 		case SDK_DEF(EVENT_ERROR): {
+			result = SDK_CALL(put_Option)(PRIVATE_DATA->handle, SDK_DEF(OPTION_FLUSH), 3);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_Option(OPTION_FLUSH, 3) -> %08x", result);
 			indigo_ccd_failure_cleanup(device);
-			CCD_EXPOSURE_PROPERTY->state = INDIGO_ALERT_STATE;
-			indigo_update_property(device, CCD_EXPOSURE_PROPERTY, NULL);
+			if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE) {
+				CCD_EXPOSURE_PROPERTY->state = INDIGO_ALERT_STATE;
+				indigo_update_property(device, CCD_EXPOSURE_PROPERTY, "SDK reported error");
+			} else if (CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE) {
+				indigo_finalize_video_stream(device);
+				CCD_STREAMING_PROPERTY->state = INDIGO_ALERT_STATE;
+				indigo_set_timer(device, 0, stop_video_mode_async, NULL);
+			}
 			break;
 		}
 	}
@@ -489,10 +583,11 @@ static void ccd_temperature_callback(indigo_device *device) {
 	if (result >= 0) {
 		PRIVATE_DATA->current_temperature = CCD_TEMPERATURE_ITEM->number.value = temperature / 10.0;
 		if (CCD_TEMPERATURE_PROPERTY->perm == INDIGO_RW_PERM && fabs(CCD_TEMPERATURE_ITEM->number.value - CCD_TEMPERATURE_ITEM->number.target) > 1.0) {
-			if (!CCD_COOLER_PROPERTY->hidden && CCD_COOLER_OFF_ITEM->sw.value)
+			if (!CCD_COOLER_PROPERTY->hidden && CCD_COOLER_OFF_ITEM->sw.value) {
 				CCD_TEMPERATURE_PROPERTY->state = INDIGO_OK_STATE;
-			else
+			} else {
 				CCD_TEMPERATURE_PROPERTY->state = INDIGO_BUSY_STATE;
+			}
 		} else {
 			CCD_TEMPERATURE_PROPERTY->state = INDIGO_OK_STATE;
 		}
@@ -535,7 +630,6 @@ static void setup_exposure(indigo_device *device) {
 			if (PRIVATE_DATA->mode != i) {
 				result = SDK_CALL(Stop)(PRIVATE_DATA->handle);
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Stop() -> %08x", result);
-				//indigo_usleep(200000);
 				if (strncmp(item->name, "RAW08", 5) == 0 || strncmp(item->name, "MON08", 5) == 0) {
 					result = SDK_CALL(put_Option)(PRIVATE_DATA->handle, SDK_DEF(OPTION_RAW), 1);
 					INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_Option(OPTION_RAW, 1) -> %08x", result);
@@ -574,13 +668,15 @@ static void setup_exposure(indigo_device *device) {
 		unsigned left = ROUND_BIN(CCD_FRAME_LEFT_ITEM->number.value, 1);
 		unsigned top = ROUND_BIN(CCD_FRAME_TOP_ITEM->number.value, 1);
 		unsigned width = ROUND_BIN(CCD_FRAME_WIDTH_ITEM->number.value, 1);
-		if (width < 16)
+		if (width < 16) {
 			width = 16;
+		}
 		unsigned height = ROUND_BIN(CCD_FRAME_HEIGHT_ITEM->number.value, 1);
-		if (height < 16)
+		if (height < 16) {
 			height = 16;
-		int max_width = CCD_INFO_WIDTH_ITEM->number.value;
-		int max_height = CCD_INFO_HEIGHT_ITEM->number.value;
+		}
+		unsigned max_width = (unsigned)CCD_INFO_WIDTH_ITEM->number.value;
+		unsigned max_height = (unsigned)CCD_INFO_HEIGHT_ITEM->number.value;
 		if (left + width > max_width || top + height > max_height) {
 			left = top = 0;
 			width = max_width;
@@ -608,10 +704,10 @@ static indigo_result ccd_attach(indigo_device *device) {
 	if (indigo_ccd_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		// --------------------------------------------------------------------------------
 		unsigned long long flags = PRIVATE_DATA->cam.model->flag;
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "flags = %0LX", flags);
+//		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "flags = %0LX", flags);
 		char name[128], label[128];
 		INFO_PROPERTY->count = 8;
-		indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->cam.model->name);
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, INDIGO_WCHAR_TO_CHAR(PRIVATE_DATA->cam.model->name));
 		CCD_INFO_PIXEL_WIDTH_ITEM->number.value = PRIVATE_DATA->cam.model->xpixsz;
 		CCD_INFO_PIXEL_HEIGHT_ITEM->number.value = PRIVATE_DATA->cam.model->ypixsz;
 		CCD_INFO_PIXEL_SIZE_ITEM->number.value = (CCD_INFO_PIXEL_WIDTH_ITEM->number.value + CCD_INFO_PIXEL_HEIGHT_ITEM->number.value) / 2.0;
@@ -620,7 +716,7 @@ static indigo_result ccd_attach(indigo_device *device) {
 		CCD_INFO_WIDTH_ITEM->number.value = 0;
 		CCD_INFO_HEIGHT_ITEM->number.value = 0;
 		CCD_INFO_BITS_PER_PIXEL_ITEM->number.value = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.min = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.value = 8;
-		for (int i = 0; i < PRIVATE_DATA->cam.model->preview; i++) {
+		for (unsigned i = 0; i < PRIVATE_DATA->cam.model->preview; i++) {
 			int frame_width = PRIVATE_DATA->cam.model->res[i].width;
 			int frame_height = PRIVATE_DATA->cam.model->res[i].height;
 			if (frame_width > CCD_INFO_WIDTH_ITEM->number.value) {
@@ -644,32 +740,36 @@ static indigo_result ccd_attach(indigo_device *device) {
 					snprintf(name, sizeof(name), "RAW10_%d", bin);
 					snprintf(label, sizeof(label), "RAW 10 %dx%d", frame_width, frame_height);
 					indigo_init_switch_item(CCD_MODE_ITEM + CCD_MODE_PROPERTY->count, name, label, false);
-					if (CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max < 10)
+					if (CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max < 10) {
 						CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max = 10;
+					}
 					CCD_MODE_PROPERTY->count++;
 				}
 				if (flags & SDK_DEF(FLAG_RAW12)) {
 					snprintf(name, sizeof(name), "RAW12_%d", bin);
 					snprintf(label, sizeof(label), "RAW 12 %dx%d", frame_width, frame_height);
 					indigo_init_switch_item(CCD_MODE_ITEM + CCD_MODE_PROPERTY->count, name, label, false);
-					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 12)
+					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 12) {
 						CCD_INFO_BITS_PER_PIXEL_ITEM->number.value = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max = 12;
+					}
 					CCD_MODE_PROPERTY->count++;
 				}
 				if (flags & SDK_DEF(FLAG_RAW14)) {
 					snprintf(name, sizeof(name), "RAW14_%d", bin);
 					snprintf(label, sizeof(label), "RAW 14 %dx%d", frame_width, frame_height);
 					indigo_init_switch_item(CCD_MODE_ITEM + CCD_MODE_PROPERTY->count, name, label, false);
-					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 14)
+					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 14) {
 						CCD_INFO_BITS_PER_PIXEL_ITEM->number.value = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max = 14;
+					}
 					CCD_MODE_PROPERTY->count++;
 				}
 				if (flags & SDK_DEF(FLAG_RAW16)) {
 					snprintf(name, sizeof(name), "RAW16_%d", bin);
 					snprintf(label, sizeof(label), "RAW 16 %dx%d", frame_width, frame_height);
 					indigo_init_switch_item(CCD_MODE_ITEM + CCD_MODE_PROPERTY->count, name, label, false);
-					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 16)
+					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 16) {
 						CCD_INFO_BITS_PER_PIXEL_ITEM->number.value = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max = 16;
+					}
 					CCD_MODE_PROPERTY->count++;
 				}
 				snprintf(name, sizeof(name), "RGB08_%d", bin);
@@ -687,32 +787,36 @@ static indigo_result ccd_attach(indigo_device *device) {
 					snprintf(name, sizeof(name), "MON10_%d", bin);
 					snprintf(label, sizeof(label), "MON 10 %dx%d", frame_width, frame_height);
 					indigo_init_switch_item(CCD_MODE_ITEM + CCD_MODE_PROPERTY->count, name, label, false);
-					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 10)
+					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 10) {
 						CCD_INFO_BITS_PER_PIXEL_ITEM->number.value = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max = 10;
+					}
 					CCD_MODE_PROPERTY->count++;
 				}
 				if (flags & SDK_DEF(FLAG_RAW12)) {
 					snprintf(name, sizeof(name), "MON12_%d", bin);
 					snprintf(label, sizeof(label), "MON 12 %dx%d", frame_width, frame_height);
 					indigo_init_switch_item(CCD_MODE_ITEM + CCD_MODE_PROPERTY->count, name, label, false);
-					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 12)
+					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 12) {
 						CCD_INFO_BITS_PER_PIXEL_ITEM->number.value = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max = 12;
+					}
 					CCD_MODE_PROPERTY->count++;
 				}
 				if (flags & SDK_DEF(FLAG_RAW14)) {
 					snprintf(name, sizeof(name), "MON14_%d", bin);
 					snprintf(label, sizeof(label), "MON 14 %dx%d", frame_width, frame_height);
 					indigo_init_switch_item(CCD_MODE_ITEM + CCD_MODE_PROPERTY->count, name, label, false);
-					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 14)
+					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 14) {
 						CCD_INFO_BITS_PER_PIXEL_ITEM->number.value = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max = 14;
+					}
 					CCD_MODE_PROPERTY->count++;
 				}
 				if (flags & SDK_DEF(FLAG_RAW16)) {
 					snprintf(name, sizeof(name), "MON16_%d", bin);
 					snprintf(label, sizeof(label), "MON 16 %d x %d", frame_width, frame_height);
 					indigo_init_switch_item(CCD_MODE_ITEM + CCD_MODE_PROPERTY->count, name, label, false);
-					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 16)
+					if (CCD_INFO_BITS_PER_PIXEL_ITEM->number.value < 16) {
 						CCD_INFO_BITS_PER_PIXEL_ITEM->number.value = CCD_FRAME_BITS_PER_PIXEL_ITEM->number.max = 16;
+					}
 					CCD_MODE_PROPERTY->count++;
 				}
 			}
@@ -737,13 +841,14 @@ static indigo_result ccd_attach(indigo_device *device) {
 				CCD_TEMPERATURE_PROPERTY->perm = INDIGO_RO_PERM;
 			}
 		}
-		CCD_STREAMING_PROPERTY->hidden = ((flags & SDK_DEF(FLAG_TRIGGER_SINGLE)) != 0);
-		CCD_IMAGE_FORMAT_PROPERTY->count = CCD_STREAMING_PROPERTY->hidden ? 5 : 6;
+		CCD_STREAMING_PROPERTY->hidden = false;
+		CCD_IMAGE_FORMAT_PROPERTY->count = 7;
 		CCD_GAIN_PROPERTY->hidden = false;
 
 		X_CCD_ADVANCED_PROPERTY = indigo_init_number_property(NULL, device->name, "X_CCD_ADVANCED", CCD_ADVANCED_GROUP, "Advanced Settings", INDIGO_OK_STATE, INDIGO_RW_PERM, 9);
-		if (X_CCD_ADVANCED_PROPERTY == NULL)
+		if (X_CCD_ADVANCED_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_CCD_SPEED_ITEM, "SPEED", "Speed level", 0, PRIVATE_DATA->cam.model->maxspeed, 1, 0);
 		indigo_init_number_item(X_CCD_CONTRAST_ITEM, "CONTRAST", "Contrast", SDK_DEF(CONTRAST_MIN), SDK_DEF(CONTRAST_MAX), 1, SDK_DEF(CONTRAST_DEF));
 		indigo_init_number_item(X_CCD_HUE_ITEM, "HUE", "Hue", SDK_DEF(HUE_MIN), SDK_DEF(HUE_MAX), 1, SDK_DEF(HUE_DEF));
@@ -759,20 +864,23 @@ static indigo_result ccd_attach(indigo_device *device) {
 
 		if (flags & SDK_DEF(FLAG_FAN)) {
 			X_CCD_FAN_PROPERTY = indigo_init_number_property(NULL, device->name, "X_CCD_FAN", CCD_ADVANCED_GROUP, "Fan control", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-			if (X_CCD_FAN_PROPERTY == NULL)
+			if (X_CCD_FAN_PROPERTY == NULL) {
 				return INDIGO_FAILED;
+			}
 			indigo_init_number_item(X_CCD_FAN_SPEED_ITEM, "FAN_SPEED", "Fan speed", 0, 0, 1, 0);
 		}
 		if (flags & SDK_DEF(FLAG_HEAT)) {
 			X_CCD_HEATER_PROPERTY = indigo_init_number_property(NULL, device->name, "X_CCD_HEATER", CCD_ADVANCED_GROUP, "Window heater", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-			if (X_CCD_HEATER_PROPERTY == NULL)
+			if (X_CCD_HEATER_PROPERTY == NULL) {
 				return INDIGO_FAILED;
+			}
 			indigo_init_number_item(X_CCD_HEATER_POWER_ITEM, "POWER", "Power", 0, 0, 1, 0);
 		}
 		if (flags & SDK_DEF(FLAG_CG) || flags & SDK_DEF(FLAG_CGHDR)) {
 			X_CCD_CONVERSION_GAIN_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_CCD_CONVERSION_GAIN", CCD_ADVANCED_GROUP, "Conversion gain", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 3);
-			if (X_CCD_CONVERSION_GAIN_PROPERTY == NULL)
+			if (X_CCD_CONVERSION_GAIN_PROPERTY == NULL) {
 				return INDIGO_FAILED;
+			}
 			indigo_init_switch_item(X_CCD_CONVERSION_GAIN_LCG_ITEM, "LCG", "Low conversion gain", true);
 			indigo_init_switch_item(X_CCD_CONVERSION_GAIN_HCG_ITEM, "HCG", "High conversion gain", false);
 			indigo_init_switch_item(X_CCD_CONVERSION_GAIN_HDR_ITEM, "HDR", "High dynamic range", false);
@@ -784,15 +892,17 @@ static indigo_result ccd_attach(indigo_device *device) {
 		}
 
 		X_CCD_BIN_MODE_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_CCD_BIN_MODE", CCD_ADVANCED_GROUP, "Binning mode", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 3);
-		if (X_CCD_BIN_MODE_PROPERTY == NULL)
+		if (X_CCD_BIN_MODE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_CCD_BIN_MODE_SATURATE_ITEM, "SATURATE", "Sum and saturate", true);
 		indigo_init_switch_item(X_CCD_BIN_MODE_EXPAND_ITEM, "EXPAND", "Sum and expand to 16-bits (10, 12 and 14-bit data)", false);
 		indigo_init_switch_item(X_CCD_BIN_MODE_AVERAGE_ITEM, "AVERAGE", "Average", false);
 
 		X_CCD_LED_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_CCD_LED", CCD_ADVANCED_GROUP, "Camera LED control", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (X_CCD_LED_PROPERTY == NULL)
+		if (X_CCD_LED_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_CCD_LED_ON_ITEM, "ON", "On", true);
 		indigo_init_switch_item(X_CCD_LED_OFF_ITEM, "OFF", "Off", false);
 		X_CCD_LED_PROPERTY->hidden = true;
@@ -820,7 +930,7 @@ static indigo_result ccd_enumerate_properties(indigo_device *device, indigo_clie
 		if (X_CCD_LED_PROPERTY && indigo_property_match(X_CCD_LED_PROPERTY, property))
 			indigo_define_property(device, X_CCD_LED_PROPERTY, NULL);
 	}
-	return indigo_ccd_enumerate_properties(device, NULL, NULL);
+	return indigo_ccd_enumerate_properties(device, client, property);
 }
 
 static void ccd_connect_callback(indigo_device *device) {
@@ -832,14 +942,19 @@ static void ccd_connect_callback(indigo_device *device) {
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
 			} else {
 				char id[66];
-				sprintf(id, "@%s", PRIVATE_DATA->cam.id);
-				PRIVATE_DATA->handle = SDK_CALL(Open)(id);
+				sprintf(id, "@%s", INDIGO_WCHAR_TO_CHAR(PRIVATE_DATA->cam.id));
+				pthread_mutex_lock(&indigo_device_enumeration_mutex);
+				PRIVATE_DATA->handle = SDK_CALL(Open)(INDIGO_CHAR_TO_WCHAR(id));
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Open(%s) -> %p", id, PRIVATE_DATA->handle);
+				if (PRIVATE_DATA->handle == NULL) {
+					indigo_global_unlock(device);
+				}
 			}
 		}
 		device->gp_bits = 1;
 		if (PRIVATE_DATA->handle) {
-			PRIVATE_DATA->buffer = (unsigned char *)indigo_alloc_blob_buffer(3 * CCD_INFO_WIDTH_ITEM->number.value * CCD_INFO_HEIGHT_ITEM->number.value + FITS_HEADER_SIZE);
+			PRIVATE_DATA->buffer = (char *)indigo_alloc_blob_buffer(3 * (int)CCD_INFO_WIDTH_ITEM->number.value * (int)CCD_INFO_HEIGHT_ITEM->number.value + FITS_HEADER_SIZE);
 			if (PRIVATE_DATA->cam.model->flag & SDK_DEF(FLAG_GETTEMPERATURE)) {
 				if (CCD_TEMPERATURE_PROPERTY->perm == INDIGO_RW_PERM) {
 					int value;
@@ -861,7 +976,7 @@ static void ccd_connect_callback(indigo_device *device) {
 			result = SDK_CALL(get_FwVersion)(PRIVATE_DATA->handle, INFO_DEVICE_FW_REVISION_ITEM->text.value);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_FwVersion() -> %08x", result);
 			indigo_update_property(device, INFO_PROPERTY, NULL);
-			get_bayer_pattern(device, PRIVATE_DATA->bayer_pattern);
+			get_bayer_pattern(device);
 			int bitDepth = 0;
 			int binning = 1;
 			char name[16];
@@ -896,20 +1011,20 @@ static void ccd_connect_callback(indigo_device *device) {
 			CCD_BIN_HORIZONTAL_ITEM->number.target =
 			CCD_BIN_VERTICAL_ITEM->number.value =
 			CCD_BIN_VERTICAL_ITEM->number.target = binning;
-			uint32_t min, max, current;
+			unsigned min, max, current;
 			SDK_CALL(get_ExpTimeRange)(PRIVATE_DATA->handle, &min, &max, &current);
 			CCD_EXPOSURE_ITEM->number.min = CCD_STREAMING_EXPOSURE_ITEM->number.min = min / 1000000.0;
 			CCD_EXPOSURE_ITEM->number.max = CCD_STREAMING_EXPOSURE_ITEM->number.max = max / 1000000.0;
-			min = max = current = 0;
+			unsigned short gain_min = 0, gain_max = 0, gain_current = 0;
 			result = SDK_CALL(put_AutoExpoEnable)(PRIVATE_DATA->handle, false);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_AutoExpoEnable(false) -> %08x", result);
-			result = SDK_CALL(get_ExpoAGainRange)(PRIVATE_DATA->handle, (unsigned short *)&min, (unsigned short *)&max, (unsigned short *)&current);
-			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_ExpoAGainRange(->%d, ->%d, ->%d) -> %08x", min, max, current, result);
-			result = SDK_CALL(get_ExpoAGain)(PRIVATE_DATA->handle, (unsigned short *)&current);
-			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_ExpoAGain(->%d) -> %08x", current, result);
-			CCD_GAIN_ITEM->number.min = min;
-			CCD_GAIN_ITEM->number.max = max;
-			CCD_GAIN_ITEM->number.value = current;
+			result = SDK_CALL(get_ExpoAGainRange)(PRIVATE_DATA->handle, &gain_min, &gain_max, &gain_current);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_ExpoAGainRange(->%d, ->%d, ->%d) -> %08x", gain_min, gain_max, gain_current, result);
+			result = SDK_CALL(get_ExpoAGain)(PRIVATE_DATA->handle, &gain_current);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_ExpoAGain(->%d) -> %08x", gain_current, result);
+			CCD_GAIN_ITEM->number.min = gain_min;
+			CCD_GAIN_ITEM->number.max = gain_max;
+			CCD_GAIN_ITEM->number.value = gain_current;
 
 			if (PRIVATE_DATA->cam.model->flag & SDK_DEF(FLAG_BLACKLEVEL)) {
 				CCD_OFFSET_PROPERTY->hidden = false;
@@ -920,7 +1035,7 @@ static void ccd_connect_callback(indigo_device *device) {
 				double scale = 8;
 				get_blacklevel(device, &blacklevel, &scale);
 				CCD_OFFSET_ITEM->number.value = CCD_OFFSET_ITEM->number.target = blacklevel * scale;
-				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Offset supported: balcklevel=%d, scale=%f", blacklevel, scale);
+				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Offset supported: blacklevel=%d, scale=%f", blacklevel, scale);
 			}
 
 			if (X_CCD_ADVANCED_PROPERTY) {
@@ -978,6 +1093,7 @@ static void ccd_connect_callback(indigo_device *device) {
 			result = SDK_CALL(put_Option)(PRIVATE_DATA->handle, SDK_DEF(OPTION_TRIGGER), 1);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_Option(OPTION_TRIGGER, 1) -> %08x", result);
 
+#ifdef USB3_EXPOSURE_CLUDGE
 			/*
 			This is a workaround for a problem with some cameras that fail to get exposure if
 			after being plugged StartPullModeWithCallback() and Stop() are called without Trigger()
@@ -993,6 +1109,8 @@ static void ccd_connect_callback(indigo_device *device) {
 				result = SDK_CALL(Stop)(PRIVATE_DATA->handle);
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Stop() -> %08x", result);
 			}
+#endif
+
 			result = SDK_CALL(StartPullModeWithCallback)(PRIVATE_DATA->handle, pull_callback, device);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "StartPullModeWithCallback() -> %08x", result);
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
@@ -1002,32 +1120,42 @@ static void ccd_connect_callback(indigo_device *device) {
 			device->gp_bits = 0;
 		}
 	} else {
-		result = SDK_CALL(Stop)(PRIVATE_DATA->handle);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Stop() -> %08x", result);
+		if (PRIVATE_DATA->handle) {
+			result = SDK_CALL(Stop)(PRIVATE_DATA->handle);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Stop() -> %08x", result);
+		}
 		indigo_cancel_timer_sync(device, &PRIVATE_DATA->temperature_timer);
 		indigo_cancel_timer_sync(device, &PRIVATE_DATA->exposure_watchdog_timer);
 		if (PRIVATE_DATA->buffer != NULL) {
 			free(PRIVATE_DATA->buffer);
 			PRIVATE_DATA->buffer = NULL;
 		}
-		if (X_CCD_ADVANCED_PROPERTY)
+		if (X_CCD_ADVANCED_PROPERTY) {
 			indigo_delete_property(device, X_CCD_ADVANCED_PROPERTY, NULL);
-		if (X_CCD_FAN_PROPERTY)
+		}
+		if (X_CCD_FAN_PROPERTY) {
 			indigo_delete_property(device, X_CCD_FAN_PROPERTY, NULL);
-		if (X_CCD_HEATER_PROPERTY)
+		}
+		if (X_CCD_HEATER_PROPERTY) {
 			indigo_delete_property(device, X_CCD_HEATER_PROPERTY, NULL);
-		if (X_CCD_CONVERSION_GAIN_PROPERTY)
+		}
+		if (X_CCD_CONVERSION_GAIN_PROPERTY) {
 			indigo_delete_property(device, X_CCD_CONVERSION_GAIN_PROPERTY, NULL);
-		if (X_CCD_BIN_MODE_PROPERTY)
+		}
+		if (X_CCD_BIN_MODE_PROPERTY) {
 			indigo_delete_property(device, X_CCD_BIN_MODE_PROPERTY, NULL);
-		if (X_CCD_LED_PROPERTY)
+		}
+		if (X_CCD_LED_PROPERTY) {
 			indigo_delete_property(device, X_CCD_LED_PROPERTY, NULL);
+		}
 		if (PRIVATE_DATA->guider && PRIVATE_DATA->guider->gp_bits == 0) {
 			if (PRIVATE_DATA->handle != NULL) {
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Closing camera");
+				pthread_mutex_lock(&indigo_device_enumeration_mutex);
 				pthread_mutex_lock(&PRIVATE_DATA->mutex);
 				SDK_CALL(Close)(PRIVATE_DATA->handle);
 				pthread_mutex_unlock(&PRIVATE_DATA->mutex);
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			}
 			PRIVATE_DATA->handle = NULL;
 			indigo_global_unlock(device);
@@ -1087,17 +1215,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		int vertical_bin = (int)CCD_BIN_VERTICAL_ITEM->number.value;
 		/* Touptek (& family) cameras work with binx = biny for we force it here */
 		if (prev_h_bin != horizontal_bin) {
-			vertical_bin =
-			CCD_BIN_HORIZONTAL_ITEM->number.target =
-			CCD_BIN_HORIZONTAL_ITEM->number.value =
-			CCD_BIN_VERTICAL_ITEM->number.target =
-			CCD_BIN_VERTICAL_ITEM->number.value = horizontal_bin;
+			vertical_bin = (int)(CCD_BIN_HORIZONTAL_ITEM->number.target = CCD_BIN_HORIZONTAL_ITEM->number.value = CCD_BIN_VERTICAL_ITEM->number.target = CCD_BIN_VERTICAL_ITEM->number.value = horizontal_bin);
 		} else if (prev_v_bin != vertical_bin) {
-			horizontal_bin =
-			CCD_BIN_HORIZONTAL_ITEM->number.target =
-			CCD_BIN_HORIZONTAL_ITEM->number.value =
-			CCD_BIN_VERTICAL_ITEM->number.target =
-			CCD_BIN_VERTICAL_ITEM->number.value = vertical_bin;
+			horizontal_bin = (int)(CCD_BIN_HORIZONTAL_ITEM->number.target = CCD_BIN_HORIZONTAL_ITEM->number.value = CCD_BIN_VERTICAL_ITEM->number.target = CCD_BIN_VERTICAL_ITEM->number.value = vertical_bin);
 		}
 		char *selected_name = CCD_MODE_PROPERTY->items[0].name;
 		for (int k = 0; k < CCD_MODE_PROPERTY->count; k++) {
@@ -1152,8 +1272,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(CCD_EXPOSURE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CCD_EXPOSURE
-		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (CCD_EXPOSURE_PROPERTY->state == INDIGO_BUSY_STATE) {
 			return INDIGO_OK;
+		}
 		indigo_property_copy_values(CCD_EXPOSURE_PROPERTY, property, false);
 		indigo_use_shortest_exposure_if_bias(device);
 		if (CCD_UPLOAD_MODE_LOCAL_ITEM->sw.value || CCD_UPLOAD_MODE_BOTH_ITEM->sw.value) {
@@ -1179,8 +1300,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 	} else if (indigo_property_match_changeable(CCD_STREAMING_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CCD_STREAMING
-		if (CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE) {
 			return INDIGO_OK;
+		}
 		indigo_property_copy_values(CCD_STREAMING_PROPERTY, property, false);
 		indigo_use_shortest_exposure_if_bias(device);
 		if (CCD_UPLOAD_MODE_LOCAL_ITEM->sw.value || CCD_UPLOAD_MODE_BOTH_ITEM->sw.value) {
@@ -1198,8 +1320,9 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		result = SDK_CALL(put_ExpoTime)(PRIVATE_DATA->handle, (unsigned)(CCD_STREAMING_EXPOSURE_ITEM->number.target * 1000000));
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_ExpoTime(%u) -> %08x", (unsigned)(CCD_STREAMING_EXPOSURE_ITEM->number.target * 1000000), result);
 		PRIVATE_DATA->aborting = false;
-		result = SDK_CALL(Trigger)(PRIVATE_DATA->handle, (int)CCD_STREAMING_COUNT_ITEM->number.value);
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Trigger(%d) -> %08x", (int)CCD_STREAMING_COUNT_ITEM->number.value);
+		PRIVATE_DATA->video_mode = true;
+		result = SDK_CALL(put_Option)(PRIVATE_DATA->handle, SDK_DEF(OPTION_TRIGGER), 0);
+		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_Option(OPTION_TRIGGER, 0) -> %08x", result);
 		pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 	} else if (indigo_property_match_changeable(CCD_ABORT_EXPOSURE_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CCD_ABORT_EXPOSURE
@@ -1208,11 +1331,24 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 			CCD_ABORT_EXPOSURE_PROPERTY->state = INDIGO_BUSY_STATE;
 			indigo_update_property(device, CCD_ABORT_EXPOSURE_PROPERTY, NULL);
 			indigo_cancel_timer_sync(device, &PRIVATE_DATA->exposure_watchdog_timer);
-			PRIVATE_DATA->aborting = true;
-			pthread_mutex_lock(&PRIVATE_DATA->mutex);
-			result = SDK_CALL(Trigger)(PRIVATE_DATA->handle, 0);
-			pthread_mutex_unlock(&PRIVATE_DATA->mutex);
-			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Trigger(0) -> %08x", result);
+			if (CCD_STREAMING_PROPERTY->state == INDIGO_BUSY_STATE) {
+				/* Streaming abort: must not call put_Option(OPTION_TRIGGER,1) here —
+				   it joins the SDK callback thread, which deadlocks because we hold
+				   bus_mutex and the callback thread may be waiting for bus_mutex.
+				   Defer to a timer thread. Streaming exposures can be very long so
+				   we cannot wait for the next frame via the aborting flag.
+				*/
+				indigo_set_timer(device, 0, stop_video_mode_async, NULL);
+			} else {
+				/* Single-exposure abort: cancel the pending trigger. The callback
+				   will fire with the discarded frame and clean up via aborting flag.
+				*/
+				PRIVATE_DATA->aborting = true;
+				pthread_mutex_lock(&PRIVATE_DATA->mutex);
+				result = SDK_CALL(Trigger)(PRIVATE_DATA->handle, 0);
+				pthread_mutex_unlock(&PRIVATE_DATA->mutex);
+				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Trigger(0) -> %08x", result);
+			}
 		}
 	} else if (indigo_property_match_changeable(CCD_COOLER_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CCD_COOLER
@@ -1254,14 +1390,14 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 	} else if (indigo_property_match_changeable(CCD_GAIN_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CCD_GAIN
 		indigo_property_copy_values(CCD_GAIN_PROPERTY, property, false);
-		result = SDK_CALL(put_ExpoAGain)(PRIVATE_DATA->handle, (int)CCD_GAIN_ITEM->number.value);
+		result = SDK_CALL(put_ExpoAGain)(PRIVATE_DATA->handle, (unsigned short)CCD_GAIN_ITEM->number.value);
 		if (result < 0) {
 			CCD_GAIN_PROPERTY->state = INDIGO_ALERT_STATE;
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "put_ExpoAGain(%d) -> %08x", (int)CCD_GAIN_ITEM->number.value, result);
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "put_ExpoAGain(%d) -> %08x", (unsigned short)CCD_GAIN_ITEM->number.value, result);
 			indigo_update_property(device, CCD_GAIN_PROPERTY, "Analog gain setting is not supported");
 		} else {
 			CCD_GAIN_PROPERTY->state = INDIGO_OK_STATE;
-			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_ExpoAGain(%d) -> %08x", (int)CCD_GAIN_ITEM->number.value, result);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_ExpoAGain(%d) -> %08x", (unsigned short)CCD_GAIN_ITEM->number.value, result);
 			indigo_update_property(device, CCD_GAIN_PROPERTY, NULL);
 		}
 	} else if (indigo_property_match_changeable(CCD_OFFSET_PROPERTY, property)) {
@@ -1318,12 +1454,12 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_WhiteBalanceGain(%d, %d, %d) -> %08x", gain[0], gain[1], gain[2], result);
 			}
 		}
-		result = SDK_CALL(put_Speed)(PRIVATE_DATA->handle, (int)X_CCD_SPEED_ITEM->number.value);
+		result = SDK_CALL(put_Speed)(PRIVATE_DATA->handle, (unsigned short)X_CCD_SPEED_ITEM->number.value);
 		if (result < 0) {
 			X_CCD_ADVANCED_PROPERTY->state = INDIGO_ALERT_STATE;
-			INDIGO_DRIVER_ERROR(DRIVER_NAME, "put_Speed(%d) -> %08x", (int)X_CCD_SPEED_ITEM->number.value, result);
+			INDIGO_DRIVER_ERROR(DRIVER_NAME, "put_Speed(%d) -> %08x", (unsigned short)X_CCD_SPEED_ITEM->number.value, result);
 		} else {
-			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_Speed(%d) -> %08x", (int)X_CCD_SPEED_ITEM->number.value, result);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_Speed(%d) -> %08x", (unsigned short)X_CCD_SPEED_ITEM->number.value, result);
 		}
 		indigo_update_property(device, X_CCD_ADVANCED_PROPERTY, NULL);
 		return INDIGO_OK;
@@ -1406,7 +1542,7 @@ static indigo_result ccd_change_property(indigo_device *device, indigo_client *c
 		indigo_update_property(device, X_CCD_BIN_MODE_PROPERTY, NULL);
 		return INDIGO_OK;
 		// -------------------------------------------------------------------------------- CONFIG
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, X_CCD_ADVANCED_PROPERTY);
 			indigo_save_property(device, NULL, X_CCD_CONVERSION_GAIN_PROPERTY);
@@ -1456,7 +1592,7 @@ static indigo_result guider_attach(indigo_device *device) {
 	assert(PRIVATE_DATA != NULL);
 	if (indigo_guider_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		INFO_PROPERTY->count = 8;
-		indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->cam.model->name);
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, INDIGO_WCHAR_TO_CHAR(PRIVATE_DATA->cam.model->name));
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return indigo_guider_enumerate_properties(device, NULL, NULL);
 	}
@@ -1471,15 +1607,20 @@ static void guider_connect_callback(indigo_device *device) {
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
 			} else {
 				char id[66];
-				sprintf(id, "@%s", PRIVATE_DATA->cam.id);
-				PRIVATE_DATA->handle = SDK_CALL(Open)(id);
+				sprintf(id, "@%s", INDIGO_WCHAR_TO_CHAR(PRIVATE_DATA->cam.id));
+				pthread_mutex_lock(&indigo_device_enumeration_mutex);
+				PRIVATE_DATA->handle = SDK_CALL(Open)(INDIGO_CHAR_TO_WCHAR(id));
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Open(%s) -> %p", id, PRIVATE_DATA->handle);
+				if (PRIVATE_DATA->handle == NULL) {
+					indigo_global_unlock(device);
+				}
 			}
 		}
 		device->gp_bits = 1;
 		if (PRIVATE_DATA->handle) {
 			HRESULT result = SDK_CALL(put_Option)(PRIVATE_DATA->handle, SDK_DEF(OPTION_CALLBACK_THREAD), 1);
-			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Tuopcam_put_Option(OPTION_CALLBACK_THREAD, 1) -> %08x", result);
+			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "put_Option(OPTION_CALLBACK_THREAD, 1) -> %08x", result);
 			result = SDK_CALL(get_SerialNumber)(PRIVATE_DATA->handle, INFO_DEVICE_SERIAL_NUM_ITEM->text.value);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_SerialNumber() -> %08x", result);
 			result = SDK_CALL(get_HwVersion)(PRIVATE_DATA->handle, INFO_DEVICE_HW_REVISION_ITEM->text.value);
@@ -1499,9 +1640,11 @@ static void guider_connect_callback(indigo_device *device) {
 		if (PRIVATE_DATA->camera && PRIVATE_DATA->camera->gp_bits == 0) {
 			if (PRIVATE_DATA->handle != NULL) {
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Closing camera");
+				pthread_mutex_lock(&indigo_device_enumeration_mutex);
 				pthread_mutex_lock(&PRIVATE_DATA->mutex);
 				SDK_CALL(Close)(PRIVATE_DATA->handle);
 				pthread_mutex_unlock(&PRIVATE_DATA->mutex);
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				indigo_global_unlock(device);
 			}
 			PRIVATE_DATA->handle = NULL;
@@ -1550,13 +1693,13 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 		// -------------------------------------------------------------------------------- GUIDER_GUIDE_DEC
 		indigo_property_copy_values(GUIDER_GUIDE_DEC_PROPERTY, property, false);
 		HRESULT result = 0;
-		int pulse_length = 0;
+		unsigned pulse_length = 0;
 		indigo_cancel_timer(device, &PRIVATE_DATA->guider_timer_dec);
 		if (GUIDER_GUIDE_NORTH_ITEM->number.value > 0) {
-			pulse_length = (int)GUIDER_GUIDE_NORTH_ITEM->number.value;
+			pulse_length = (unsigned)GUIDER_GUIDE_NORTH_ITEM->number.value;
 			result = SDK_CALL(ST4PlusGuide)(PRIVATE_DATA->handle, 0, pulse_length);
 		} else if (GUIDER_GUIDE_SOUTH_ITEM->number.value > 0) {
-			pulse_length = (int)GUIDER_GUIDE_SOUTH_ITEM->number.value;
+			pulse_length = (unsigned)GUIDER_GUIDE_SOUTH_ITEM->number.value;
 			result = SDK_CALL(ST4PlusGuide)(PRIVATE_DATA->handle, 1, pulse_length);
 		}
 		GUIDER_GUIDE_DEC_PROPERTY->state = SUCCEEDED(result) ? INDIGO_BUSY_STATE : INDIGO_ALERT_STATE;
@@ -1569,13 +1712,13 @@ static indigo_result guider_change_property(indigo_device *device, indigo_client
 		// -------------------------------------------------------------------------------- GUIDER_GUIDE_RA
 		indigo_property_copy_values(GUIDER_GUIDE_RA_PROPERTY, property, false);
 		HRESULT result = 0;
-		int pulse_length = 0;
+		unsigned pulse_length = 0;
 		indigo_cancel_timer(device, &PRIVATE_DATA->guider_timer_ra);
 		if (GUIDER_GUIDE_EAST_ITEM->number.value > 0) {
-			pulse_length = (int)GUIDER_GUIDE_EAST_ITEM->number.value;
+			pulse_length = (unsigned)GUIDER_GUIDE_EAST_ITEM->number.value;
 			result = SDK_CALL(ST4PlusGuide)(PRIVATE_DATA->handle, 2, pulse_length);
 		} else if (GUIDER_GUIDE_WEST_ITEM->number.value > 0) {
-			pulse_length = (int)GUIDER_GUIDE_WEST_ITEM->number.value;
+			pulse_length = (unsigned)GUIDER_GUIDE_WEST_ITEM->number.value;
 			result = SDK_CALL(ST4PlusGuide)(PRIVATE_DATA->handle, 3, pulse_length);
 		}
 		GUIDER_GUIDE_RA_PROPERTY->state = SUCCEEDED(result) ? INDIGO_BUSY_STATE : INDIGO_ALERT_STATE;
@@ -1645,7 +1788,7 @@ static void calibrate_callback(indigo_device *device) {
 	if (SUCCEEDED(result)) {
 		int pos = 0;
 		do {
-			indigo_usleep(ONE_SECOND_DELAY);
+			indigo_sleep(1);
 			pthread_mutex_lock(&PRIVATE_DATA->mutex);
 			HRESULT result = SDK_CALL(get_Option)(PRIVATE_DATA->handle, SDK_DEF(OPTION_FILTERWHEEL_POSITION), &pos);
 			pthread_mutex_unlock(&PRIVATE_DATA->mutex);
@@ -1680,13 +1823,15 @@ static indigo_result wheel_attach(indigo_device *device) {
 		INFO_PROPERTY->count = 7;
 		// --------------------------------------------------------------------------------- X_CALIBRATE
 		X_CALIBRATE_PROPERTY = indigo_init_switch_property(NULL, device->name, X_CALIBRATE_PROPERTY_NAME, ADVANCED_GROUP, "Calibrate filter wheel", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 1);
-		if (X_CALIBRATE_PROPERTY == NULL)
+		if (X_CALIBRATE_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_CALIBRATE_START_ITEM, X_CALIBRATE_START_ITEM_NAME, "Start", false);
 		// --------------------------------------------------------------------------------- X_WHEEL_MODEL
 		X_WHEEL_MODEL_PROPERTY = indigo_init_switch_property(NULL, device->name, X_WHEEL_MODEL_PROPERTY_NAME, MAIN_GROUP, "Device Model", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 3);
-		if (X_WHEEL_MODEL_PROPERTY == NULL)
+		if (X_WHEEL_MODEL_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_WHEEL_MODEL_5_POSITION_ITEM, X_WHEEL_MODEL_5_POSITION_ITEM_NAME, "5 positions Filter wheel", false);
 		indigo_init_switch_item(X_WHEEL_MODEL_7_POSITION_ITEM, X_WHEEL_MODEL_7_POSITION_ITEM_NAME, "7 positions Filter wheel", true);
 		indigo_init_switch_item(X_WHEEL_MODEL_8_POSITION_ITEM, X_WHEEL_MODEL_8_POSITION_ITEM_NAME, "8 positions Filter wheel", false);
@@ -1700,9 +1845,9 @@ static indigo_result wheel_attach(indigo_device *device) {
 
 static indigo_result wheel_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	assert(device != NULL);
-	indigo_define_matching_property(X_WHEEL_MODEL_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(X_WHEEL_MODEL_PROPERTY);
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_CALIBRATE_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_CALIBRATE_PROPERTY);
 	}
 	return indigo_wheel_enumerate_properties(device, client, property);
 }
@@ -1716,9 +1861,14 @@ static void wheel_connect_callback(indigo_device *device) {
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
 			} else {
 				char id[66];
-				sprintf(id, "@%s", PRIVATE_DATA->cam.id);
-				PRIVATE_DATA->handle = SDK_CALL(Open)(id);
+				sprintf(id, "@%s", INDIGO_WCHAR_TO_CHAR(PRIVATE_DATA->cam.id));
+				pthread_mutex_lock(&indigo_device_enumeration_mutex);
+				PRIVATE_DATA->handle = SDK_CALL(Open)(INDIGO_CHAR_TO_WCHAR(id));
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Open(%s) -> %p", id, PRIVATE_DATA->handle);
+				if (PRIVATE_DATA->handle == NULL) {
+					indigo_global_unlock(device);
+				}
 			}
 		}
 		device->gp_bits = 1;
@@ -1742,7 +1892,7 @@ static void wheel_connect_callback(indigo_device *device) {
 			pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 			int value = 0;
 			do {
-				indigo_usleep(ONE_SECOND_DELAY);
+				indigo_sleep(1);
 				result = SDK_CALL(get_Option)(PRIVATE_DATA->handle, SDK_DEF(OPTION_FILTERWHEEL_POSITION), &value);
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_Option(OPTION_FILTERWHEEL_POSITION) -> %08x, %d", result, value + 1);
 			} while (value == -1);
@@ -1758,12 +1908,14 @@ static void wheel_connect_callback(indigo_device *device) {
 	} else {
 		indigo_cancel_timer_sync(device, &PRIVATE_DATA->wheel_timer);
 		indigo_delete_property(device, X_CALIBRATE_PROPERTY, NULL);
-		if (PRIVATE_DATA->camera && PRIVATE_DATA->camera->gp_bits != 0) {
+		if (PRIVATE_DATA->camera && PRIVATE_DATA->camera->gp_bits == 0) {
 			if (PRIVATE_DATA->handle != NULL) {
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Closing wheel");
+				pthread_mutex_lock(&indigo_device_enumeration_mutex);
 				pthread_mutex_lock(&PRIVATE_DATA->mutex);
 				SDK_CALL(Close)(PRIVATE_DATA->handle);
 				pthread_mutex_unlock(&PRIVATE_DATA->mutex);
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				indigo_global_unlock(device);
 			}
 			PRIVATE_DATA->handle = NULL;
@@ -1797,7 +1949,7 @@ static indigo_result wheel_change_property(indigo_device *device, indigo_client 
 			WHEEL_SLOT_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
 			WHEEL_SLOT_PROPERTY->state = INDIGO_BUSY_STATE;
-			PRIVATE_DATA->target_slot = WHEEL_SLOT_ITEM->number.value;
+			PRIVATE_DATA->target_slot = (int)WHEEL_SLOT_ITEM->number.value;
 			WHEEL_SLOT_ITEM->number.value = PRIVATE_DATA->current_slot;
 			int slot = ((int)WHEEL_SLOT_ITEM->number.target-1) + (1<< 8);
 			pthread_mutex_lock(&PRIVATE_DATA->mutex);
@@ -1840,7 +1992,7 @@ static indigo_result wheel_change_property(indigo_device *device, indigo_client 
 		indigo_define_property(device, WHEEL_SLOT_OFFSET_PROPERTY, NULL);
 
 		indigo_update_property(device, X_WHEEL_MODEL_PROPERTY, NULL);
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG_PROPERTY
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, X_WHEEL_MODEL_PROPERTY);
@@ -1905,7 +2057,7 @@ static void compensate_focus(indigo_device *device, double new_temp) {
 	int compensation;
 	double temp_difference = new_temp - PRIVATE_DATA->prev_temp;
 
-	// we do not have previous temperature reading 
+	// we do not have previous temperature reading
 	if (PRIVATE_DATA->prev_temp < -270) {
 		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Not compensating: PRIVATE_DATA->prev_temp = %f", PRIVATE_DATA->prev_temp);
 		PRIVATE_DATA->prev_temp = new_temp;
@@ -1951,9 +2103,9 @@ static void compensate_focus(indigo_device *device, double new_temp) {
 
 	// Make sure we do not attempt to go beyond the limits
 	if (FOCUSER_POSITION_ITEM->number.max < PRIVATE_DATA->target_position) {
-		PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.max;
+		PRIVATE_DATA->target_position = (int)FOCUSER_POSITION_ITEM->number.max;
 	} else if (FOCUSER_POSITION_ITEM->number.min > PRIVATE_DATA->target_position) {
-		PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.min;
+		PRIVATE_DATA->target_position = (int)FOCUSER_POSITION_ITEM->number.min;
 	}
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Compensating: Corrected PRIVATE_DATA->target_position = %d", PRIVATE_DATA->target_position);
 
@@ -1975,7 +2127,6 @@ static void compensate_focus(indigo_device *device, double new_temp) {
 
 static void temperature_timer_callback(indigo_device *device) {
 	int temp10 = -2732;
-	static bool has_sensor = true;
 	HRESULT res;
 
 	FOCUSER_TEMPERATURE_PROPERTY->state = INDIGO_OK_STATE;
@@ -1983,21 +2134,21 @@ static void temperature_timer_callback(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	res = (SDK_CALL(AAF)(PRIVATE_DATA->handle, SDK_DEF(AAF_GETAMBIENTTEMP), 0, &temp10));
 	if (FAILED(res)) {
-		if (has_sensor) {
+		if (PRIVATE_DATA->has_temperature_sensor) {
 			INDIGO_DRIVER_LOG(DRIVER_NAME, "The temperature sensor is not connected (using internal sensor).");
 			indigo_update_property(device, FOCUSER_TEMPERATURE_PROPERTY, "The temperature sensor is not connected (using internal sensor).");
 		}
-		has_sensor = false;
+		PRIVATE_DATA->has_temperature_sensor = false;
 	} else {
-		if (!has_sensor) {
+		if (!PRIVATE_DATA->has_temperature_sensor) {
 			INDIGO_DRIVER_LOG(DRIVER_NAME, "The temperature sensor connected.");
 			indigo_update_property(device, FOCUSER_TEMPERATURE_PROPERTY, "The temperature sensor connected.");
 		}
-		has_sensor = true;
+		PRIVATE_DATA->has_temperature_sensor = true;
 	}
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "AAF(AAF_GETAMBIENTTEMP) -> %08x (value = %d)", res, temp10);
 
-	if (!has_sensor) {
+	if (!PRIVATE_DATA->has_temperature_sensor) {
 		res = (SDK_CALL(AAF)(PRIVATE_DATA->handle, SDK_DEF(AAF_GETTEMP), 0, &temp10));
 		if (FAILED(res)) {
 			temp10 = -2732;
@@ -2027,9 +2178,9 @@ static void temperature_timer_callback(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_BEEP_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_BEEP_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 
@@ -2077,8 +2228,9 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_MODE_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------- BEEP_PROPERTY
 		X_BEEP_PROPERTY = indigo_init_switch_property(NULL, device->name, X_BEEP_PROPERTY_NAME, FOCUSER_ADVANCED_GROUP, "Buzzer", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (X_BEEP_PROPERTY == NULL)
+		if (X_BEEP_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 
 		indigo_init_switch_item(X_BEEP_ON_ITEM, X_BEEP_ON_ITEM_NAME, "On", false);
 		indigo_init_switch_item(X_BEEP_OFF_ITEM, X_BEEP_OFF_ITEM_NAME, "Off", true);
@@ -2090,7 +2242,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 }
 
 static void focuser_connect_callback(indigo_device *device) {
-indigo_lock_master_device(device);
+	indigo_lock_master_device(device);
 	CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
 		if (PRIVATE_DATA->handle == NULL) {
@@ -2098,9 +2250,14 @@ indigo_lock_master_device(device);
 				INDIGO_DRIVER_ERROR(DRIVER_NAME, "indigo_try_global_lock(): failed to get lock.");
 			} else {
 				char id[66];
-				sprintf(id, "@%s", PRIVATE_DATA->cam.id);
-				PRIVATE_DATA->handle = SDK_CALL(Open)(id);
+				sprintf(id, "@%s", INDIGO_WCHAR_TO_CHAR(PRIVATE_DATA->cam.id));
+				pthread_mutex_lock(&indigo_device_enumeration_mutex);
+				PRIVATE_DATA->handle = SDK_CALL(Open)(INDIGO_CHAR_TO_WCHAR(id));
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Open(%s) -> %p", id, PRIVATE_DATA->handle);
+				if (PRIVATE_DATA->handle == NULL) {
+					indigo_global_unlock(device);
+				}
 			}
 		}
 		device->gp_bits = 1;
@@ -2110,11 +2267,14 @@ indigo_lock_master_device(device);
 			result = SDK_CALL(get_FwVersion)(PRIVATE_DATA->handle, INFO_DEVICE_FW_REVISION_ITEM->text.value);
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "get_FwVersion() -> %08x", result);
 			indigo_update_property(device, INFO_PROPERTY, NULL);
-			indigo_define_property(device, X_CALIBRATE_PROPERTY, NULL);
-
 			pthread_mutex_lock(&PRIVATE_DATA->mutex);
 			int value = 0;
 			HRESULT res = (SDK_CALL(AAF)(PRIVATE_DATA->handle, SDK_DEF(AAF_RANGEMAX), 0, &value));
+			if (FAILED(res)) {
+				INDIGO_DRIVER_ERROR(DRIVER_NAME, "AAF(AAF_RANGEMAX) -> %08x (value = %d) (failed)", res, value);
+			} else {
+				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "AAF(AAF_RANGEMAX) -> %08x (value = %d)", res, value);
+			}
 
 			res = (SDK_CALL(AAF)(PRIVATE_DATA->handle, SDK_DEF(AAF_GETBACKLASH), 0, &value));
 			if (FAILED(res)) {
@@ -2166,7 +2326,7 @@ indigo_lock_master_device(device);
 
 			indigo_define_property(device, X_BEEP_PROPERTY, NULL);
 
-			PRIVATE_DATA->prev_temp = -273;  /* we do not have previous temperature reading */ 
+			PRIVATE_DATA->prev_temp = -273;  /* we do not have previous temperature reading */
 			indigo_set_timer(device, 0.5, focuser_timer_callback, &PRIVATE_DATA->focuser_timer);
 			indigo_set_timer(device, 0.1, temperature_timer_callback, &PRIVATE_DATA->temperature_timer);
 		} else {
@@ -2178,12 +2338,14 @@ indigo_lock_master_device(device);
 		indigo_cancel_timer_sync(device, &PRIVATE_DATA->focuser_timer);
 		indigo_cancel_timer_sync(device, &PRIVATE_DATA->temperature_timer);
 		indigo_delete_property(device, X_BEEP_PROPERTY, NULL);
-		if (PRIVATE_DATA->camera && PRIVATE_DATA->camera->gp_bits != 0) {
+		if (PRIVATE_DATA->camera && PRIVATE_DATA->camera->gp_bits == 0) {
 			if (PRIVATE_DATA->handle != NULL) {
 				INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Closing focuser");
+				pthread_mutex_lock(&indigo_device_enumeration_mutex);
 				pthread_mutex_lock(&PRIVATE_DATA->mutex);
 				SDK_CALL(Close)(PRIVATE_DATA->handle);
 				pthread_mutex_unlock(&PRIVATE_DATA->mutex);
+				pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 				indigo_global_unlock(device);
 			}
 			PRIVATE_DATA->handle = NULL;
@@ -2247,7 +2409,7 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 		} else {
 			FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
 			FOCUSER_STEPS_PROPERTY->state = INDIGO_BUSY_STATE;
-			PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.target;
+			PRIVATE_DATA->target_position = (int)FOCUSER_POSITION_ITEM->number.target;
 			FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
 			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
 			indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
@@ -2359,16 +2521,16 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 			}
 
 			if (FOCUSER_DIRECTION_MOVE_INWARD_ITEM->sw.value) {
-				PRIVATE_DATA->target_position = PRIVATE_DATA->current_position - FOCUSER_STEPS_ITEM->number.value;
+				PRIVATE_DATA->target_position = PRIVATE_DATA->current_position - (int)FOCUSER_STEPS_ITEM->number.value;
 			} else {
-				PRIVATE_DATA->target_position = PRIVATE_DATA->current_position + FOCUSER_STEPS_ITEM->number.value;
+				PRIVATE_DATA->target_position = PRIVATE_DATA->current_position + (int)FOCUSER_STEPS_ITEM->number.value;
 			}
 
 			/* Make sure we do not attempt to go beyond the limits */
 			if (FOCUSER_POSITION_ITEM->number.max < PRIVATE_DATA->target_position) {
-				PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.max;
+				PRIVATE_DATA->target_position = (int)FOCUSER_POSITION_ITEM->number.max;
 			} else if (FOCUSER_POSITION_ITEM->number.min > PRIVATE_DATA->target_position) {
-				PRIVATE_DATA->target_position = FOCUSER_POSITION_ITEM->number.min;
+				PRIVATE_DATA->target_position = (int)FOCUSER_POSITION_ITEM->number.min;
 			}
 
 			FOCUSER_POSITION_ITEM->number.value = PRIVATE_DATA->current_position;
@@ -2466,7 +2628,7 @@ static indigo_result focuser_change_property(indigo_device *device, indigo_clien
 		FOCUSER_MODE_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, FOCUSER_MODE_PROPERTY, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			//indigo_save_property(device, NULL, EAF_BEEP_PROPERTY);
@@ -2492,7 +2654,6 @@ static indigo_result focuser_detach(indigo_device *device) {
 // -------------------------------------------------------------------------------- hot-plug support
 
 static indigo_device *devices[SDK_DEF(MAX)];
-static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #ifdef TOUPTEK
 
@@ -2513,12 +2674,12 @@ struct oem_2_toupcam {
 	{ 0x547, 0xe075, 0x1075, "Meade DSI IV Color" }, // USB2.0
 	{ 0x547, 0xe06d, 0x106d, "Meade DSI IV Mono" }, // USB3.0
 	{ 0x547, 0xe076, 0x1076, "Meade DSI IV Mono" },  // USB2.0
-	
+
 	{ 0x547, 0xe00b, 0x11ca, "Meade LPI-GC Adv" }, // USB3.0
 	{ 0x547, 0xe00c, 0x11cb, "Meade LPI-GC Adv" }, // USB2.0
 	{ 0x547, 0xe00d, 0x11cc, "Meade LPI-GM Adv" }, // USB3.0
 	{ 0x547, 0xe00e, 0x11cd, "Meade LPI-GM Adv" }, // USB2.0
-	
+
 	{ 0x547, 0xe007, 0x115a, "Meade LPI-GC Adv" }, // USB3.0 + temperature sensor
 	{ 0x547, 0xe008, 0x115b, "Meade LPI-GC Adv" }, // USB2.0 + temperature sensor
 	{ 0x547, 0xe009, 0x115c, "Meade LPI-GM Adv" }, // USB3.0 + temperature sensor
@@ -2541,8 +2702,8 @@ int OEMCamEnum(ToupcamDeviceV2 *cams, int max_count) {
 		for (int j = 0; oem_2_toupcam[j].name != NULL; j++) {
 			if (oem_2_toupcam[j].oem_vid == desc.idVendor && oem_2_toupcam[j].oem_pid == desc.idProduct) {
 				cams[oem_count].model = Toupcam_get_Model(TOUPTEK_VID, oem_2_toupcam[j].toupcam_pid);
-				strcpy(cams[oem_count].displayname, oem_2_toupcam[j].name);
-				sprintf(cams[oem_count].id, "tp-%d-%d-%d-%d", libusb_get_bus_number(dev), libusb_get_device_address(dev),TOUPTEK_VID, oem_2_toupcam[j].toupcam_pid);
+				INDIGO_STRCPYW(cams[oem_count].displayname, INDIGO_CHAR_TO_WCHAR(oem_2_toupcam[j].name));
+				INDIGO_SNPRINTFW(cams[oem_count].id, sizeof(cams[oem_count].id) / 2, "tp-%d-%d-%d-%d", libusb_get_bus_number(dev), libusb_get_device_address(dev),TOUPTEK_VID, oem_2_toupcam[j].toupcam_pid);
 				oem_count++;
 			}
 		}
@@ -2554,11 +2715,12 @@ int OEMCamEnum(ToupcamDeviceV2 *cams, int max_count) {
 #endif
 
 static void process_plug_event(indigo_device *unusued) {
-	pthread_mutex_lock(&mutex);
+	pthread_mutex_lock(&indigo_device_enumeration_mutex);
 	for (int i = 0; i < SDK_DEF(MAX); i++) {
 		indigo_device *device = devices[i];
-		if (device)
+		if (device) {
 			PRIVATE_DATA->present = false;
+		}
 	}
 	SDK_TYPE(DeviceV2) cams[SDK_DEF(MAX)];
 	int count = SDK_CALL(EnumV2)(cams);
@@ -2572,7 +2734,7 @@ static void process_plug_event(indigo_device *unusued) {
 		bool found = false;
 		for (int i = 0; i < SDK_DEF(MAX); i++) {
 			indigo_device *device = devices[i];
-			if (device && !strncmp(PRIVATE_DATA->cam.id, cam.id, sizeof(cam.id))) {
+			if (device && !strcmp(INDIGO_WCHAR_TO_CHAR(PRIVATE_DATA->cam.id), INDIGO_WCHAR_TO_CHAR(cam.id))) {
 				found = true;
 				PRIVATE_DATA->present = true;
 				break;
@@ -2610,7 +2772,7 @@ static void process_plug_event(indigo_device *unusued) {
 #ifdef INDIGO_MACOS
 				snprintf(camera->name, INDIGO_NAME_SIZE, "%s %s #%s", CAMERA_NAME_PREFIX, cam.displayname, camera_id);
 #else
-				snprintf(camera->name, INDIGO_NAME_SIZE, "%s %s", CAMERA_NAME_PREFIX, cam.displayname);
+				snprintf(camera->name, INDIGO_NAME_SIZE, "%s %s", CAMERA_NAME_PREFIX, INDIGO_WCHAR_TO_CHAR(cam.displayname));
 				indigo_make_name_unique(camera->name, NULL);
 #endif
 				camera->private_data = private_data;
@@ -2635,7 +2797,7 @@ static void process_plug_event(indigo_device *unusued) {
 #ifdef INDIGO_MACOS
 					snprintf(guider->name, INDIGO_NAME_SIZE, "%s %s (guider) #%s", CAMERA_NAME_PREFIX, cam.displayname, camera_id);
 #else
-					snprintf(guider->name, INDIGO_NAME_SIZE, "%s %s (guider)", CAMERA_NAME_PREFIX, cam.displayname);
+					snprintf(guider->name, INDIGO_NAME_SIZE, "%s %s (guider)", CAMERA_NAME_PREFIX, INDIGO_WCHAR_TO_CHAR(cam.displayname));
 					indigo_make_name_unique(guider->name, NULL);
 #endif
 					guider->private_data = private_data;
@@ -2659,7 +2821,7 @@ static void process_plug_event(indigo_device *unusued) {
 				private_data->cam = cam;
 				private_data->present = true;
 				indigo_device *camera = indigo_safe_malloc_copy(sizeof(indigo_device), &wheel_template);
-				snprintf(camera->name, INDIGO_NAME_SIZE, "%s %s", CAMERA_NAME_PREFIX, cam.displayname);
+				snprintf(camera->name, INDIGO_NAME_SIZE, "%s %s", CAMERA_NAME_PREFIX, INDIGO_WCHAR_TO_CHAR(cam.displayname));
 				indigo_make_name_unique(camera->name, NULL);
 				camera->private_data = private_data;
 				camera->master_device = camera;
@@ -2685,8 +2847,9 @@ static void process_plug_event(indigo_device *unusued) {
 				DRIVER_PRIVATE_DATA *private_data = indigo_safe_malloc(sizeof(DRIVER_PRIVATE_DATA));
 				private_data->cam = cam;
 				private_data->present = true;
+				private_data->has_temperature_sensor = true;
 				indigo_device *camera = indigo_safe_malloc_copy(sizeof(indigo_device), &focuser_template);
-				snprintf(camera->name, INDIGO_NAME_SIZE, "%s %s", CAMERA_NAME_PREFIX, cam.displayname);
+				snprintf(camera->name, INDIGO_NAME_SIZE, "%s %s", CAMERA_NAME_PREFIX, INDIGO_WCHAR_TO_CHAR(cam.displayname));
 				indigo_make_name_unique(camera->name, NULL);
 				camera->private_data = private_data;
 				camera->master_device = camera;
@@ -2704,6 +2867,8 @@ static void process_plug_event(indigo_device *unusued) {
 		indigo_device *device = devices[i];
 		if (device && !PRIVATE_DATA->present) {
 			indigo_device *guider = PRIVATE_DATA->guider;
+			devices[i] = NULL;
+			pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 			if (guider) {
 				indigo_detach_device(guider);
 				free(guider);
@@ -2713,10 +2878,10 @@ static void process_plug_event(indigo_device *unusued) {
 				free(device->private_data);
 			}
 			free(device);
-			devices[i] = NULL;
+			pthread_mutex_lock(&indigo_device_enumeration_mutex);
 		}
 	}
-	pthread_mutex_unlock(&mutex);
+	pthread_mutex_unlock(&indigo_device_enumeration_mutex);
 }
 
 static int hotplug_callback(libusb_context *ctx, libusb_device *dev, libusb_hotplug_event event, void *user_data) {
@@ -2750,20 +2915,21 @@ indigo_result ENTRY_POINT(indigo_driver_action action, indigo_driver_info *info)
 
 	SET_DRIVER_INFO(info, DRIVER_LABEL, __FUNCTION__, DRIVER_VERSION, true, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch(action) {
 		case INDIGO_DRIVER_INIT: {
 			last_action = action;
 			for (int i = 0; i < SDK_DEF(MAX); i++)
 				devices[i] = NULL;
-			INDIGO_DRIVER_LOG(DRIVER_NAME, "SDK version %s", SDK_CALL(Version)());
+			INDIGO_DRIVER_LOG(DRIVER_NAME, "SDK version %s", INDIGO_WCHAR_TO_CHAR(SDK_CALL(Version)()));
 //	dump cameras supported by SDK
 //			for (int i = 0; i < 0xFFFF; i++) {
 //				SDK_TYPE(ModelV2) *model = SDK_CALL(get_Model)(0x0547, i);
 //				if (model) {
-//					printf("%04x %s\n", i, model->name);
+//					printf("%04x %s\n", i, INDIGO_WCHAR_TO_CHAR(model->name));
 //				}
 //			}
 			indigo_start_usb_event_handler();
@@ -2787,4 +2953,3 @@ indigo_result ENTRY_POINT(indigo_driver_action action, indigo_driver_info *info)
 
 	return INDIGO_OK;
 }
-

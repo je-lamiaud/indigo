@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -29,27 +29,48 @@
 #include <stdio.h>
 #include <indigo/indigo_bus.h>
 
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define JSON_BUFFER_SIZE	(256 * 1024)
 
-#ifndef htonll
-#define htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
-#endif
-
-#ifndef ntohll
-#define ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
-#endif
-
 /** JSON wire protocol parser.
  */
-extern void indigo_json_parse(indigo_device *device, indigo_client *client);
+INDIGO_EXTERN void indigo_json_parse(indigo_device *device, indigo_client *client);
 
-/** Escape JSON string.
+/** Escape JSON string into buffer identified by index (0-1), any greater index selects a long
+    buffer able to hold a whole text item value.
  */
-extern const char *indigo_json_escape(const char *string);
+INDIGO_EXTERN const char *indigo_json_escape_b(int index, const char *string);
+
+#define indigo_json_escape(string) indigo_json_escape_b(0, string)
+
+/** Generate define message.
+ */
+INDIGO_EXTERN indigo_result indigo_json_device_adapter_define_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
+
+/** Generate update message.
+ */
+INDIGO_EXTERN indigo_result indigo_json_device_adapter_update_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
+
+/** Generate delete message.
+ */
+INDIGO_EXTERN indigo_result indigo_json_device_adapter_delete_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
+
+/** Generate send message.
+ */
+INDIGO_EXTERN indigo_result indigo_json_device_adapter_message_property(indigo_client *client, indigo_device *device, indigo_property *property, const char *message);
 
 #ifdef __cplusplus
 }

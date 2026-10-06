@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -25,26 +25,22 @@
 
 #ifndef indigo_device_h
 #define indigo_device_h
-
 #include <stdint.h>
 #include <pthread.h>
-
 #include <indigo/indigo_bus.h>
+#include <indigo/indigo_uni_io.h>
 #include <indigo/indigo_names.h>
 #include <indigo/indigo_timer.h>
+
 #include <indigo/indigo_usbserial_utils.h>
 
-#ifdef INDIGO_LINUX
+#if defined(INDIGO_LINUX)
 #include <malloc.h>
 #define MALLOCED_SIZE malloc_usable_size
-#endif
-
-#ifdef INDIGO_MACOS
+#elif defined(INDIGO_MACOS)
 #include <malloc/malloc.h>
 #define MALLOCED_SIZE malloc_size
-#endif
-
-#ifdef INDIGO_WINDOWS
+#elif defined(INDIGO_WINDOWS)
 #include <malloc.h>
 #define MALLOCED_SIZE _msize
 #endif
@@ -53,6 +49,16 @@
 #define DELTA_UT1_UTC (0.0299836 / 86400.0) /* For 2025-05-22 */
 #define UT2JD(t)         ((t) / 86400.0 + 2440587.5 + DELTA_UT1_UTC)
 #define JDNOW            UT2JD(time(NULL))
+#endif
+
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
 #endif
 
 #ifdef __cplusplus
@@ -151,13 +157,13 @@ extern "C" {
  */
 #define CONFIG_PROPERTY               (DEVICE_CONTEXT->configuration_property)
 
-/** CONFIG.LOAD property item pointer.
- */
-#define CONFIG_LOAD_ITEM              (CONFIG_PROPERTY->items+0)
-
 /** CONFIG.SAVE property item pointer.
  */
-#define CONFIG_SAVE_ITEM              (CONFIG_PROPERTY->items+1)
+#define CONFIG_SAVE_ITEM              (CONFIG_PROPERTY->items+0)
+
+/** CONFIG.LOAD property item pointer.
+ */
+#define CONFIG_LOAD_ITEM              (CONFIG_PROPERTY->items+1)
 
 /** CONFIG.DEFAULT property item pointer.
  */
@@ -233,40 +239,15 @@ extern "C" {
 #define CONFIG_READER								"CONFIG_READER"
 #define MAX_ADDITIONAL_INSTANCES		4
 
-/** Device driver entrypoint actions
- */
-typedef enum {
-	INDIGO_DRIVER_INIT,
-	INDIGO_DRIVER_INFO,
-	INDIGO_DRIVER_SHUTDOWN
-} indigo_driver_action;
-
-/** Version major and minor
- */
-#define INDIGO_VERSION_MAJOR(ver) ((ver >> 8) & 0xff)
-#define INDIGO_VERSION_MINOR(ver) (ver & 0xff)
-
-/** Device driver info structure
- */
-typedef struct {
-	char description[INDIGO_NAME_SIZE];
-	char name[INDIGO_NAME_SIZE];
-	uint16_t version;  /* version - MSB, revision - LSB */
-	bool multi_device_support;
-	indigo_driver_action status;
-} indigo_driver_info;
-
-/** Device driver entry point prototype
- */
-typedef indigo_result (*driver_entry_point)(indigo_driver_action, indigo_driver_info*);
-
 /** Device context structure.
  */
+
 typedef struct {
-	int property_save_file_handle;            ///< handle for property save
+	indigo_uni_handle *property_save_file_handle;            ///< handle for property save
 	pthread_mutex_t config_mutex;							///< mutex for configuration load/save synchronisation
-	pthread_mutex_t multi_device_mutex;				///< mutex for synchronising multi-device access over single low level connection
+	pthread_mutex_t device_mutex;							///< mutex for synchronising multi-device access over single low level connection
 	indigo_timer *timers;											///< active timer list
+	indigo_queue *queue;											///< queue for handling property changes
 	indigo_property *connection_property;     ///< CONNECTION property pointer
 	indigo_property *info_property;           ///< INFO property pointer
 	indigo_property *simulation_property;     ///< SIMULATION property pointer
@@ -278,17 +259,16 @@ typedef struct {
 	indigo_property *device_ports_property;		///< DEVICE_PORTS property pointer
 	indigo_property *device_auth_property;		///< SECURITY property pointer
 	indigo_property *device_inst_property;		///< ADDITIONAL_INSTANCES  property pointer
-	indigo_device *base_device;								///< base instance for additional devices
 	indigo_device *additional_device_instances[MAX_ADDITIONAL_INSTANCES]; ///< additional device instances
 } indigo_device_context;
 
 /** log macros
 */
 
-#define INDIGO_DRIVER_LOG(driver_name, fmt, ...) INDIGO_LOG(indigo_log("%s: " fmt, driver_name, ##__VA_ARGS__))
-#define INDIGO_DRIVER_ERROR(driver_name, fmt, ...) INDIGO_ERROR(indigo_error("%s[%s:%d]: " fmt, driver_name, __FUNCTION__, __LINE__, ##__VA_ARGS__))
-#define INDIGO_DRIVER_DEBUG(driver_name, fmt, ...) INDIGO_DEBUG_DRIVER(indigo_debug("%s[%s:%d]: " fmt, driver_name, __FUNCTION__, __LINE__, ##__VA_ARGS__))
-#define INDIGO_DRIVER_TRACE(driver_name, fmt, ...) INDIGO_TRACE_DRIVER(indigo_trace("%s[%s:%d]: " fmt, driver_name,__FUNCTION__, __LINE__, ##__VA_ARGS__))
+#define INDIGO_DRIVER_LOG(driver_name, ...) INDIGO_LOG(indigo_driver_log(INDIGO_LOG_INFO, driver_name, __FUNCTION__, __LINE__, ##__VA_ARGS__))
+#define INDIGO_DRIVER_ERROR(driver_name, ...) INDIGO_ERROR(indigo_driver_log(INDIGO_LOG_ERROR, driver_name, __FUNCTION__, __LINE__, ##__VA_ARGS__))
+#define INDIGO_DRIVER_DEBUG(driver_name, ...) INDIGO_DEBUG_DRIVER(indigo_driver_log(INDIGO_LOG_DEBUG, driver_name, __FUNCTION__, __LINE__, ##__VA_ARGS__))
+#define INDIGO_DRIVER_TRACE(driver_name, ...) INDIGO_TRACE_DRIVER(indigo_driver_log(INDIGO_LOG_TRACE, driver_name, __FUNCTION__, __LINE__, ##__VA_ARGS__))
 
 #define INDIGO_DEVICE_ATTACH_LOG(driver_name, device_name) INDIGO_DRIVER_LOG(driver_name, "'%s' attached", device_name)
 #define INDIGO_DEVICE_DETACH_LOG(driver_name, device_name) INDIGO_DRIVER_LOG(driver_name, "'%s' detached", device_name)
@@ -299,8 +279,8 @@ typedef struct {
 #define SET_DRIVER_INFO(dinfo, ddescr, dname, dversion, dmulti, dstatus)\
 {\
 	if (dinfo) {\
-		indigo_copy_name(dinfo->description, ddescr);\
-		indigo_copy_name(dinfo->name, dname);\
+		INDIGO_COPY_NAME(dinfo->description, ddescr);\
+		INDIGO_COPY_NAME(dinfo->name, dname);\
 		dinfo->version = dversion;\
 		dinfo->multi_device_support = dmulti;\
 		dinfo->status = dstatus;\
@@ -325,11 +305,11 @@ typedef struct {
 
 /** Try to aquire global lock
 */
-extern indigo_result indigo_try_global_lock(indigo_device *device);
+INDIGO_EXTERN indigo_result indigo_try_global_lock(indigo_device *device);
 
 /** Globally unlock
 */
-extern indigo_result indigo_global_unlock(indigo_device *device);
+INDIGO_EXTERN indigo_result indigo_global_unlock(indigo_device *device);
 
 /** Device is connected.
  */
@@ -343,91 +323,147 @@ extern indigo_result indigo_global_unlock(indigo_device *device);
 
 /** Attach callback function.
  */
-extern indigo_result indigo_device_attach(indigo_device *device, const char* driver_name, indigo_version version, int interface);
+INDIGO_EXTERN indigo_result indigo_device_attach(indigo_device *device, const char* driver_name, indigo_version version, int interface_mask);
 
 /** Enumerate properties callback function.
  */
-extern indigo_result indigo_device_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
+INDIGO_EXTERN indigo_result indigo_device_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property);
 
 /** Change property callback function.
  */
-extern indigo_result indigo_device_change_property(indigo_device *device, indigo_client *client, indigo_property *property);
+INDIGO_EXTERN indigo_result indigo_device_change_property(indigo_device *device, indigo_client *client, indigo_property *property);
 
 /** Detach callback function.
  */
-extern indigo_result indigo_device_detach(indigo_device *device);
+INDIGO_EXTERN indigo_result indigo_device_detach(indigo_device *device);
 
 /** Open config file.
  */
 
-extern int indigo_open_config_file(char *device_name, int profile, int mode, const char *suffix);
+INDIGO_EXTERN indigo_uni_handle *indigo_open_config_file(char *device_name, int profile, bool create, const char *suffix);
 
 /** Load properties.
  */
-extern indigo_result indigo_load_properties(indigo_device *device, bool default_properties);
+INDIGO_EXTERN indigo_result indigo_load_properties(indigo_device *device, bool default_properties);
 
 /** Save single property.
  */
-extern indigo_result indigo_save_property(indigo_device*device, int *file_handle, indigo_property *property);
+INDIGO_EXTERN indigo_result indigo_save_property(indigo_device*device, indigo_uni_handle **file_handle, indigo_property *property);
 
 /** Save items of a property.
  */
-extern indigo_result indigo_save_property_items(indigo_device*device, int *file_handle, indigo_property *property, const int count, const char **items);
+INDIGO_EXTERN indigo_result indigo_save_property_items(indigo_device*device, indigo_uni_handle *file_handle, indigo_property *property, const int count, const char **items);
 
 /** Remove properties.
  */
-extern indigo_result indigo_remove_properties(indigo_device *device);
+INDIGO_EXTERN indigo_result indigo_remove_properties(indigo_device *device);
 
 /** Start USB event handler thread.
  */
-extern void indigo_start_usb_event_handler(void);
-
-/** get current utc. TO BE REMOVED!
- */
-/*
-time_t indigo_utc(time_t *ltime);
-*/
+INDIGO_EXTERN void indigo_start_usb_event_handler(void);
 
 /** Convert time_t to UTC ISO 8601 string.
  */
-void indigo_timetoisogm(time_t tstamp, char *isotime, int isotime_len);
+INDIGO_EXTERN void indigo_timetoisogm(time_t tstamp, char *isotime, int isotime_len);
 
 /** Convert UTC ISO 8601 time string to time_t.
  */
-time_t indigo_isogmtotime(char *isotime);
+INDIGO_EXTERN time_t indigo_isogmtotime(char *isotime);
 
 /** Convert time_t to local time ISO 8601 string.
  */
-void indigo_timetoisolocal(time_t tstamp, char *isotime, int isotime_len);
+INDIGO_EXTERN void indigo_timetoisolocal(time_t tstamp, char *isotime, int isotime_len);
 
 /** Convert local time ISO 8601 string to time_t.
  */
-time_t indigo_isolocaltotime(char *isotime);
+INDIGO_EXTERN time_t indigo_isolocaltotime(char *isotime);
+
+/** Get host UTC offset
+ */
+
+INDIGO_EXTERN int indigo_get_utc_offset(void);
+
+/** Get host DST state
+ */
+
+INDIGO_EXTERN int indigo_get_dst_state(void);
+
+/** Get host timezone state
+ */
+
+INDIGO_EXTERN long indigo_get_timezone(void);
 
 /** Enumerate serial ports.
  */
-void indigo_enumerate_serial_ports(indigo_device *device, indigo_property *property);
+INDIGO_EXTERN void indigo_enumerate_serial_ports(indigo_device *device, indigo_property *property);
 
 /** Check for double connect/disconnect request.
  */
-extern bool indigo_ignore_connection_change(indigo_device *device, indigo_property *request);
+INDIGO_EXTERN bool indigo_ignore_connection_change(indigo_device *device, indigo_property *request);
 
 /** Calculate position corrected with a backlash
 */
-extern int indigo_compensate_backlash(int requested_position, int current_position, int backlash, bool *is_last_move_poitive);
+INDIGO_EXTERN int indigo_compensate_backlash(int requested_position, int current_position, int backlash, bool *is_last_move_poitive);
 
-/** Lock multidevice mutex on master device
+/** Lock mutex on master device
  */
-extern void indigo_lock_master_device(indigo_device *device);
+INDIGO_EXTERN void indigo_lock_master_device(indigo_device *device);
 
-/** Unlock multidevice mutex on master device
+/** Unlock mutex on master device
  */
-extern void indigo_unlock_master_device(indigo_device *device);
+INDIGO_EXTERN void indigo_unlock_master_device(indigo_device *device);
 
-
-/** Global mutex for device enumeration. Should be locked for device enumeration in the drivers.
+/** Unlock mutex on device
  */
-extern pthread_mutex_t indigo_device_enumeration_mutex;
+INDIGO_EXTERN void indigo_lock_device(indigo_device *device);
+
+/** Unlock mutex on device
+ */
+INDIGO_EXTERN void indigo_unlock_device(indigo_device *device);
+
+/** Execute timer using master device lock
+ */
+INDIGO_EXTERN void indigo_set_device_timer(indigo_device *device, double delay, indigo_timer_callback handler, indigo_timer **timer);
+
+/** Execute property change handler ASAP on device queue
+ */
+INDIGO_EXTERN void indigo_execute_handler(indigo_device *device, indigo_timer_callback handler);
+
+/** Execute property change handler ASAP on device queue
+ */
+INDIGO_EXTERN void indigo_execute_handler_with_data(indigo_device *device, indigo_timer_with_data_callback handler, void *data);
+
+/** Execute property change handler ASAP on device queue with priority
+ */
+INDIGO_EXTERN void indigo_execute_priority_handler(indigo_device *device, int priority, indigo_timer_callback handler);
+
+/** Execute property change handler on device queue ASAP with priority and data
+ */
+INDIGO_EXTERN void indigo_execute_priority_handler_with_data(indigo_device *device, int priority, indigo_timer_with_data_callback handler, void *data);
+
+/** Execute property change handler on device queue with specified delay
+ */
+INDIGO_EXTERN void indigo_execute_handler_in(indigo_device *device, double delay, indigo_timer_callback handler);
+
+/** Execute property change handler on device queue with specified delay and data
+ */
+INDIGO_EXTERN void indigo_execute_handler_with_data_in(indigo_device *device, double delay, indigo_timer_with_data_callback handler, void *data);
+
+/** Execute property change handler on device queue with specified delay and priority
+ */
+INDIGO_EXTERN void indigo_execute_priority_handler_in(indigo_device *device, int priority, double delay, indigo_timer_callback handler);
+
+/** Execute property change handler on device queue with specified delay, priority and data
+ */
+INDIGO_EXTERN void indigo_execute_priority_handler_with_data_in(indigo_device *device, int priority, double delay, indigo_timer_with_data_callback handler, void *data);
+
+/** Empty handler queue
+ */
+INDIGO_EXTERN void indigo_cancel_pending_handlers(indigo_device *device);
+
+/** Remove scheduled handler from queue
+ */
+INDIGO_EXTERN void indigo_cancel_pending_handler(indigo_device *device, indigo_timer_callback callback);
 
 #ifdef __cplusplus
 }

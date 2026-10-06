@@ -1,4 +1,4 @@
-// Copyright (c) 2020 CloudMakers, s. r. o.
+// Copyright (c) 2020-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_focuser_robofocus.c
  */
 
-#define DRIVER_VERSION 0x0001
+#define DRIVER_VERSION 0x02000001
 #define DRIVER_NAME "indigo_focuser_robofocus"
 
 #include <stdlib.h>
@@ -69,8 +69,9 @@ static bool robofocus_command(indigo_device *device, char *command, char *respon
 	struct timeval tv;
 	unsigned sum = 0, i_count = 0, o_count = 0;
 	char buffer[9];
-	for (int i = 0; i < 8; i++)
+	for (int i = 0; i < 8; i++) {
 		sum += buffer[i] = command[i];
+	}
 	buffer[8] = sum & 0xFF;
 	indigo_write(PRIVATE_DATA->handle, buffer, 9);
 	bool done = false;
@@ -81,8 +82,9 @@ static bool robofocus_command(indigo_device *device, char *command, char *respon
 		FD_ZERO(&readout);
 		FD_SET(PRIVATE_DATA->handle, &readout);
 		long result = select(PRIVATE_DATA->handle+1, &readout, NULL, NULL, &tv);
-		if (result <= 0)
+		if (result <= 0) {
 			return false;
+		}
 		result = read(PRIVATE_DATA->handle, &c, 1);
 		if (result <= 0) {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to read from %s -> %s (%d)", DEVICE_PORT_ITEM->text.value, strerror(errno), errno);
@@ -107,7 +109,7 @@ static bool robofocus_command(indigo_device *device, char *command, char *respon
 		}
 	}
 	INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Command '%c%c %02x %02x %02x %02x %02x %02x %02x' -> '%c%c %02x %02x %02x %02x %02x %02x %02x'", buffer[0], buffer[1], buffer[2] & 0xFF, buffer[3] & 0xFF, buffer[4] & 0xFF, buffer[5] & 0xFF, buffer[6] & 0xFF, buffer[7] & 0xFF, buffer[8] & 0xFF, response[0], response[1], response[2] & 0xFF, response[3] & 0xFF, response[4] & 0xFF, response[5] & 0xFF, response[6] & 0xFF, response[7] & 0xFF, response[8] & 0xFF);
-	response[8] = 0; // TODO checksum
+	response[8] = 0; // TODO: Checksum is not implemented
 	return true;
 }
 
@@ -121,16 +123,18 @@ static indigo_result focuser_attach(indigo_device *device) {
 	if (indigo_focuser_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		// -------------------------------------------------------------------------------- X_FOCUSER_POWER_CHANNELS
 		X_FOCUSER_POWER_CHANNELS_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_FOCUSER_POWER_CHANNELS", FOCUSER_MAIN_GROUP, "Power channels", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 4);
-		if (X_FOCUSER_POWER_CHANNELS_PROPERTY == NULL)
+		if (X_FOCUSER_POWER_CHANNELS_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_FOCUSER_POWER_CHANNEL_1_ITEM, "1", "Channel #1", false);
 		indigo_init_switch_item(X_FOCUSER_POWER_CHANNEL_2_ITEM, "2", "Channel #2", false);
 		indigo_init_switch_item(X_FOCUSER_POWER_CHANNEL_3_ITEM, "3", "Channel #3", false);
 		indigo_init_switch_item(X_FOCUSER_POWER_CHANNEL_4_ITEM, "4", "Channel #4", false);
 		// -------------------------------------------------------------------------------- X_FOCUSER_POWER_CHANNELS
 		X_FOCUSER_CONFIG_PROPERTY = indigo_init_number_property(NULL, device->name, "X_FOCUSER_CONFIG", FOCUSER_MAIN_GROUP, "Configuration", INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
-		if (X_FOCUSER_CONFIG_PROPERTY == NULL)
+		if (X_FOCUSER_CONFIG_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_FOCUSER_CONFIG_DUTY_CYCLE_ITEM, "DUTY_CYCLE", "Duty cycle", 0, 250, 1, 0);
 		indigo_init_number_item(X_FOCUSER_CONFIG_STEP_DELAY_ITEM, "STEP_DELAY", "Step delay", 1, 64, 1, 1);
 		indigo_init_number_item(X_FOCUSER_CONFIG_STEP_SIZE_ITEM, "STEP_SIZE", "Step size", 1, 64, 1, 1);
@@ -138,10 +142,11 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbmodem", 16)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -151,7 +156,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 #endif
 		// -------------------------------------------------------------------------------- INFO
 		INFO_PROPERTY->count = 6;
-		strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "RoboFocus Focuser");
+		INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "RoboFocus Focuser");
 		// -------------------------------------------------------------------------------- FOCUSER_TEMPERATURE
 		FOCUSER_TEMPERATURE_PROPERTY->hidden = false;
 		// -------------------------------------------------------------------------------- FOCUSER_REVERSE_MOTION
@@ -177,7 +182,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_LIMITS_MAX_POSITION_ITEM->number.step = 1;
 		FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.target = 0xFFFF;
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return focuser_enumerate_properties(device, NULL, NULL);
@@ -187,10 +192,10 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_FOCUSER_POWER_CHANNELS_PROPERTY);
-		indigo_define_matching_property(X_FOCUSER_CONFIG_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_POWER_CHANNELS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_FOCUSER_CONFIG_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static void focuser_timer_callback(indigo_device *device) {
@@ -220,11 +225,11 @@ static void focuser_connection_handler(indigo_device *device) {
 			for (int i = 0; true; i++) {
 				if (robofocus_command(device, "FV000000", response) && !strncmp(response, "FV", 2)) {
 					INDIGO_DRIVER_LOG(DRIVER_NAME, "RoboFocus focuser %s", response + 2);
-					strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, response + 2);
+					INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, response + 2);
 					break;
 				} else if (i < 5) {
 					INDIGO_DRIVER_ERROR(DRIVER_NAME, "No reply from RoboFocus focuser - retrying");
-					indigo_usleep(2 * ONE_SECOND_DELAY);
+					indigo_sleep(2);
 				} else {
 					INDIGO_DRIVER_ERROR(DRIVER_NAME, "RoboFocus focuser not detected");
 					close(PRIVATE_DATA->handle);
@@ -293,14 +298,18 @@ static void focuser_steps_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[9], response[9];
 	int position = FOCUSER_POSITION_ITEM->number.value + (int)FOCUSER_STEPS_ITEM->number.value * (FOCUSER_DIRECTION_MOVE_INWARD_ITEM->sw.value ? -1 : 1) * (FOCUSER_REVERSE_MOTION_ENABLED_ITEM->sw.value ? -1 : 1);
-	if (position < 1)
+	if (position < 1) {
 		position = 1;
-	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value)
+	}
+	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value) {
 		position = FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value;
-	if (position > 0xFFFF)
+	}
+	if (position > 0xFFFF) {
 		position = 0xFFFF;
-	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value)
+	}
+	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value) {
 		position = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value;
+	}
 	snprintf(command, sizeof(command), "FG%06d", position);
 	FOCUSER_STEPS_PROPERTY->state = INDIGO_BUSY_STATE;
 	FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
@@ -308,10 +317,12 @@ static void focuser_steps_handler(indigo_device *device) {
 	indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
 	if (robofocus_command(device, command, response)) {
 		FOCUSER_POSITION_ITEM->number.value = atol(response + 3);
-		if (FOCUSER_STEPS_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (FOCUSER_STEPS_PROPERTY->state == INDIGO_BUSY_STATE) {
 			FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
-		if (FOCUSER_POSITION_PROPERTY->state == INDIGO_BUSY_STATE)
+		}
+		if (FOCUSER_POSITION_PROPERTY->state == INDIGO_BUSY_STATE) {
 			FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
+		}
 	} else {
 		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -325,18 +336,21 @@ static void focuser_position_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[9], response[9];
 	int position = (int)FOCUSER_POSITION_ITEM->number.target;
-	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value)
+	if (position < FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value) {
 		position = FOCUSER_LIMITS_MIN_POSITION_ITEM->number.value;
-	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value)
+	}
+	if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value) {
 		position = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value;
+	}
 	FOCUSER_POSITION_ITEM->number.target = position;
 	snprintf(command, sizeof(command), "FG%06d", position);
 	FOCUSER_POSITION_PROPERTY->state = INDIGO_BUSY_STATE;
 	indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
 	if (robofocus_command(device, command, response)) {
 		FOCUSER_POSITION_ITEM->number.value = atol(response + 3);
-		if (FOCUSER_POSITION_PROPERTY->state == INDIGO_BUSY_STATE)
+		if (FOCUSER_POSITION_PROPERTY->state == INDIGO_BUSY_STATE) {
 			FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
+		}
 	} else {
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
@@ -485,8 +499,9 @@ indigo_result indigo_focuser_robofocus(indigo_driver_action action, indigo_drive
 
 	SET_DRIVER_INFO(info, "RoboFocus Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

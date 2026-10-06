@@ -25,7 +25,7 @@
 
 #include "indigo_aux_asiair.h"
 
-#define DRIVER_VERSION         0x0002
+#define DRIVER_VERSION 0x02000002
 #define AUX_ASIAIR_NAME     "ZWO Power Ports ASIAIR"
 
 #include <stdlib.h>
@@ -528,38 +528,43 @@ static int asiair_init_properties(indigo_device *device) {
 	INFO_PROPERTY->count = 5;
 	// -------------------------------------------------------------------------------- OUTLET_NAMES
 	AUX_OUTLET_NAMES_PROPERTY = indigo_init_text_property(NULL, device->name, AUX_OUTLET_NAMES_PROPERTY_NAME, AUX_RELAYS_GROUP, "Customize Output names", INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
-	if (AUX_OUTLET_NAMES_PROPERTY == NULL)
+	if (AUX_OUTLET_NAMES_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_text_item(AUX_OUTLET_NAME_1_ITEM, AUX_GPIO_OUTLET_NAME_1_ITEM_NAME, "Output 1", "Power #1");
 	indigo_init_text_item(AUX_OUTLET_NAME_2_ITEM, AUX_GPIO_OUTLET_NAME_2_ITEM_NAME, "Output 2", "Power #2");
 	indigo_init_text_item(AUX_OUTLET_NAME_3_ITEM, AUX_GPIO_OUTLET_NAME_3_ITEM_NAME, "Output 3", "Power #3");
 	indigo_init_text_item(AUX_OUTLET_NAME_4_ITEM, AUX_GPIO_OUTLET_NAME_4_ITEM_NAME, "Output 4", "Power #4");
 	// -------------------------------------------------------------------------------- GPIO OUTLETS
 	AUX_GPIO_OUTLET_PROPERTY = indigo_init_switch_property(NULL, device->name, AUX_GPIO_OUTLETS_PROPERTY_NAME, AUX_RELAYS_GROUP, "Outputs", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 4);
-	if (AUX_GPIO_OUTLET_PROPERTY == NULL)
+	if (AUX_GPIO_OUTLET_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_switch_item(AUX_GPIO_OUTLET_1_ITEM, AUX_GPIO_OUTLETS_OUTLET_1_ITEM_NAME, "Power #1", false);
 	indigo_init_switch_item(AUX_GPIO_OUTLET_2_ITEM, AUX_GPIO_OUTLETS_OUTLET_2_ITEM_NAME, "Power #2", false);
 	indigo_init_switch_item(AUX_GPIO_OUTLET_3_ITEM, AUX_GPIO_OUTLETS_OUTLET_3_ITEM_NAME, "Power #3", false);
 	indigo_init_switch_item(AUX_GPIO_OUTLET_4_ITEM, AUX_GPIO_OUTLETS_OUTLET_4_ITEM_NAME, "Power #4", false);
 	// -------------------------------------------------------------------------------- GPIO PULSE OUTLETS
 	AUX_OUTLET_PULSE_LENGTHS_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_OUTLET_PULSE_LENGTHS_PROPERTY_NAME, AUX_RELAYS_GROUP, "Output pulse lengths (ms)", INDIGO_OK_STATE, INDIGO_RW_PERM, 4);
-	if (AUX_OUTLET_PULSE_LENGTHS_PROPERTY == NULL)
+	if (AUX_OUTLET_PULSE_LENGTHS_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_OUTLET_PULSE_LENGTHS_1_ITEM, AUX_GPIO_OUTLETS_OUTLET_1_ITEM_NAME, "Output #1", 0, 100000, 100, 0);
 	indigo_init_number_item(AUX_OUTLET_PULSE_LENGTHS_2_ITEM, AUX_GPIO_OUTLETS_OUTLET_2_ITEM_NAME, "Output #2", 0, 100000, 100, 0);
 	indigo_init_number_item(AUX_OUTLET_PULSE_LENGTHS_3_ITEM, AUX_GPIO_OUTLETS_OUTLET_3_ITEM_NAME, "Output #3", 0, 100000, 100, 0);
 	indigo_init_number_item(AUX_OUTLET_PULSE_LENGTHS_4_ITEM, AUX_GPIO_OUTLETS_OUTLET_4_ITEM_NAME, "Output #4", 0, 100000, 100, 0);
 	// -------------------------------------------------------------------------------- AUX_GPIO_OUTLET_FREQUENCIES
 	AUX_GPIO_OUTLET_FREQUENCIES_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_GPIO_OUTLET_FREQUENCIES_PROPERTY_NAME, AUX_RELAYS_GROUP, "PWM Frequencies (Hz)", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-	if (AUX_GPIO_OUTLET_FREQUENCIES_PROPERTY == NULL)
+	if (AUX_GPIO_OUTLET_FREQUENCIES_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_GPIO_OUTLET_FREQUENCIES_OUTLET_1_ITEM, AUX_GPIO_OUTLETS_OUTLET_1_ITEM_NAME, "Output #1", 0.5, 1000000, 100, 100);
 	indigo_init_number_item(AUX_GPIO_OUTLET_FREQUENCIES_OUTLET_2_ITEM, AUX_GPIO_OUTLETS_OUTLET_2_ITEM_NAME, "Output #2", 0.5, 1000000, 100, 100);
 	// -------------------------------------------------------------------------------- AUX_GPIO_OUTLET_DUTY_CYCLES
 	AUX_GPIO_OUTLET_DUTY_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_GPIO_OUTLET_DUTY_PROPERTY_NAME, AUX_RELAYS_GROUP, "PWM Duty cycles (%)", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-	if (AUX_GPIO_OUTLET_DUTY_PROPERTY == NULL)
+	if (AUX_GPIO_OUTLET_DUTY_PROPERTY == NULL) {
 		return INDIGO_FAILED;
+	}
 	indigo_init_number_item(AUX_GPIO_OUTLET_DUTY_OUTLET_1_ITEM, AUX_GPIO_OUTLETS_OUTLET_1_ITEM_NAME, "Output #1", 0, 100, 1, 100);
 	indigo_init_number_item(AUX_GPIO_OUTLET_DUTY_OUTLET_2_ITEM, AUX_GPIO_OUTLETS_OUTLET_2_ITEM_NAME, "Output #2", 0, 100, 1, 100);
 	//---------------------------------------------------------------------------
@@ -671,14 +676,14 @@ static bool set_gpio_outlets(indigo_device *device) {
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(AUX_GPIO_OUTLET_PROPERTY);
-		indigo_define_matching_property(AUX_OUTLET_PULSE_LENGTHS_PROPERTY);
-		indigo_define_matching_property(AUX_GPIO_OUTLET_FREQUENCIES_PROPERTY);
-		indigo_define_matching_property(AUX_GPIO_OUTLET_DUTY_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_GPIO_OUTLET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_OUTLET_PULSE_LENGTHS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_GPIO_OUTLET_FREQUENCIES_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_GPIO_OUTLET_DUTY_PROPERTY);
 	}
-	indigo_define_matching_property(AUX_OUTLET_NAMES_PROPERTY);
+	INDIGO_DEFINE_MATCHING_PROPERTY(AUX_OUTLET_NAMES_PROPERTY);
 
-	return indigo_aux_enumerate_properties(device, NULL, NULL);
+	return indigo_aux_enumerate_properties(device, client, property);
 }
 
 
@@ -702,17 +707,17 @@ static void handle_aux_connect_property(indigo_device *device) {
 		if(PRIVATE_DATA->pwm_present) {
 			AUX_GPIO_OUTLET_DUTY_PROPERTY->hidden = false;
 			AUX_GPIO_OUTLET_FREQUENCIES_PROPERTY->hidden = false;
-			indigo_send_message(device, "PWM on Outputs #1 and #4 is present");
+			indigo_send_message(device, IDLE_PROPERTY, "PWM on Outputs #1 and #4 is present");
 		} else {
 			AUX_GPIO_OUTLET_DUTY_PROPERTY->hidden = true;
 			AUX_GPIO_OUTLET_FREQUENCIES_PROPERTY->hidden = true;
-			indigo_send_message(device, "No PWM channels found");
+			indigo_send_message(device, ALERT_PROPERTY, "No PWM channels found");
 		}
 		if (asiair_export_all(PRIVATE_DATA->pwm_present)) {
 			char board[INDIGO_VALUE_SIZE] = "N/A";
 			char firmware[INDIGO_VALUE_SIZE] = "N/A";
-			indigo_copy_value(INFO_DEVICE_MODEL_ITEM->text.value, board);
-			indigo_copy_value(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
+			INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, board);
+			INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, firmware);
 			indigo_update_property(device, INFO_PROPERTY, NULL);
 
 			int relay_value[4];
@@ -883,7 +888,7 @@ static indigo_result aux_change_property(indigo_device *device, indigo_client *c
 
 		indigo_update_property(device, AUX_GPIO_OUTLET_DUTY_PROPERTY, NULL);
 		return INDIGO_OK;
-	} else if (indigo_property_match_changeable(CONFIG_PROPERTY, property)) {
+	} else if (indigo_property_match(CONFIG_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- CONFIG
 		if (indigo_switch_match(CONFIG_SAVE_ITEM, property)) {
 			indigo_save_property(device, NULL, AUX_OUTLET_NAMES_PROPERTY);
@@ -967,23 +972,24 @@ indigo_result indigo_aux_asiair(indigo_driver_action action, indigo_driver_info 
 
 	SET_DRIVER_INFO(info, DRIVER_INFO, __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
-	case INDIGO_DRIVER_INIT:
-		last_action = action;
-		create_device();
-		break;
+		case INDIGO_DRIVER_INIT:
+			last_action = action;
+			create_device();
+			break;
 
-	case INDIGO_DRIVER_SHUTDOWN:
-		VERIFY_NOT_CONNECTED(device_data.device);
-		last_action = action;
-		delete_device();
-		break;
+		case INDIGO_DRIVER_SHUTDOWN:
+			VERIFY_NOT_CONNECTED(device_data.device);
+			last_action = action;
+			delete_device();
+			break;
 
-	case INDIGO_DRIVER_INFO:
-		break;
+		case INDIGO_DRIVER_INFO:
+			break;
 	}
 
 	return INDIGO_OK;

@@ -1,4 +1,4 @@
-// Copyright (c) 2019 CloudMakers, s. r. o.
+// Copyright (c) 2019-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -23,7 +23,7 @@
  \file indigo_focuser_steeldrive2.c
  */
 
-#define DRIVER_VERSION 0x000C
+#define DRIVER_VERSION 0x0200000C
 #define DRIVER_NAME "indigo_focuser_steeldrive2"
 
 #include <stdlib.h>
@@ -219,8 +219,8 @@ static void steeldrive2_connect(indigo_device *device) {
 		for (int i = 0; i < 3; i++) {
 			if (indigo_read_line(PRIVATE_DATA->handle, response, sizeof(response)) > 0 && !strcmp(response, "$BS Hello World!")) {
 				if (steeldrive2_command(device, "$BS GET VERSION", response, sizeof(response)) && (colon = strchr(response, ':'))) {
-					strcpy(INFO_DEVICE_MODEL_ITEM->text.value, "Baader Planetarium SteelDriveII");
-					strcpy(INFO_DEVICE_FW_REVISION_ITEM->text.value, colon + 1);
+					INDIGO_COPY_VALUE(INFO_DEVICE_MODEL_ITEM->text.value, "Baader Planetarium SteelDriveII");
+					INDIGO_COPY_VALUE(INFO_DEVICE_FW_REVISION_ITEM->text.value, colon + 1);
 					indigo_update_property(device, INFO_PROPERTY, NULL);
 #ifdef USE_CRC
 					if (steeldrive2_command(device, "$BS CRC_ENABLE", response, sizeof(response))) {
@@ -250,10 +250,11 @@ static indigo_result focuser_attach(indigo_device *device) {
 		// -------------------------------------------------------------------------------- DEVICE_PORT, DEVICE_PORTS
 		DEVICE_PORT_PROPERTY->hidden = false;
 		DEVICE_PORTS_PROPERTY->hidden = false;
+		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 #ifdef INDIGO_MACOS
 		for (int i = 0; i < DEVICE_PORTS_PROPERTY->count; i++) {
 			if (!strncmp(DEVICE_PORTS_PROPERTY->items[i].name, "/dev/cu.usbserial", 17)) {
-				indigo_copy_value(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
+				INDIGO_COPY_VALUE(DEVICE_PORT_ITEM->text.value, DEVICE_PORTS_PROPERTY->items[i].name);
 				break;
 			}
 		}
@@ -263,13 +264,15 @@ static indigo_result focuser_attach(indigo_device *device) {
 #endif
 		// -------------------------------------------------------------------------------- X_NAME
 		X_NAME_PROPERTY = indigo_init_text_property(NULL, device->name, "X_NAME", FOCUSER_ADVANCED_GROUP, "Device name", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (X_NAME_PROPERTY == NULL)
+		if (X_NAME_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_text_item(X_NAME_ITEM, "NAME", "Name", "");
 		// -------------------------------------------------------------------------------- X_SAVED_VALUES
 		X_SAVED_VALUES_PROPERTY = indigo_init_number_property(NULL, device->name, "X_SAVED_VALUES", FOCUSER_ADVANCED_GROUP, "Saved values", INDIGO_OK_STATE, INDIGO_RW_PERM, 6);
-		if (X_SAVED_VALUES_PROPERTY == NULL)
+		if (X_SAVED_VALUES_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_SAVED_FOCUS_ITEM, "FOCUS", "Saved focus", 0, 0xFFFF, 0, 0);
 		indigo_init_number_item(X_SAVED_JOGSTEPS_ITEM, "JOGSTEPS", "Jogging mode steps", 0, 0xFFFF, 0, 0);
 		indigo_init_number_item(X_SAVED_SINGLESTEPS_ITEM, "SINGLESTEPS", "Single mode steps", 0, 0xFFFF, 0, 0);
@@ -278,33 +281,38 @@ static indigo_result focuser_attach(indigo_device *device) {
 		indigo_init_number_item(X_SAVED_TEMP1_OFS_ITEM, "TEMP1_OFS", "Sensor #1 offset", -50, 50, 1, 0);
 		// -------------------------------------------------------------------------------- X_STATUS
 		X_STATUS_PROPERTY = indigo_init_number_property(NULL, device->name, "X_STATUS", FOCUSER_ADVANCED_GROUP, "Status", INDIGO_OK_STATE, INDIGO_RO_PERM, 2);
-		if (X_STATUS_PROPERTY == NULL)
+		if (X_STATUS_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_STATUS_SENSOR_0_ITEM, "SENSOR_0", "Sensor #0", -100, 100, 0, 0);
 		indigo_init_number_item(X_STATUS_SENSOR_1_ITEM, "SENSOR_1", "Sensor #1", -100, 100, 0, 0);
 		// -------------------------------------------------------------------------------- X_SELECT_TC_SENSOR
 		X_SELECT_TC_SENSOR_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_SELECT_TC_SENSOR", FOCUSER_ADVANCED_GROUP, "TCOMP sensor selection", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 3);
-		if (X_SELECT_TC_SENSOR_PROPERTY == NULL)
+		if (X_SELECT_TC_SENSOR_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_SELECT_TC_SENSOR_0_ITEM, "SENSOR_0", "Sensor #0", false);
 		indigo_init_switch_item(X_SELECT_TC_SENSOR_1_ITEM, "SENSOR_1", "Sensor #1", false);
 		indigo_init_switch_item(X_SELECT_TC_SENSOR_AVG_ITEM, "AVG", "Average", true);
 		// -------------------------------------------------------------------------------- X_RESET
 		X_RESET_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_RESET", FOCUSER_ADVANCED_GROUP, "Reset", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ANY_OF_MANY_RULE, 2);
-		if (X_RESET_PROPERTY == NULL)
+		if (X_RESET_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_RESET_ITEM, "RESET", "Reset", false);
 		indigo_init_switch_item(X_REBOOT_ITEM, "REBOOT", "Reboot", false);
 		// -------------------------------------------------------------------------------- X_USE_ENDSTOP
 		X_USE_ENDSTOP_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_USE_ENDSTOP", FOCUSER_ADVANCED_GROUP, "Use end-stop sensor", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (X_USE_ENDSTOP_PROPERTY == NULL)
+		if (X_USE_ENDSTOP_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_USE_ENDSTOP_DISABLED_ITEM, "DISABLED", "Disabled", true);
 		indigo_init_switch_item(X_USE_ENDSTOP_ENABLED_ITEM, "ENABLED", "Enabled", false);
 		// -------------------------------------------------------------------------------- X_START_ZEROING
 		X_START_ZEROING_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_START_ZEROING", FOCUSER_ADVANCED_GROUP, "Start zeroing", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 1);
-		if (X_START_ZEROING_PROPERTY == NULL)
+		if (X_START_ZEROING_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_START_ZEROING_ITEM, "START", "Start", false);
 		// -------------------------------------------------------------------------------- FOCUSER_TEMPERATURE
 		FOCUSER_TEMPERATURE_PROPERTY->hidden = false;
@@ -332,7 +340,7 @@ static indigo_result focuser_attach(indigo_device *device) {
 		FOCUSER_COMPENSATION_PROPERTY->hidden = false;
 		FOCUSER_COMPENSATION_PROPERTY->count = 3;
 		// --------------------------------------------------------------------------------
-		ADDITIONAL_INSTANCES_PROPERTY->hidden = DEVICE_CONTEXT->base_device != NULL;
+		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		pthread_mutex_init(&PRIVATE_DATA->mutex, NULL);
 		INDIGO_DEVICE_ATTACH_LOG(DRIVER_NAME, device->name);
 		return focuser_enumerate_properties(device, NULL, NULL);
@@ -342,15 +350,15 @@ static indigo_result focuser_attach(indigo_device *device) {
 
 static indigo_result focuser_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(X_NAME_PROPERTY);
-		indigo_define_matching_property(X_SAVED_VALUES_PROPERTY);
-		indigo_define_matching_property(X_STATUS_PROPERTY);
-		indigo_define_matching_property(X_SELECT_TC_SENSOR_PROPERTY);
-		indigo_define_matching_property(X_RESET_PROPERTY);
-		indigo_define_matching_property(X_USE_ENDSTOP_PROPERTY);
-		indigo_define_matching_property(X_START_ZEROING_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_NAME_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_SAVED_VALUES_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_STATUS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_SELECT_TC_SENSOR_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_RESET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_USE_ENDSTOP_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_START_ZEROING_PROPERTY);
 	}
-	return indigo_focuser_enumerate_properties(device, NULL, NULL);
+	return indigo_focuser_enumerate_properties(device, client, property);
 }
 
 static void focuser_timer_callback(indigo_device *device) {
@@ -358,8 +366,10 @@ static void focuser_timer_callback(indigo_device *device) {
 		return;
 	}
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
-	indigo_device *aux = device;
-	device = device->master_device;
+	indigo_device *aux = device->master_device ? device : NULL;
+	if (device->master_device) {
+		device = device->master_device;
+	}
 	char response[256], *value;
 	bool status_update = false;
 	if (steeldrive2_command(device, "$BS SUMMARY", response, sizeof(response))) {
@@ -398,11 +408,13 @@ static void focuser_timer_callback(indigo_device *device) {
 						status_update = true;
 					}
 				} else if (!strcmp(token, "PWM")) {
-					indigo_device *device = aux;
-					double tmp = indigo_atod(value);
-					if (AUX_HEATER_OUTLET_1_ITEM->number.value != tmp) {
-						AUX_HEATER_OUTLET_1_ITEM->number.value = tmp;
-						indigo_update_property(device, AUX_HEATER_OUTLET_PROPERTY, NULL);
+					if (aux != NULL) {
+						indigo_device *device = aux;
+						double tmp = indigo_atod(value);
+						if (AUX_HEATER_OUTLET_1_ITEM->number.value != tmp) {
+							AUX_HEATER_OUTLET_1_ITEM->number.value = tmp;
+							indigo_update_property(device, AUX_HEATER_OUTLET_PROPERTY, NULL);
+						}
 					}
 				} else if (!strcmp(token, "TEMP_AVG")) {
 					double tmp = indigo_atod(value);
@@ -427,7 +439,7 @@ static void focuser_timer_callback(indigo_device *device) {
 			indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
 		}
 	}
-	indigo_set_timer(device, PRIVATE_DATA->moving ? 0.1 : 0.5, focuser_timer_callback, &PRIVATE_DATA->timer);
+	indigo_reschedule_timer(device, PRIVATE_DATA->moving ? 0.1 : 0.5, &PRIVATE_DATA->timer);
 	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 }
 
@@ -481,10 +493,11 @@ static void focuser_connection_handler(indigo_device *device) {
 			indigo_define_property(device, X_SAVED_VALUES_PROPERTY, NULL);
 			FOCUSER_MODE_PROPERTY->state = INDIGO_OK_STATE;
 			if (steeldrive2_command(device, "$BS GET TCOMP", response, sizeof(response)) && sscanf(response, "$BS STATUS TCOMP:%d", &value) == 1) {
-				if (value)
+				if (value) {
 					indigo_set_switch(FOCUSER_MODE_PROPERTY, FOCUSER_MODE_AUTOMATIC_ITEM, true);
-				else
+				} else {
 					indigo_set_switch(FOCUSER_MODE_PROPERTY, FOCUSER_MODE_MANUAL_ITEM, true);
+				}
 			} else {
 				FOCUSER_MODE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -511,22 +524,24 @@ static void focuser_connection_handler(indigo_device *device) {
 			}
 			X_SELECT_TC_SENSOR_PROPERTY->state = INDIGO_OK_STATE;
 			if (steeldrive2_command(device, "$BS GET TCOMP_SENSOR", response, sizeof(response)) && sscanf(response, "$BS STATUS TCOMP_SENSOR:%d", &value) == 1) {
-				if (value == 0)
+				if (value == 0) {
 					indigo_set_switch(X_SELECT_TC_SENSOR_PROPERTY, X_SELECT_TC_SENSOR_0_ITEM, true);
-				else if (value == 1)
+				} else if (value == 1) {
 					indigo_set_switch(X_SELECT_TC_SENSOR_PROPERTY, X_SELECT_TC_SENSOR_1_ITEM, true);
-				else
+				} else {
 					indigo_set_switch(X_SELECT_TC_SENSOR_PROPERTY, X_SELECT_TC_SENSOR_AVG_ITEM, true);
+				}
 			} else {
 				X_SELECT_TC_SENSOR_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
 			indigo_define_property(device, X_SELECT_TC_SENSOR_PROPERTY, NULL);
 			X_USE_ENDSTOP_PROPERTY->state = INDIGO_OK_STATE;
 			if (steeldrive2_command(device, "$BS GET USE_ENDSTOP", response, sizeof(response)) && sscanf(response, "$BS STATUS USE_ENDSTOP:%d", &value) == 1) {
-				if (value)
+				if (value) {
 					indigo_set_switch(X_USE_ENDSTOP_PROPERTY, X_USE_ENDSTOP_ENABLED_ITEM, true);
-				else
+				} else {
 					indigo_set_switch(X_USE_ENDSTOP_PROPERTY, X_USE_ENDSTOP_DISABLED_ITEM, true);
+				}
 			} else {
 				X_USE_ENDSTOP_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -537,8 +552,9 @@ static void focuser_connection_handler(indigo_device *device) {
 		}
 		if (PRIVATE_DATA->handle > 0) {
 			INDIGO_DRIVER_LOG(DRIVER_NAME, "Connected to %s", DEVICE_PORT_ITEM->text.value);
-			if (PRIVATE_DATA->count == 1)
+			if (PRIVATE_DATA->count == 1) {
 				indigo_set_timer(device, 0, focuser_timer_callback, &PRIVATE_DATA->timer);
+			}
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to connect to %s", DEVICE_PORT_ITEM->text.value);
@@ -575,18 +591,19 @@ static void focuser_position_handler(indigo_device *device) {
 	char command[64], response[256];
 	int position = FOCUSER_POSITION_ITEM->number.target;
 	if (FOCUSER_ON_POSITION_SET_GOTO_ITEM->sw.value) {
-		if (position < 0)
+		if (position < 0) {
 			position = 0;
-		else if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value)
+		} else if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value)
 			position = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value;
 		sprintf(command, "$BS GO %d", position);
 	} else {
 		sprintf(command, "$BS SET POS:%d", position);
 	}
-	if (steeldrive2_command(device, command, response, sizeof(response)) && !strcmp(response, "$BS OK"))
+	if (steeldrive2_command(device, command, response, sizeof(response)) && !strcmp(response, "$BS OK")) {
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_OK_STATE;
-	else
+	} else {
 		FOCUSER_POSITION_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
 	indigo_update_property(device, FOCUSER_POSITION_PROPERTY, NULL);
 	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 }
@@ -595,15 +612,16 @@ static void focuser_steps_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[64], response[256];
 	int position = FOCUSER_POSITION_ITEM->number.value + (FOCUSER_DIRECTION_MOVE_INWARD_ITEM->sw.value ? -1 : 1) * (FOCUSER_REVERSE_MOTION_ENABLED_ITEM->sw.value ? -1 : 1) * FOCUSER_STEPS_ITEM->number.target;
-	if (position < 0)
+	if (position < 0) {
 		position = 0;
-	else if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value)
+	} else if (position > FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value)
 		position = FOCUSER_LIMITS_MAX_POSITION_ITEM->number.value;
 	sprintf(command, "$BS GO %d", position);
-	if (steeldrive2_command(device, command, response, sizeof(response)) && !strcmp(response, "$BS OK"))
+	if (steeldrive2_command(device, command, response, sizeof(response)) && !strcmp(response, "$BS OK")) {
 		FOCUSER_STEPS_PROPERTY->state = INDIGO_OK_STATE;
-	else
+	} else {
 		FOCUSER_STEPS_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
 	indigo_update_property(device, FOCUSER_STEPS_PROPERTY, NULL);
 	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 }
@@ -612,10 +630,11 @@ static void focuser_abort_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char response[256];
 	if (FOCUSER_ABORT_MOTION_ITEM->sw.value) {
-		if (steeldrive2_command(device, "$BS STOP", response, sizeof(response)) && !strcmp(response, "$BS OK"))
+		if (steeldrive2_command(device, "$BS STOP", response, sizeof(response)) && !strcmp(response, "$BS OK")) {
 			FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
-		else
+		} else {
 			FOCUSER_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
 	}
 	FOCUSER_ABORT_MOTION_ITEM->sw.value = false;
 	indigo_update_property(device, FOCUSER_ABORT_MOTION_PROPERTY, NULL);
@@ -625,11 +644,13 @@ static void focuser_abort_handler(indigo_device *device) {
 static void focuser_name_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[64], response[256];
-	sprintf(command, "$BS SET NAME:%s", X_NAME_ITEM->text.value);
-	if (steeldrive2_command(device, command, response, sizeof(response)) && !strcmp(response, "$BS OK"))
-		X_NAME_PROPERTY->state = INDIGO_OK_STATE;
-	else
+	if (snprintf(command, sizeof(command), "$BS SET NAME:%s", X_NAME_ITEM->text.value) >= (int)sizeof(command)) {
 		X_NAME_PROPERTY->state = INDIGO_ALERT_STATE;
+	} else if (steeldrive2_command(device, command, response, sizeof(response)) && !strcmp(response, "$BS OK")) {
+		X_NAME_PROPERTY->state = INDIGO_OK_STATE;
+	} else {
+		X_NAME_PROPERTY->state = INDIGO_ALERT_STATE;
+	}
 	indigo_update_property(device, X_NAME_PROPERTY, NULL);
 	pthread_mutex_unlock(&PRIVATE_DATA->mutex);
 }
@@ -897,38 +918,44 @@ static indigo_result aux_attach(indigo_device *device) {
 		INFO_PROPERTY->count = 6;
 		// -------------------------------------------------------------------------------- HEATER OUTLETS
 		AUX_HEATER_OUTLET_PROPERTY = indigo_init_number_property(NULL, device->name, AUX_HEATER_OUTLET_PROPERTY_NAME, "Heating", "Heater outlets", INDIGO_OK_STATE, INDIGO_RW_PERM, 1);
-		if (AUX_HEATER_OUTLET_PROPERTY == NULL)
+		if (AUX_HEATER_OUTLET_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(AUX_HEATER_OUTLET_1_ITEM, AUX_HEATER_OUTLET_1_ITEM_NAME, "Heater outlet [%]", 0, 100, 5, 0);
 		// -------------------------------------------------------------------------------- AUX_DEW_CONTROL
 		AUX_DEW_CONTROL_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_USE_AUTO_DEW", "Heating", "Dew control", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (AUX_DEW_CONTROL_PROPERTY == NULL)
+		if (AUX_DEW_CONTROL_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(AUX_DEW_CONTROL_MANUAL_ITEM, AUX_DEW_CONTROL_MANUAL_ITEM_NAME, "Manual", true);
 		indigo_init_switch_item(AUX_DEW_CONTROL_AUTOMATIC_ITEM, AUX_DEW_CONTROL_AUTOMATIC_ITEM_NAME, "Automatic", false);
 		// -------------------------------------------------------------------------------- X_USE_PID
 		X_USE_PID_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_USE_PID", "Heating", "PID control", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (X_USE_PID_PROPERTY == NULL)
+		if (X_USE_PID_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_USE_PID_DISABLED_ITEM, "DISABLED", "Disabled", true);
 		indigo_init_switch_item(X_USE_PID_ENABLED_ITEM, "ENABLED", "Enabled", false);
 		// -------------------------------------------------------------------------------- X_PID_SETTINGS
 		X_PID_SETTINGS_PROPERTY = indigo_init_number_property(NULL, device->name, "X_PID_SETTINGS", "Heating", "Settings", INDIGO_OK_STATE, INDIGO_RW_PERM, 2);
-		if (X_SAVED_VALUES_PROPERTY == NULL)
+		if (X_SAVED_VALUES_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_number_item(X_PID_SETTINGS_OFS_ITEM, "PID_DEW_OFS", "PID offset", -50, 50, 1, 0);
 		indigo_init_number_item(X_PID_SETTINGS_TARGET_ITEM, "PID TARGET", "PID target", -50, 50, 1, 0);
 		// -------------------------------------------------------------------------------- X_SELECT_PID_SENSOR
 		X_SELECT_PID_SENSOR_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_SELECT_PID_SENSOR", "Heating", "PID sensor selection", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 3);
-		if (X_SELECT_PID_SENSOR_PROPERTY == NULL)
+		if (X_SELECT_PID_SENSOR_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_SELECT_PID_SENSOR_0_ITEM, "SENSOR_0", "Sensor #0", false);
 		indigo_init_switch_item(X_SELECT_PID_SENSOR_1_ITEM, "SENSOR_1", "Sensor #1", false);
 		indigo_init_switch_item(X_SELECT_PID_SENSOR_AVG_ITEM, "AVG", "Average", true);
 		// -------------------------------------------------------------------------------- X_SELECT_AMB_SENSOR
 		X_SELECT_AMB_SENSOR_PROPERTY = indigo_init_switch_property(NULL, device->name, "X_SELECT_AMB_SENSOR", "Heating", "Ambient sensor selection", INDIGO_OK_STATE, INDIGO_RW_PERM, INDIGO_ONE_OF_MANY_RULE, 2);
-		if (X_SELECT_AMB_SENSOR_PROPERTY == NULL)
+		if (X_SELECT_AMB_SENSOR_PROPERTY == NULL) {
 			return INDIGO_FAILED;
+		}
 		indigo_init_switch_item(X_SELECT_AMB_SENSOR_0_ITEM, "SENSOR_0", "Sensor #0", false);
 		indigo_init_switch_item(X_SELECT_AMB_SENSOR_1_ITEM, "SENSOR_1", "Sensor #1", true);
 		// --------------------------------------------------------------------------------
@@ -940,14 +967,14 @@ static indigo_result aux_attach(indigo_device *device) {
 
 static indigo_result aux_enumerate_properties(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (IS_CONNECTED) {
-		indigo_define_matching_property(AUX_HEATER_OUTLET_PROPERTY);
-		indigo_define_matching_property(AUX_DEW_CONTROL_PROPERTY);
-		indigo_define_matching_property(X_USE_PID_PROPERTY);
-		indigo_define_matching_property(X_PID_SETTINGS_PROPERTY);
-		indigo_define_matching_property(X_SELECT_PID_SENSOR_PROPERTY);
-		indigo_define_matching_property(X_SELECT_AMB_SENSOR_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_HEATER_OUTLET_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(AUX_DEW_CONTROL_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_USE_PID_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_PID_SETTINGS_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_SELECT_PID_SENSOR_PROPERTY);
+		INDIGO_DEFINE_MATCHING_PROPERTY(X_SELECT_AMB_SENSOR_PROPERTY);
 	}
-	return indigo_aux_enumerate_properties(device, NULL, NULL);
+	return indigo_aux_enumerate_properties(device, client, property);
 }
 
 static void aux_connection_handler(indigo_device *device) {
@@ -962,10 +989,11 @@ static void aux_connection_handler(indigo_device *device) {
 			int value;
 			X_USE_PID_PROPERTY->state = INDIGO_OK_STATE;
 			if (steeldrive2_command(device, "$BS GET PID_CTRL", response, sizeof(response)) && sscanf(response, "$BS STATUS PID_CTRL:%d", &value) == 1) {
-				if (value)
+				if (value) {
 					indigo_set_switch(X_USE_PID_PROPERTY, X_USE_PID_ENABLED_ITEM, true);
-				else
+				} else {
 					indigo_set_switch(X_USE_PID_PROPERTY, X_USE_PID_DISABLED_ITEM, true);
+				}
 			} else {
 				X_USE_PID_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -979,22 +1007,24 @@ static void aux_connection_handler(indigo_device *device) {
 			indigo_define_property(device, AUX_HEATER_OUTLET_PROPERTY, NULL);
 			AUX_DEW_CONTROL_PROPERTY->state = INDIGO_OK_STATE;
 			if (steeldrive2_command(device, "$BS GET AUTO_DEW", response, sizeof(response)) && sscanf(response, "$BS STATUS AUTO_DEW:%d", &value) == 1) {
-				if (value)
+				if (value) {
 					indigo_set_switch(AUX_DEW_CONTROL_PROPERTY, AUX_DEW_CONTROL_AUTOMATIC_ITEM, true);
-				else
+				} else {
 					indigo_set_switch(AUX_DEW_CONTROL_PROPERTY, AUX_DEW_CONTROL_MANUAL_ITEM, true);
+				}
 			} else {
 				AUX_DEW_CONTROL_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
 			indigo_define_property(device, AUX_DEW_CONTROL_PROPERTY, NULL);
 			X_SELECT_PID_SENSOR_PROPERTY->state = INDIGO_OK_STATE;
 			if (steeldrive2_command(device, "$BS GET PID_SENSOR", response, sizeof(response)) && sscanf(response, "$BS STATUS PID_SENSOR:%d", &value) == 1) {
-				if (value == 0)
+				if (value == 0) {
 					indigo_set_switch(X_SELECT_PID_SENSOR_PROPERTY, X_SELECT_PID_SENSOR_0_ITEM, true);
-				else if (value == 1)
+				} else if (value == 1) {
 					indigo_set_switch(X_SELECT_PID_SENSOR_PROPERTY, X_SELECT_PID_SENSOR_1_ITEM, true);
-				else
+				} else {
 					indigo_set_switch(X_SELECT_PID_SENSOR_PROPERTY, X_SELECT_PID_SENSOR_AVG_ITEM, true);
+				}
 			} else {
 				X_SELECT_PID_SENSOR_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -1013,10 +1043,11 @@ static void aux_connection_handler(indigo_device *device) {
 			indigo_define_property(device, X_PID_SETTINGS_PROPERTY, NULL);
 			X_SELECT_AMB_SENSOR_PROPERTY->state = INDIGO_OK_STATE;
 			if (steeldrive2_command(device, "$BS GET AMBIENT_SENSOR", response, sizeof(response)) && sscanf(response, "$BS STATUS AMBIENT_SENSOR:%d", &value) == 1) {
-				if (value == 0)
+				if (value == 0) {
 					indigo_set_switch(X_SELECT_AMB_SENSOR_PROPERTY, X_SELECT_AMB_SENSOR_0_ITEM, true);
-				else
+				} else {
 					indigo_set_switch(X_SELECT_AMB_SENSOR_PROPERTY, X_SELECT_AMB_SENSOR_1_ITEM, true);
+				}
 			} else {
 				X_SELECT_AMB_SENSOR_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -1024,8 +1055,9 @@ static void aux_connection_handler(indigo_device *device) {
 		}
 		if (PRIVATE_DATA->handle > 0) {
 			INDIGO_DRIVER_LOG(DRIVER_NAME, "Connected to %s", DEVICE_PORT_ITEM->text.value);
-			if (PRIVATE_DATA->count == 1)
+			if (PRIVATE_DATA->count == 1) {
 				indigo_set_timer(device, 0, focuser_timer_callback, &PRIVATE_DATA->timer);
+			}
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "Failed to connect to %s", DEVICE_PORT_ITEM->text.value);
@@ -1058,26 +1090,29 @@ static void aux_connection_handler(indigo_device *device) {
 static void aux_heater_outlet_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[64], response[256];
+	AUX_HEATER_OUTLET_PROPERTY->state = INDIGO_OK_STATE;
 	sprintf(command, "$BS SET PWM:%d", (int)AUX_HEATER_OUTLET_1_ITEM->number.value);
 	if (!steeldrive2_command(device, command, response, sizeof(response)) && !strcmp(response, "$BS OK"))
-		X_SAVED_VALUES_PROPERTY->state = INDIGO_ALERT_STATE;
+		AUX_HEATER_OUTLET_PROPERTY->state = INDIGO_ALERT_STATE;
 	X_USE_PID_PROPERTY->state = INDIGO_OK_STATE;
 	int value;
 	if (steeldrive2_command(device, "$BS GET PID_CTRL", response, sizeof(response)) && sscanf(response, "$BS STATUS PID_CTRL:%d", &value) == 1) {
-		if (value)
+		if (value) {
 			indigo_set_switch(X_USE_PID_PROPERTY, X_USE_PID_ENABLED_ITEM, true);
-		else
+		} else {
 			indigo_set_switch(X_USE_PID_PROPERTY, X_USE_PID_DISABLED_ITEM, true);
+		}
 	} else {
 		X_USE_PID_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	indigo_update_property(device, X_USE_PID_PROPERTY, NULL);
 	AUX_DEW_CONTROL_PROPERTY->state = INDIGO_OK_STATE;
 	if (steeldrive2_command(device, "$BS GET AUTO_DEW", response, sizeof(response)) && sscanf(response, "$BS STATUS AUTO_DEW:%d", &value) == 1) {
-		if (value)
+		if (value) {
 			indigo_set_switch(AUX_DEW_CONTROL_PROPERTY, AUX_DEW_CONTROL_AUTOMATIC_ITEM, true);
-		else
+		} else {
 			indigo_set_switch(AUX_DEW_CONTROL_PROPERTY, AUX_DEW_CONTROL_MANUAL_ITEM, true);
+		}
 	} else {
 		AUX_DEW_CONTROL_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
@@ -1089,7 +1124,7 @@ static void aux_heater_outlet_handler(indigo_device *device) {
 static void aux_dew_control_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[64], response[256];
-	X_USE_PID_PROPERTY->state = INDIGO_OK_STATE;
+	AUX_DEW_CONTROL_PROPERTY->state = INDIGO_OK_STATE;
 	sprintf(command, "$BS SET PID_CTRL:%d", AUX_DEW_CONTROL_AUTOMATIC_ITEM->sw.value ? 1 : 0);
 	if (!steeldrive2_command(device, command, response, sizeof(response)) && !strcmp(response, "$BS OK"))
 		AUX_DEW_CONTROL_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -1111,7 +1146,7 @@ static void aux_use_pid_handler(indigo_device *device) {
 static void aux_pid_settings_handler(indigo_device *device) {
 	pthread_mutex_lock(&PRIVATE_DATA->mutex);
 	char command[64], response[256];
-	X_USE_PID_PROPERTY->state = INDIGO_OK_STATE;
+	X_PID_SETTINGS_PROPERTY->state = INDIGO_OK_STATE;
 	sprintf(command, "$BS SET PID_TARGET:%.2f", X_PID_SETTINGS_TARGET_ITEM->number.value);
 	indigo_fix_locale(command);
 	if (steeldrive2_command(device, command, response, sizeof(response)) && !strcmp(response, "$BS OK")) {
@@ -1252,8 +1287,9 @@ indigo_result indigo_focuser_steeldrive2(indigo_driver_action action, indigo_dri
 	
 	SET_DRIVER_INFO(info, "Baader Planetarium SteelDriveII Focuser", __FUNCTION__, DRIVER_VERSION, false, last_action);
 
-	if (action == last_action)
+	if (action == last_action) {
 		return INDIGO_OK;
+	}
 
 	switch (action) {
 		case INDIGO_DRIVER_INIT:

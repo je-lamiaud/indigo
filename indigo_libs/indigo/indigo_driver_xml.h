@@ -1,4 +1,4 @@
-// Copyright (c) 2016 CloudMakers, s. r. o.
+// Copyright (c) 2016-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -29,13 +29,27 @@
 #include <indigo/indigo_bus.h>
 #include <indigo/indigo_xml.h>
 
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /** Create initialized instance of XML wire protocol client side adapter.
  */
-extern indigo_client *indigo_xml_device_adapter(int input, int ouput);
+INDIGO_EXTERN indigo_client *indigo_xml_device_adapter(indigo_uni_handle *input, indigo_uni_handle *output);
+
+/** Release instance of XML wire protocol client side adapter.
+ */
+INDIGO_EXTERN void indigo_release_xml_device_adapter(indigo_client *client);
 
 #ifdef __cplusplus
 }

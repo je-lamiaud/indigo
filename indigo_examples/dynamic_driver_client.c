@@ -1,4 +1,4 @@
-// Copyright (c) 2020 CloudMakers, s. r. o. & Rumen G.Bogdanovski
+// Copyright (c) 2020-2025 CloudMakers, s. r. o. & Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -18,13 +18,14 @@
 
 // version history
 // 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
-//      & Rumen G.Bogdanovski <rumenastro@gmail.com>
+//      & Rumen G. Bogdanovski <rumenastro@gmail.com>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+
 #include <indigo/indigo_bus.h>
+#include <indigo/indigo_names.h>
 #include <indigo/indigo_client.h>
 
 #define CCD_SIMULATOR "CCD Imager Simulator"
@@ -38,14 +39,12 @@ static int count = 5;
 */
 
 static void start_exposure(indigo_device *device, indigo_client *client, indigo_property *property) {
-	(void*)(property);
 	static const char * items[] = { CCD_EXPOSURE_ITEM_NAME };
 	static const double values[] = { 3.0 };
 	indigo_change_number_property(client, CCD_SIMULATOR, CCD_EXPOSURE_PROPERTY_NAME, 1, items, values);
 }
 
 static void set_image_format(indigo_device *device, indigo_client *client, indigo_property *property) {
-	(void*)(property);
 	static const char * items[] = { CCD_IMAGE_FORMAT_FITS_ITEM_NAME };
 	static const bool values[] = { true };
 	indigo_change_switch_property(client, CCD_SIMULATOR, CCD_IMAGE_FORMAT_PROPERTY_NAME, 1, items, values);
@@ -164,7 +163,7 @@ int main(int argc, const char * argv[]) {
 	indigo_attach_client(&client);
 	if (indigo_load_driver("indigo_ccd_simulator", true, &driver) == INDIGO_OK) {
 		while (count > 0) {
-			indigo_usleep(ONE_SECOND_DELAY);
+			indigo_sleep(1);
 		}
 	}
 	indigo_remove_driver(driver);

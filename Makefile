@@ -1,6 +1,6 @@
 #---------------------------------------------------------------------
 #
-# Copyright (c) 2018 CloudMakers, s. r. o.
+# Copyright (c) 2018-2025 CloudMakers, s. r. o.
 # All rights reserved.
 #
 # You can use this software under the terms of 'INDIGO Astronomy
@@ -20,14 +20,39 @@
 #
 #---------------------------------------------------------------------
 
-INDIGO_VERSION = 2.0
-INDIGO_BUILD = 344
+INDIGO_VERSION = 3.0
+INDIGO_BUILD = 7
 
-# Keep the suffix empty for official releases
-INDIGO_BUILD_SUFFIX =
+# Pre-release marker. When set (e.g. "beta", "beta1", "rc1") the value is
+# appended to the .deb build number with a tilde, following Debian's
+# pre-release convention: dpkg sorts "3.0-369~beta" as older than "3.0-369",
+# so the final release of the same build automatically supersedes the beta.
+# The marker is NOT folded into INDIGO_BUILD itself, so the runtime value
+# baked into indigo_config.h stays clean (just the number). Keep empty for
+# official releases.
+INDIGO_PRERELEASE =
 
-ifneq ($(INDIGO_BUILD_SUFFIX),)
-  INDIGO_BUILD := $(INDIGO_BUILD)-$(INDIGO_BUILD_SUFFIX)
+ifneq ($(INDIGO_PRERELEASE),)
+  INDIGO_PACKAGE_BUILD = $(INDIGO_BUILD)~$(INDIGO_PRERELEASE)
+else
+  INDIGO_PACKAGE_BUILD = $(INDIGO_BUILD)
+endif
+
+INDIGO_MAJOR := $(firstword $(subst ., ,$(INDIGO_VERSION)))
+INDIGO_MINOR := $(lastword $(subst ., ,$(INDIGO_VERSION)))
+INDIGO_VERSION_HEX := $(shell printf '0x%02x%02x' $(INDIGO_MAJOR) $(INDIGO_MINOR))
+
+# Debian package name. The 3.x line is shipped as a separate "indigo3" beta
+# package so it can be installed from the same apt repository alongside the
+# stable 2.x "indigo" package. Both packages declare Replaces+Conflicts on the
+# other so apt can switch in either direction, and the beta also Provides:
+# indigo so third-party packages depending on "indigo" resolve against either.
+ifeq ($(INDIGO_MAJOR),3)
+  INDIGO_PACKAGE = indigo3
+  INDIGO_PACKAGE_OTHER = indigo
+else
+  INDIGO_PACKAGE = indigo
+  INDIGO_PACKAGE_OTHER = indigo3
 endif
 
 INDIGO_ROOT = $(shell pwd)
@@ -47,12 +72,12 @@ INSTALL_SHARE = $(INSTALL_ROOT)/usr/local/share
 INSTALL_RULES = $(INSTALL_ROOT)/lib/udev/rules.d
 INSTALL_FIRMWARE = $(INSTALL_ROOT)/lib/firmware
 
-STABLE_DRIVERS = agent_auxiliary agent_guider agent_imager agent_mount agent_snoop ao_sx aux_cloudwatcher aux_dragonfly aux_dsusb aux_fbc aux_flatmaster aux_flipflat aux_joystick aux_mgbox aux_ppb aux_sqm aux_upb aux_usbdp ccd_altair ccd_apogee ccd_asi ccd_atik ccd_dsi ccd_fli ccd_iidc ccd_mi ccd_ptp ccd_qsi ccd_sbig ccd_simulator ccd_ssag ccd_sx ccd_touptek ccd_uvc dome_dragonfly dome_nexdome3 dome_simulator focuser_asi focuser_dmfc focuser_dsd focuser_efa focuser_fcusb focuser_fli focuser_focusdreampro focuser_lunatico focuser_moonlite focuser_steeldrive2 focuser_usbv3 focuser_wemacro gps_gpsd gps_nmea gps_simulator guider_asi guider_cgusbst4 guider_gpusb mount_asi mount_ioptron mount_lx200 mount_nexstar mount_nexstaraux mount_pmc8 mount_simulator mount_synscan mount_temma rotator_lunatico rotator_simulator system_ascol wheel_asi wheel_atik wheel_fli wheel_manual wheel_qhy wheel_sx aux_rpio focuser_wemacro_bt focuser_mypro2 agent_astrometry mount_rainbow agent_scripting focuser_mjkzz focuser_mjkzz_bt dome_talon6ror aux_geoptikflat ccd_svb agent_astap ccd_playerone agent_config ccd_omegonpro ccd_ssg ccd_rising ccd_mallin wheel_playerone ccd_ogma aux_uch aux_wcv4ec aux_wbprov3 aux_wbplusv3 indigo_wheel_mi rotator_wa focuser_primaluce focuser_qhy ccd_bresser ccd_atik2 ccd_svb2 rotator_asi
+STABLE_DRIVERS = agent_auxiliary agent_guider agent_imager agent_mount agent_snoop ao_sx aux_cloudwatcher aux_dragonfly aux_dsusb aux_fbc aux_flatmaster aux_flipflat aux_joystick aux_mgbox aux_ppb aux_sqm aux_upb aux_usbdp ccd_altair ccd_apogee ccd_asi ccd_atik ccd_dsi ccd_fli ccd_iidc ccd_mi ccd_ptp ccd_qsi ccd_sbig ccd_simulator ccd_ssag ccd_sx ccd_touptek ccd_uvc dome_dragonfly dome_nexdome3 dome_simulator focuser_asi focuser_dmfc focuser_dsd focuser_efa focuser_fcusb focuser_fli focuser_focusdreampro focuser_lunatico focuser_moonlite focuser_steeldrive2 focuser_usbv3 focuser_wemacro gps_gpsd gps_nmea gps_simulator guider_asi guider_cgusbst4 guider_gpusb mount_asi mount_ioptron mount_lx200 mount_mxhd mount_nexstar mount_nexstaraux mount_pmc8 mount_simulator mount_synscan mount_temma rotator_lunatico rotator_simulator system_ascol wheel_asi wheel_atik wheel_fli wheel_manual wheel_qhy wheel_sx aux_rpio focuser_wemacro_bt focuser_mypro2 agent_astrometry mount_rainbow agent_scripting focuser_mjkzz focuser_mjkzz_bt dome_talon6ror aux_geoptikflat ccd_svb agent_astap ccd_playerone agent_config ccd_omegonpro ccd_ssg ccd_rising ccd_mallin wheel_playerone ccd_ogma aux_uch aux_wcv4ec aux_wbprov3 aux_wbplusv3 indigo_wheel_mi rotator_wa focuser_primaluce focuser_qhy ccd_bresser ccd_atik2 ccd_svb2 rotator_asi ccd_baccam ccd_meade aux_svbpowerbox focuser_askar
 UNSTABLE_DRIVERS = ccd_qhy ccd_qhy2
 UNTESTED_DRIVERS = aux_arteskyflat aux_rts dome_baader dome_nexdome focuser_lakeside focuser_nfocus focuser_nstep focuser_optec focuser_robofocus wheel_optec wheel_quantum wheel_trutek wheel_xagyl dome_skyroof aux_skyalert agent_alpaca dome_beaver focuser_astromechanics aux_astromechanics rotator_optec mount_starbook focuser_prodigy wheel_indigo rotator_falcon focuser_ioptron focuser_optecfl focuser_fc3 aux_upb3 focuser_lacerta
-DEVELOPED_DRIVERS = ccd_pentax
+DEVELOPED_DRIVERS = ccd_pentax polaralign_simulator
 OPTIONAL_DRIVERS = ccd_andor ccd_rpi
-EXCLUDED_DRIVERS =
+EXCLUDED_DRIVERS = agent_test
 
 #---------------------------------------------------------------------
 #
@@ -64,19 +89,17 @@ DEBUG_BUILD = -g
 
 ifeq ($(OS),Windows_NT)
 	OS_DETECTED = Windows
-	INDIGO_CUDA =
 else
 	OS_DETECTED = $(shell uname -s)
 	ARCH_DETECTED = $(shell uname -m)
 	ifeq ($(OS_DETECTED),Darwin)
 		CC = /usr/bin/clang
 		AR = /usr/bin/libtool
-		INDIGO_CUDA =
-#		ifeq ($(findstring arm64e,$(shell file $(CC))),arm64e)
-#			MAC_ARCH = -arch x86_64 -arch arm64
-#		else
+		ifeq ($(findstring arm64e,$(shell file $(CC))),arm64e)
+			MAC_ARCH = -arch x86_64 -arch arm64
+		else
 			MAC_ARCH = -arch x86_64
-#		endif
+		endif
 		CFLAGS = $(DEBUG_BUILD) $(MAC_ARCH) -mmacosx-version-min=10.10 -fPIC -O3 -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_mac_drivers -I$(BUILD_INCLUDE) -std=gnu11 -DINDIGO_MACOS -Duint=unsigned
 		CXXFLAGS = $(DEBUG_BUILD) $(MAC_ARCH) -mmacosx-version-min=10.10 -fPIC -O3 -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_mac_drivers -I$(BUILD_INCLUDE) -std=gnu++11 -DINDIGO_MACOS
 		MFLAGS = $(DEBUG_BUILD) $(MAC_ARCH) -mmacosx-version-min=10.10 -fPIC -fno-common -O3 -fobjc-arc -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_mac_drivers -I$(BUILD_INCLUDE) -std=gnu11 -DINDIGO_MACOS -Wobjc-property-no-attribute
@@ -84,7 +107,6 @@ else
 		ARFLAGS = -static -o
 		SOEXT = dylib
 		INSTALL_ROOT = $(INDIGO_ROOT)/install
-#		INSTALL_ROOT = /
 	endif
 	ifeq ($(OS_DETECTED),Linux)
 		ifeq ($(ARCH_DETECTED),armv6l)
@@ -121,23 +143,13 @@ else
 		endif
 		CC = gcc
 		AR = ar
-		INDIGO_CUDA = $(wildcard /usr/local/cuda)
-		ifeq ($(INDIGO_CUDA),)
-			CUDA_BUILD = ""
-			LDFLAGS = -lm -lrt -lusb-1.0 -pthread -L$(BUILD_LIB) -Wl,-rpath=\\\$$\$$ORIGIN/../lib,-rpath=\\\$$\$$ORIGIN/../drivers,-rpath=.
-		else
-			NVCC = $(INDIGO_CUDA)/bin/nvcc
-			CUDA_LIBS = $(addprefix -L,$(wildcard $(INDIGO_CUDA)/lib*))
-			CUDA_BUILD = "-DINDIGO_CUDA"
-			NVCCFLAGS = $(DEBUG_BUILD) -Xcompiler -fPIC -O3 -isystem $(INDIGO_CUDA)/include -isystem $(INDIGO_ROOT)/indigo_libs -I $(INDIGO_ROOT)/indigo_drivers -I $(INDIGO_ROOT)/indigo_linux_drivers -I $(BUILD_INCLUDE) -std=c++11 -DINDIGO_LINUX
-			LDFLAGS = -lm -lrt -lusb-1.0 -pthread -lcudart $(CUDA_LIBS) -L$(BUILD_LIB) -Wl,-rpath=\\\$$\$$ORIGIN/../lib,-rpath=\\\$$\$$ORIGIN/../drivers,-rpath=.
-		endif
+		LDFLAGS = -lm -lrt -lusb-1.0 -pthread -L$(BUILD_LIB) -Wl,-rpath=\\\$$\$$ORIGIN/../lib,-rpath=\\\$$\$$ORIGIN/../drivers,-rpath=.
 		ifeq ($(ARCH_DETECTED),arm)
-			CFLAGS = $(DEBUG_BUILD) $(CUDA_BUILD) -fPIC -O3 -march=armv6 -mfpu=vfp -mfloat-abi=hard -marm -mthumb-interwork -I$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_linux_drivers -I$(BUILD_INCLUDE) -std=gnu11 -pthread -DINDIGO_LINUX $(DRPI_MANAGEMENT) -D_FILE_OFFSET_BITS=64
-			CXXFLAGS = $(DEBUG_BUILD) $(CUDA_BUILD) -fPIC -O3 -march=armv6 -mfpu=vfp -mfloat-abi=hard -marm -mthumb-interwork -I$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_linux_drivers -I$(BUILD_INCLUDE) -std=gnu++11 -pthread -DINDIGO_LINUX
+			CFLAGS = $(DEBUG_BUILD) -fPIC -O3 -march=armv6 -mfpu=vfp -mfloat-abi=hard -marm -mthumb-interwork -I$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_linux_drivers -I$(BUILD_INCLUDE) -std=gnu11 -pthread -DINDIGO_LINUX $(DRPI_MANAGEMENT) -D_FILE_OFFSET_BITS=64
+			CXXFLAGS = $(DEBUG_BUILD) -fPIC -O3 -march=armv6 -mfpu=vfp -mfloat-abi=hard -marm -mthumb-interwork -I$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_linux_drivers -I$(BUILD_INCLUDE) -std=gnu++11 -pthread -DINDIGO_LINUX
 		else
-			CFLAGS = $(DEBUG_BUILD) $(CUDA_BUILD) -fPIC -O3 -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_linux_drivers -I$(BUILD_INCLUDE) -std=gnu11 -pthread -DINDIGO_LINUX $(DRPI_MANAGEMENT)
-			CXXFLAGS = $(DEBUG_BUILD) $(CUDA_BUILD) -fPIC -O3 -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_linux_drivers -I$(BUILD_INCLUDE) -std=gnu++11 -pthread -DINDIGO_LINUX
+			CFLAGS = $(DEBUG_BUILD) -fPIC -O3 -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_linux_drivers -I$(BUILD_INCLUDE) -std=gnu11 -pthread -DINDIGO_LINUX $(DRPI_MANAGEMENT)
+			CXXFLAGS = $(DEBUG_BUILD) -fPIC -O3 -isystem$(INDIGO_ROOT)/indigo_libs -I$(INDIGO_ROOT)/indigo_drivers -I$(INDIGO_ROOT)/indigo_linux_drivers -I$(BUILD_INCLUDE) -std=gnu++11 -pthread -DINDIGO_LINUX
 		endif
 		ARFLAGS = -rv
 		SOEXT = so
@@ -157,8 +169,12 @@ ifeq ($(OS_DETECTED),Linux)
 	@$(MAKE)	-C indigo_linux_drivers  -f ../Makefile.drvs all
 endif
 	@$(MAKE)	-C indigo_server all
+	@echo
+	@grep --color=always -ro '// TODO.*' indigo_drivers/*/*.c*
+	@echo
+	@grep --color=always -ro '// TODO.*' indigo_libs/*.c* indigo_libs/*/*.c*
 
-$(BUILD_LIB)/libindigo.$(SOEXT): $(filter-out $(INDIGO_ROOT)/indigo_libs/indigo/indigo_config.h, $(wildcard $(INDIGO_ROOT)/indigo_libs/indigo/*.h))
+$(BUILD_LIB)/libindigo.$(SOEXT): $(wildcard $(INDIGO_ROOT)/indigo_libs/indigo/*.h)
 	@echo --------------------------------------------------------------------- Forced clean - framework headers are changed
 	@$(MAKE) clean
 
@@ -229,7 +245,7 @@ ifeq ($(OS_DETECTED),Linux)
 endif
 
 ifeq ($(OS_DETECTED),Linux)
-package: INSTALL_ROOT = $(INDIGO_ROOT)/indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-$(DEBIAN_ARCH)
+package: INSTALL_ROOT = $(INDIGO_ROOT)/$(INDIGO_PACKAGE)-$(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)-$(DEBIAN_ARCH)
 package: INSTALL_BIN = $(INSTALL_ROOT)/usr/bin
 package: INSTALL_LIB = $(INSTALL_ROOT)/usr/lib
 package: INSTALL_INCLUDE = $(INSTALL_ROOT)/usr/include
@@ -257,12 +273,14 @@ endif
 	install -m 0644 systemd/indigo-environment.service $(INSTALL_ROOT)/lib/systemd/system
 	install -m 0644 systemd/indigo-server.service $(INSTALL_ROOT)/lib/systemd/system
 	install -d $(INSTALL_ROOT)/DEBIAN
-	printf "Package: indigo\n" > $(INSTALL_ROOT)/DEBIAN/control
-	printf "Version: $(INDIGO_VERSION)-$(INDIGO_BUILD)\n" >> $(INSTALL_ROOT)/DEBIAN/control
+	printf "Package: $(INDIGO_PACKAGE)\n" > $(INSTALL_ROOT)/DEBIAN/control
+	printf "Version: $(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)\n" >> $(INSTALL_ROOT)/DEBIAN/control
 	printf "Installed-Size: $(shell echo `du -s $$(INSTALL_ROOT) | cut -f1`)\n" >> $(INSTALL_ROOT)/DEBIAN/control
 	printf "Priority: optional\n" >> $(INSTALL_ROOT)/DEBIAN/control
 	printf "Architecture: $(DEBIAN_ARCH)\n" >> $(INSTALL_ROOT)/DEBIAN/control
-	printf "Replaces: fxload,libsbigudrv2,libsbig,libqhy,indi-dsi,indigo-upb\n" >> $(INSTALL_ROOT)/DEBIAN/control
+	printf "Provides: indigo\n" >> $(INSTALL_ROOT)/DEBIAN/control
+	printf "Replaces: fxload,libsbigudrv2,libsbig,libqhy,indi-dsi,indigo-upb,$(INDIGO_PACKAGE_OTHER)\n" >> $(INSTALL_ROOT)/DEBIAN/control
+	printf "Conflicts: $(INDIGO_PACKAGE_OTHER)\n" >> $(INSTALL_ROOT)/DEBIAN/control
 	printf "Maintainer: CloudMakers, s. r. o. <indigo@cloudmakers.eu>\n" >> $(INSTALL_ROOT)/DEBIAN/control
 	printf "Homepage: http://www.indigo-astronomy.org\n" >> $(INSTALL_ROOT)/DEBIAN/control
 	printf "Depends: indigo-astrometry | astrometry.net, curl, libusb-1.0-0, libgudev-1.0-0, libavahi-compat-libdnssd1\n" >> $(INSTALL_ROOT)/DEBIAN/control
@@ -317,6 +335,11 @@ ifeq ($(OS_DETECTED),Linux)
 	@$(MAKE)	-C indigo_linux_drivers -f ../Makefile.drvs clean
 endif
 	@$(MAKE)	-C indigo_server clean
+ifeq ($(INDIGO_MAJOR),2)
+	# The 2.x branch has no indigo_client so any libindigo_client.* left behind
+	# from a previous 3.x build must be removed explicitly.
+	rm -f $(BUILD_LIB)/libindigo_client.*
+endif
 
 clean-all: Makefile.inc
 	@$(MAKE)	-C indigo_libs clean-all
@@ -327,20 +350,34 @@ ifeq ($(OS_DETECTED),Darwin)
 endif
 ifeq ($(OS_DETECTED),Linux)
 	@$(MAKE)	-C indigo_linux_drivers -f ../Makefile.drvs clean-all
-	rm -f $(INDIGO_ROOT)/indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-$(DEBIAN_ARCH).deb
-	rm -rf $(INDIGO_ROOT)/indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-$(DEBIAN_ARCH)
+	rm -f $(INDIGO_ROOT)/$(INDIGO_PACKAGE)-$(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)-$(DEBIAN_ARCH).deb
+	rm -rf $(INDIGO_ROOT)/$(INDIGO_PACKAGE)-$(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)-$(DEBIAN_ARCH)
 endif
 	@$(MAKE)	-C indigo_server clean-all
 	rm -rf $(BUILD_ROOT)
 	rm -rf Makefile.inc
 
-init: Makefile.inc
+init: Makefile.inc indigo_version_sync
 	install -d -m 0755 $(BUILD_ROOT)
 	install -d -m 0755 $(BUILD_BIN)
 	install -d -m 0755 $(BUILD_DRIVERS)
 	install -d -m 0755 $(BUILD_LIB)
 	install -d -m 0755 $(BUILD_INCLUDE)
 	install -d -m 0755 $(BUILD_SHARE)/indigo
+
+# Keep INDIGO_BUILD and INDIGO_VERSION_MAJOR_MINOR in indigo_config.h in sync with this Makefile.
+.PHONY: indigo_version_sync
+indigo_version_sync:
+	@tmp=$$(mktemp); \
+	sed -e 's|^#define INDIGO_BUILD .*|#define INDIGO_BUILD "$(INDIGO_BUILD)"|' \
+	    -e 's|^#define INDIGO_VERSION_MAJOR_MINOR .*|#define INDIGO_VERSION_MAJOR_MINOR $(INDIGO_VERSION_HEX)|' \
+	    indigo_libs/indigo/indigo_config.h > $$tmp; \
+	if cmp -s $$tmp indigo_libs/indigo/indigo_config.h; then \
+	    rm -f $$tmp; \
+	else \
+	    echo "syncing INDIGO_BUILD=\"$(INDIGO_BUILD)\" INDIGO_VERSION_MAJOR_MINOR=$(INDIGO_VERSION_HEX) into indigo_config.h"; \
+	    mv $$tmp indigo_libs/indigo/indigo_config.h; \
+	fi
 
 Makefile.inc: Makefile
 	rm -f Makefile.inc
@@ -357,13 +394,10 @@ Makefile.inc: Makefile
 	@printf "OS_DETECTED = $(OS_DETECTED)\n" >> Makefile.inc
 	@printf "ARCH_DETECTED = $(ARCH_DETECTED)\n" >> Makefile.inc
 	@printf "DEBIAN_ARCH = $(DEBIAN_ARCH)\n\n" >> Makefile.inc
-	@printf "INDIGO_CUDA = $(INDIGO_CUDA)\n" >> Makefile.inc
 	@printf "CC = $(CC)\n" >> Makefile.inc
 	@printf "AR = $(AR)\n" >> Makefile.inc
-	@printf "NVCC = $(NVCC)\n" >> Makefile.inc
 	@printf "CFLAGS = $(CFLAGS)\n" >> Makefile.inc
 	@printf "CXXFLAGS = $(CXXFLAGS)\n" >> Makefile.inc
-	@printf "NVCCFLAGS = $(NVCCFLAGS)\n" >> Makefile.inc
 	@printf "MFLAGS = $(MFLAGS)\n" >> Makefile.inc
 	@printf "LDFLAGS = $(LDFLAGS)\n" >> Makefile.inc
 	@printf "ARFLAGS = $(ARFLAGS)\n" >> Makefile.inc
@@ -386,32 +420,42 @@ Makefile.inc: Makefile
 	@cat Makefile.inc
 	@echo ---------------------------------------------------------------------
 
-debs-remote:
-	ssh ubuntu32.local "cd indigo; git reset --hard; git pull; make clean-all; make; sudo make package"
-	scp ubuntu32.local:indigo/indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-i386.deb .
-	ssh ubuntu64.local "cd indigo; git reset --hard; git pull; make clean-all; make; sudo make package"
-	scp ubuntu64.local:indigo/indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-amd64.deb .
-	ssh raspi32.local "cd indigo; git reset --hard; git pull; make clean-all; make; sudo make package"
-	scp raspi32.local:indigo/indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-armhf.deb .
-	ssh raspi64.local "cd indigo; git reset --hard; git pull; make clean-all; make; sudo make package"
-	scp raspi64.local:indigo/indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-arm64.deb .
+INDIGO_SRC_TARBALL = indigo-$(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD).tar.gz
 
-debs-docker:
-	sh tools/make_source_tarball.sh $(INDIGO_VERSION)-$(INDIGO_BUILD)
-	sh tools/build_debs.sh "i386/debian:bullseye-slim" "indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-i386.deb" $(INDIGO_VERSION)-$(INDIGO_BUILD)
-	sh tools/build_debs.sh "amd64/debian:bullseye-slim" "indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-amd64.deb" $(INDIGO_VERSION)-$(INDIGO_BUILD)
-	sh tools/build_debs.sh "arm32v7/debian:bullseye-slim" "indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-armhf.deb" $(INDIGO_VERSION)-$(INDIGO_BUILD)
-	sh tools/build_debs.sh "arm64v8/debian:bullseye-slim" "indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-arm64.deb" $(INDIGO_VERSION)-$(INDIGO_BUILD)
-	rm indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD).tar.gz
+.PHONY: debs-docker deb-i386 deb-amd64 deb-armhf deb-arm64 deb-i386-pkg deb-amd64-pkg deb-armhf-pkg deb-arm64-pkg
 
-init-repo:
-	aptly repo create -distribution=indigo -component=main indigo-release
+$(INDIGO_SRC_TARBALL):
+	sh tools/make_source_tarball.sh $(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)
 
-publish:
-	rm -f ~/Desktop/public
-	aptly repo remove indigo-release indigo_$(INDIGO_VERSION)-$(INDIGO_BUILD)_i386 indigo_$(INDIGO_VERSION)-$(INDIGO_BUILD)_amd64 indigo_$(INDIGO_VERSION)-$(INDIGO_BUILD)_armhf indigo_$(INDIGO_VERSION)-$(INDIGO_BUILD)_arm64
-	aptly repo add indigo-release indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-i386.deb indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-amd64.deb indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-armhf.deb indigo-$(INDIGO_VERSION)-$(INDIGO_BUILD)-arm64.deb
-	aptly repo show -with-packages indigo-release
-	aptly publish -force-drop drop indigo
-	aptly publish repo indigo-release
-	ln -s ~/.aptly/public ~/Desktop
+deb-i386-pkg:
+	sh tools/build_debs.sh "--platform=linux/386 i386/debian:bullseye-slim" "$(INDIGO_PACKAGE)-$(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)-i386.deb" $(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)
+
+deb-amd64-pkg:
+	sh tools/build_debs.sh "--platform=linux/amd64 amd64/debian:bullseye-slim" "$(INDIGO_PACKAGE)-$(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)-amd64.deb" $(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)
+
+deb-armhf-pkg:
+	sh tools/build_debs.sh "--platform=linux/arm/v7 arm32v7/debian:bullseye-slim" "$(INDIGO_PACKAGE)-$(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)-armhf.deb" $(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)
+
+deb-arm64-pkg:
+	sh tools/build_debs.sh "--platform=linux/arm64 arm64v8/debian:bullseye-slim" "$(INDIGO_PACKAGE)-$(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)-arm64.deb" $(INDIGO_VERSION)-$(INDIGO_PACKAGE_BUILD)
+
+deb-i386: $(INDIGO_SRC_TARBALL)
+	$(MAKE) deb-i386-pkg
+	rm -f $(INDIGO_SRC_TARBALL)
+
+deb-amd64: $(INDIGO_SRC_TARBALL)
+	$(MAKE) deb-amd64-pkg
+	rm -f $(INDIGO_SRC_TARBALL)
+
+deb-armhf: $(INDIGO_SRC_TARBALL)
+	$(MAKE) deb-armhf-pkg
+	rm -f $(INDIGO_SRC_TARBALL)
+
+deb-arm64: $(INDIGO_SRC_TARBALL)
+	$(MAKE) deb-arm64-pkg
+	rm -f $(INDIGO_SRC_TARBALL)
+
+debs-docker: $(INDIGO_SRC_TARBALL)
+	$(MAKE) deb-i386-pkg deb-amd64-pkg deb-armhf-pkg deb-arm64-pkg
+	rm -f $(INDIGO_SRC_TARBALL)
+

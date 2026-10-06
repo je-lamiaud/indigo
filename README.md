@@ -3,7 +3,24 @@
 [![License](http://img.shields.io/badge/license-INDIGO-blueviolet.svg)](https://github.com/indigo-astronomy/indigo/blob/master/LICENSE.md)
 [![Platform](http://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-success.svg)](#)
 
-# INDIGO is the next generation of INDI, based on layered architecture and software bus.
+# INDIGO is a next generation astronomy software framework, based on layered architecture and software bus.
+
+### INDIGO is not INDI
+
+INDIGO is a separate and independent project. It is not INDI, and it is not a fork, a rewrite
+or a branch of it — it was written from the ground up and it is an alternative to INDI.
+
+The two share one thing only, the wire format: INDIGO can fall down to the legacy INDI wire
+protocol 1.7, which is what makes INDI drivers and INDI clients usable with INDIGO. Everything
+above that line is INDIGO's own. The properties and their items, the API and the architecture
+are different: INDIGO is a software bus that drivers, agents and clients attach to, and which
+can live in a single process or be distributed over a network, while INDI runs every driver as
+a separate process connected by pipes or sockets. INDIGO is designed around scalability,
+stability and robustness.
+
+The native client applications of the project are Ain INDIGO Imager on Linux and Windows and
+INDIGO A1 on macOS, iOS and iPadOS. Ain is the INDIGO counterpart of what Ekos is in the INDI
+world - it is developed by the INDIGO Initiative and shares no code with Ekos.
 
 This is the list of requirements taken into the consideration:
 
@@ -142,12 +159,13 @@ This is the list of requirements taken into the consideration:
 112. Optec FocusLynx focuser driver
 113. PegasusAstro FocusCube3 driver
 114. Lacerta LACERTA Motorfocus driver
+115. Baccam (Touptek OEM) camera driver
+116. Meade (Touptek OEM) camera driver
 
 ## This is under development
 1. a-Box Adaptive optics driver
 
-------------------------------------------------------------------------------------------------
-## How to build INDIGO
+## How to build INDIGO on Unix systems
 
 ### Prerequisites
 #### Ubuntu / Debian / Raspbian
@@ -176,9 +194,11 @@ Install XCode and download and build autoconf, automake and libtool (use tools/c
 
 `cd indigo`
 
+`git checkout INDIGO-3.0`
+
 `make all`
 
-`build/bin/indigo_server -v indigo_ccd_simulator [other drivers]`
+`build/bin/indigo_server -v`
 
 and connect from any INDIGO/INDI client or web browser to localhost on port 7624...
 
@@ -188,3 +208,7 @@ New linux distributions come with the latest glibc that does not provide pthread
 `make patchlib`
 
 and rerun the build
+
+## How to build INDIGO on Windows
+
+`msbuild indigo_windows.sln /t:Build /p:Configuration=Release`

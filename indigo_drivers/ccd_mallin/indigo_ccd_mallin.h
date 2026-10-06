@@ -1,4 +1,4 @@
-// Copyright (c) 2023 CloudMakers, s. r. o.
+// Copyright (c) 2023-2025 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -18,6 +18,7 @@
 
 // version history
 // 2.0 by Peter Polakovic <peter.polakovic@cloudmakers.eu>
+// 3.0 refactoring by Peter Polakovic <peter.polakovic@cloudmakers.eu>
 
 /** INDIGO MallinCam CCD driver
  \file indigo_ccd_mallin.h
@@ -32,6 +33,16 @@
 #include <indigo/indigo_wheel_driver.h>
 #include <indigo/indigo_focuser_driver.h>
 
+#if defined(INDIGO_WINDOWS)
+#if defined(INDIGO_WINDOWS_DLL)
+#define INDIGO_EXTERN __declspec(dllexport)
+#else
+#define INDIGO_EXTERN __declspec(dllimport)
+#endif
+#else
+#define INDIGO_EXTERN extern
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,7 +50,7 @@ extern "C" {
 /** Register MallinCam CCD hot-plug callback
  */
 
-extern indigo_result indigo_ccd_mallin(indigo_driver_action action, indigo_driver_info *info);
+INDIGO_EXTERN indigo_result indigo_ccd_mallin(indigo_driver_action action, indigo_driver_info *info);
 
 #ifdef __cplusplus
 }

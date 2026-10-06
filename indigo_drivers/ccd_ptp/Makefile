@@ -1,6 +1,6 @@
 #---------------------------------------------------------------------
 #
-# Copyright (c) 2023 CloudMakers, s. r. o.
+# Copyright (c) 2023-2025 CloudMakers, s. r. o.
 # All rights reserved.
 #
 # You can use this software under the terms of 'INDIGO Astronomy
@@ -69,6 +69,9 @@ indigo_ptp_sony.o: indigo_ptp_sony.m  indigo_ptp_sony.c
 indigo_ptp_fuji.o: indigo_ptp_fuji.m  indigo_ptp_fuji.c
 	$(CC) $(MFLAGS) -c -o $@ indigo_ptp_fuji.m
 
+indigo_ptp_olympus.o: indigo_ptp_olympus.m  indigo_ptp_olympus.c
+	$(CC) $(MFLAGS) -c -o $@ indigo_ptp_olympus.m
+
 $(DRIVER_EXECUTABLE): indigo_ccd_ptp_main.o $(DRIVER_A)
 	$(CC) -o $@ $^ $(LDFLAGS) -lindigo -framework IOKit -framework Cocoa
 
@@ -97,6 +100,9 @@ indigo_ptp_sony.o: indigo_ptp_sony.c
 indigo_ptp_fuji.o: indigo_ptp_fuji.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+indigo_ptp_olympus.o: indigo_ptp_olympus.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 $(DRIVER_EXECUTABLE): indigo_ccd_ptp_main.o $(DRIVER_A)
 	$(CC) -o $@ $^ $(LDFLAGS) -lindigo -lusb-1.0
 
@@ -105,7 +111,7 @@ $(DRIVER_SO): $(DRIVER_A)
 
 endif
 
-$(DRIVER_A): indigo_ccd_ptp.o indigo_ptp.o indigo_ptp_canon.o indigo_ptp_nikon.o indigo_ptp_sony.o indigo_ptp_fuji.o
+$(DRIVER_A): indigo_ccd_ptp.o indigo_ptp.o indigo_ptp_canon.o indigo_ptp_nikon.o indigo_ptp_sony.o indigo_ptp_fuji.o indigo_ptp_olympus.o
 	$(AR) $(ARFLAGS) $@ $^
 
 install: status

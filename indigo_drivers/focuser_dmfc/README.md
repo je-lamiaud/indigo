@@ -23,3 +23,6 @@ indigo_server indigo_focuser_dmfc
 
 ## Status: Stable
 
+## Testing
+
+2026-10-05 19:50 3.0.0.20 mac arm64 simulator 37/37 OK

@@ -1,4 +1,4 @@
-// Copyright (c) 2022-2025 Rumen G. Bogdanovski
+// Copyright (c) 2022-2026 Rumen G. Bogdanovski
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -15,6 +15,7 @@
 // WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+// Sexagesimal buffer handling refactored by OpenAI Codex (2026).
 
 // version history
 // 2.0 by Rumen G. Bogdanovski <rumenastro@gmail.com>
@@ -24,7 +25,7 @@
  \file indigo_mount_asi.c
  */
 
-#define DRIVER_VERSION 0x0300001C
+#define DRIVER_VERSION 0x0300001F
 #define DRIVER_NAME	"indigo_mount_asi"
 
 #include <stdlib.h>
@@ -82,6 +83,12 @@
 #define ZWO_MAX_SLEW_SPEED_LOW_ITEM_NAME      "LOW"
 #define ZWO_MAX_SLEW_SPEED_HIGH_ITEM_NAME     "HIGH"
 
+// a parked or parking mount refuses motion, tracking and home
+#define ASI_PARKED                            (!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value)
+
+// a park stage that has not started to move within this time is given up
+#define ZWO_PARK_START_TIMEOUT                5.0
+
 typedef struct {
 	indigo_uni_handle *handle;
 	int device_count;
@@ -103,9 +110,15 @@ typedef struct {
 	int prev_tracking_rate;
 	bool prev_home_state;
 	int prev_tracking_error;
-	bool park_requested;
+	// park: the state :Gps# reports, 1 while the home slew that precedes :hP# runs and 2 once :hP#
+	// is sent, whether the slew of the stage was seen and when a stage that never started is given up
+	bool parked, parking;
+	int park_stage;
+	bool park_moved;
+	double park_deadline;
 } asi_private_data;
 
+// e1 to e13 of the ZWO protocol
 static char *asi_error_string(unsigned int code) {
 	const char *error_string[] = {
 		"",
@@ -114,12 +127,16 @@ static char *asi_error_string(unsigned int code) {
 		"Mount not initialized",
 		"Mount is moving",
 		"Target is below horizon",
-		"Target is beow the altitude limit",
+		"Target is below the altitude limit",
 		"Time and location are not set",
 		"Warning: Meridian reached, tracking stopeed",
-		"Target is on the other side of the meridian"
+		"Target is on the other side of the meridian",
+		"Altitude inverted",
+		"Sync near the pole refused",
+		"Sync too far from the current position",
+		"Target is above the altitude limit"
 	};
-	if (code > 9) code = 0;
+	if (code > 13) code = 0;
 	return (char *)error_string[code];
 }
 
@@ -216,11 +233,11 @@ static bool asi_get_utc(indigo_device *device, time_t *secs, int *utc_offset) {
 	char response[128];
 	memset(&tm, 0, sizeof(tm));
 	char separator[2];
-	if (asi_command(device, ":GC#", response, sizeof(response), 0) && sscanf(response, "%d%c%d%c%d", &tm.tm_mon, separator, &tm.tm_mday, separator, &tm.tm_year) == 5) {
-		if (asi_command(device, ":GL#", response, sizeof(response), 0) && sscanf(response, "%d%c%d%c%d", &tm.tm_hour, separator, &tm.tm_min, separator, &tm.tm_sec) == 5) {
+	if (asi_command(device, ":GC#", response, sizeof(response) - 1, 0) && sscanf(response, "%d%c%d%c%d", &tm.tm_mon, separator, &tm.tm_mday, separator, &tm.tm_year) == 5) {
+		if (asi_command(device, ":GL#", response, sizeof(response) - 1, 0) && sscanf(response, "%d%c%d%c%d", &tm.tm_hour, separator, &tm.tm_min, separator, &tm.tm_sec) == 5) {
 			tm.tm_year += 100; // TODO: To be fixed in year 2100 :)
 			tm.tm_mon -= 1;
-			if (asi_command(device, ":GG#", response, sizeof(response), 0)) {
+			if (asi_command(device, ":GG#", response, sizeof(response) - 1, 0)) {
 				*utc_offset = -atoi(response);
 				*secs = indigo_timegm(&tm) - *utc_offset * 3600;
 				return true;
@@ -234,7 +251,7 @@ static bool asi_get_sidereal_time(indigo_device *device, double *siderial_time) 
 	int h, m, s;
 	char response[128];
 
-	if (asi_command(device, ":GS#", response, sizeof(response), 0) && (sscanf(response, "%d:%d:%d", &h, &m, &s) == 3)) {
+	if (asi_command(device, ":GS#", response, sizeof(response) - 1, 0) && (sscanf(response, "%d:%d:%d", &h, &m, &s) == 3)) {
 		*siderial_time = (double)h + m/60.0 + s/3600.0;
 		return true;
 	} else {
@@ -244,11 +261,11 @@ static bool asi_get_sidereal_time(indigo_device *device, double *siderial_time) 
 
 static void asi_get_site(indigo_device *device, double *latitude, double *longitude) {
 	char response[128];
-	if (asi_command(device, ":Gt#", response, sizeof(response), 0)) {
+	if (asi_command(device, ":Gt#", response, sizeof(response) - 1, 0)) {
 		*latitude = indigo_stod(response);
 	}
 	// LX200 protocol returns negative longitude for the east
-	if (asi_command(device, ":Gg#", response, sizeof(response), 0)) {
+	if (asi_command(device, ":Gg#", response, sizeof(response) - 1, 0)) {
 		*longitude = indigo_stod(response);
 		if (*longitude < 0) {
 			*longitude += 360;
@@ -258,15 +275,16 @@ static void asi_get_site(indigo_device *device, double *latitude, double *longit
 }
 
 static bool asi_set_site(indigo_device *device, double latitude, double longitude) {
+	char sexagesimal[128];
 	char command[128], response[128];
-	sprintf(command, ":St%s#", indigo_dtos(latitude, "%+03d*%02d"));
+	sprintf(command, ":St%s#", indigo_dtos_r(latitude, "%+03d*%02d", sexagesimal, sizeof(sexagesimal)));
 	if (!asi_command(device, command, response, 1, 0) || *response != '1') {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "%s failed", command);
 		return false;
 	} else {
 		// LX200 protocol expects negative longitude for the east
 		longitude = fmod((360 - longitude), 360);
-		sprintf(command, ":Sg%s#", indigo_dtos(longitude, "%03d*%02d"));
+		sprintf(command, ":Sg%s#", indigo_dtos_r(longitude, "%03d*%02d", sexagesimal, sizeof(sexagesimal)));
 		if (!asi_command(device, command, response, 1, 0) || *response != '1') {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME, "%s failed", command);
 			return false;
@@ -277,7 +295,7 @@ static bool asi_set_site(indigo_device *device, double latitude, double longitud
 
 static bool asi_get_meridian_settings(indigo_device *device, bool *flip_enabled, bool *track_passed, int *track_passed_limit) {
 	char response[128];
-	if (asi_command(device, ":GTa#", response, sizeof(response), 0)) {
+	if (asi_command(device, ":GTa#", response, sizeof(response) - 1, 0)) {
 		if (strlen(response) != 5) {
 			INDIGO_DRIVER_ERROR(DRIVER_NAME,"unexpected response '%s'", response);
 			return false;
@@ -308,7 +326,7 @@ static bool asi_get_meridian_settings(indigo_device *device, bool *flip_enabled,
 static bool asi_set_meridian_action(indigo_device *device, bool flip, bool track) {
 	char current[128];
 	char request[128];
-	if (asi_command(device, ":GTa#", current, sizeof(current), 0)) {
+	if (asi_command(device, ":GTa#", current, sizeof(current) - 1, 0)) {
 		if (flip) {
 			current[0] = '1';
 		} else {
@@ -320,7 +338,7 @@ static bool asi_set_meridian_action(indigo_device *device, bool flip, bool track
 			current[1] = '0';
 		}
 		sprintf(request, ":STa%s#", current);
-		return asi_command(device, request, current, sizeof(current), 0);
+		return asi_command(device, request, current, sizeof(current) - 1, 0);
 	}
 	return false;
 }
@@ -331,19 +349,19 @@ static bool asi_set_meridian_limit(indigo_device *device, int16_t limit) {
 	if (limit < -15 || limit > 15) {
 		return false;
 	}
-	if (asi_command(device, ":GTa#", current, sizeof(current), 0)) {
+	if (asi_command(device, ":GTa#", current, sizeof(current) - 1, 0)) {
 		sprintf(current+2, "%+03d", limit);
 		sprintf(request, ":STa%s#", current);
-		return asi_command(device, request, current, sizeof(current), 0);
+		return asi_command(device, request, current, sizeof(current) - 1, 0);
 	}
 	return false;
 }
 
 static bool asi_get_coordinates(indigo_device *device, double *ra, double *dec) {
 	char response[128];
-	if (asi_command(device, ":GR#", response, sizeof(response), 0)) {
+	if (asi_command(device, ":GR#", response, sizeof(response) - 1, 0)) {
 		*ra = indigo_stod(response);
-		if (asi_command(device, ":GD#", response, sizeof(response), 0)) {
+		if (asi_command(device, ":GD#", response, sizeof(response) - 1, 0)) {
 			*dec = indigo_stod(response);
 			return true;
 		}
@@ -352,20 +370,21 @@ static bool asi_get_coordinates(indigo_device *device, double *ra, double *dec) 
 }
 
 static bool asi_slew(indigo_device *device, double ra, double dec, int *error_code) {
+	char sexagesimal[128];
 	char command[128], response[128];
-	sprintf(command, ":Sr%s#", indigo_dtos(ra, "%02d:%02d:%02.0f"));
-	if (!asi_command(device, command, response, sizeof(response), 0) || *response != '1') {
+	sprintf(command, ":Sr%s#", indigo_dtos_r(ra, "%02d:%02d:%02.0f", sexagesimal, sizeof(sexagesimal)));
+	if (!asi_command(device, command, response, sizeof(response) - 1, 0) || *response != '1') {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "%s failed with response: %s", command, response);
 		*error_code = asi_error_code(response);
 		return false;
 	}
-	sprintf(command, ":Sd%s#", indigo_dtos(dec, "%+03d*%02d:%02.0f"));
-	if (!asi_command(device, command, response, sizeof(response), 0) || *response != '1') {
+	sprintf(command, ":Sd%s#", indigo_dtos_r(dec, "%+03d*%02d:%02.0f", sexagesimal, sizeof(sexagesimal)));
+	if (!asi_command(device, command, response, sizeof(response) - 1, 0) || *response != '1') {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "%s failed with response: %s", command, response);
 		*error_code = asi_error_code(response);
 		return false;
 	}
-	if (!asi_command(device, ":MS#", response, sizeof(response), 0) || *response != '0') {
+	if (!asi_command(device, ":MS#", response, sizeof(response) - 1, 0) || *response != '0') {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, ":MS# failed with response: %s", response);
 		*error_code = asi_error_code(response);
 		return false;
@@ -375,20 +394,21 @@ static bool asi_slew(indigo_device *device, double ra, double dec, int *error_co
 }
 
 static bool asi_sync(indigo_device *device, double ra, double dec, int *error_code) {
+	char sexagesimal[128];
 	char command[128], response[128];
-	sprintf(command, ":Sr%s#", indigo_dtos(ra, "%02d:%02d:%02.0f"));
-	if (!asi_command(device, command, response, sizeof(response), 0) || *response != '1') {
+	sprintf(command, ":Sr%s#", indigo_dtos_r(ra, "%02d:%02d:%02.0f", sexagesimal, sizeof(sexagesimal)));
+	if (!asi_command(device, command, response, sizeof(response) - 1, 0) || *response != '1') {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "%s failed with response: %s", command, response);
 		*error_code = asi_error_code(response);
 		return false;
 	}
-	sprintf(command, ":Sd%s#", indigo_dtos(dec, "%+03d*%02d:%02.0f"));
-	if (!asi_command(device, command, response, sizeof(response), 0) || *response != '1') {
+	sprintf(command, ":Sd%s#", indigo_dtos_r(dec, "%+03d*%02d:%02.0f", sexagesimal, sizeof(sexagesimal)));
+	if (!asi_command(device, command, response, sizeof(response) - 1, 0) || *response != '1') {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "%s failed with response: %s", command, response);
 		*error_code = asi_error_code(response);
 		return false;
 	}
-	if (!asi_command(device, ":CM#", response, sizeof(response), 0) || *response == 'e') {
+	if (!asi_command(device, ":CM#", response, sizeof(response) - 1, 0) || *response == 'e') {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, ":CM# failed with response: %s", response);
 		*error_code = asi_error_code(response);
 		return false;
@@ -413,7 +433,7 @@ static bool asi_set_guide_rate(indigo_device *device, int ra, int dec) {
 
 static bool asi_get_guide_rate(indigo_device *device, int *ra, int *dec) {
 	char response[128] = {0};
-	bool res = asi_command(device, ":Ggr#", response, sizeof(response), 0);
+	bool res = asi_command(device, ":Ggr#", response, sizeof(response) - 1, 0);
 	if (!res) {
 		return false;
 	}
@@ -435,13 +455,13 @@ static bool asi_set_max_slew_speed(indigo_device *device, int speed) {
 	} else {
 		return false;
 	}
-	if (!asi_command(device, command, response, sizeof(response), 0)) return false;
+	if (!asi_command(device, command, response, sizeof(response) - 1, 0)) return false;
 	return *response == '1';
 }
 
 static bool asi_get_max_slew_speed(indigo_device *device, int *speed) {
 	char response[128] = {0};
-	if (!asi_command(device, ":GRl#", response, sizeof(response), 0)) return false;
+	if (!asi_command(device, ":GRl#", response, sizeof(response) - 1, 0)) return false;
 	int v = atoi(response);
 	if (v <= 0) return false;
 	*speed = v;
@@ -451,7 +471,7 @@ static bool asi_get_max_slew_speed(indigo_device *device, int *speed) {
 // NOTE! requires firmware 1.1.1
 static bool asi_get_tracking_status(indigo_device *device, bool *is_tracking, int *error_code) {
 	char response[128] = {0};
-	bool res = asi_command(device, ":GAT#", response, sizeof(response), 0);
+	bool res = asi_command(device, ":GAT#", response, sizeof(response) - 1, 0);
 	if (!res) return false;
 	if (response[0] == '0' && response[1] == '\0') {
 		*is_tracking = 0;
@@ -471,9 +491,9 @@ static bool asi_get_tracking_status(indigo_device *device, bool *is_tracking, in
 static bool asi_set_tracking(indigo_device *device, bool on) {
 	char response[64] = {0};
 	if (on) {
-		return asi_command(device, ":Te#", response, sizeof(response), 0) && *response == '1';
+		return asi_command(device, ":Te#", response, sizeof(response) - 1, 0) && *response == '1';
 	} else {
-		return asi_command(device, ":Td#", response, sizeof(response), 0) && *response == '1';
+		return asi_command(device, ":Td#", response, sizeof(response) - 1, 0) && *response == '1';
 	}
 }
 
@@ -554,10 +574,73 @@ static bool asi_home(indigo_device *device) {
 	return asi_command(device, ":hC#", NULL, 0, 0);
 }
 
-static bool asi_park(indigo_device *device) {
-	// park drives the mount in bad state and the only way to recover is via asi app.
-	// return asi_command(device, ":hP#", NULL, 0, 0);
+// A set command is answered with one character, or with e and the error code up to #.
+static bool asi_single_reply_command(indigo_device *device, const char *command, char *response, int max) {
+	if (!asi_command(device, command, response, 1, 0)) {
+		return false;
+	}
+	if (*response == 'e') {
+		char code[16] = { 0 };
+		if (indigo_uni_read_section2(PRIVATE_DATA->handle, code, sizeof(code) - 1, "#", "#", INDIGO_DELAY(0.5), INDIGO_DELAY(0.1)) > 0) {
+			snprintf(response, max, "e%s", code);
+		}
+	}
 	return true;
+}
+
+// :hP# goes to the park position and latches the parked state :Gps# reports; it has no reply.
+// The park starts from home: away from home :hC# goes first and :hP# follows once the home slew
+// is over (see asi_update_park()). The parked
+// state is released by :Spu# alone; without it the mount stays parked, which is why the park was
+// once thought to leave the mount in a state only the vendor application could recover from.
+static bool asi_park(indigo_device *device) {
+	char response[128] = { 0 };
+	if (!asi_command(device, ":GU#", response, sizeof(response) - 1, 0)) {
+		return false;
+	}
+	if (strchr(response, 'Z')) {
+		indigo_send_message(device, ALERT_PROPERTY, "Park is not available in alt-az mode");
+		return false;
+	}
+	bool at_home = strchr(response, 'H') != NULL;
+	if (!asi_set_tracking(device, false)) {
+		return false;
+	}
+	PRIVATE_DATA->park_moved = false;
+	PRIVATE_DATA->park_deadline = indigo_monotonic_time() + ZWO_PARK_START_TIMEOUT;
+	if (at_home) {
+		PRIVATE_DATA->park_stage = 2;
+		return asi_command(device, ":hP#", NULL, 0, 0);
+	}
+	PRIVATE_DATA->park_stage = 1;
+	return asi_command(device, ":hC#", NULL, 0, 0);
+}
+
+// :Spu# releases the parked state without moving the mount.
+static bool asi_unpark(indigo_device *device) {
+	char response[32] = { 0 };
+	if (!asi_single_reply_command(device, ":Spu#", response, sizeof(response))) {
+		return false;
+	}
+	if (*response == 'e') {
+		indigo_send_message(device, ALERT_PROPERTY, "%s", asi_error_string(atoi(response + 1)));
+	}
+	return *response == '1';
+}
+
+// :Sp01# stores the current position as the park position. Firmware 1.3.0 and later.
+static bool asi_park_set(indigo_device *device) {
+	static const char *refusals[] = { NULL, NULL, "This park position is already set", "Only one park position can be set", "The park position can be set in equatorial mode only", "The mount has to be homed first", NULL, NULL, NULL, "The mount is moving" };
+	char response[32] = { 0 };
+	if (!asi_single_reply_command(device, ":Sp01#", response, sizeof(response))) {
+		return false;
+	}
+	if (*response >= '2' && *response <= '9' && refusals[*response - '0'] != NULL) {
+		indigo_send_message(device, ALERT_PROPERTY, "%s", refusals[*response - '0']);
+	} else if (*response == 'e') {
+		indigo_send_message(device, ALERT_PROPERTY, "%s", asi_error_string(atoi(response + 1)));
+	}
+	return *response == '1';
 }
 
 static bool asi_stop(indigo_device *device) {
@@ -566,7 +649,7 @@ static bool asi_stop(indigo_device *device) {
 
 static bool asi_clear_alignment_data(indigo_device *device) {
 	char response[64] = {0};
-	return asi_command(device, ":NSC#", response, sizeof(response), 0) && *response == '1';
+	return asi_command(device, ":NSC#", response, sizeof(response) - 1, 0) && *response == '1';
 }
 
 static bool asi_guide_dec(indigo_device *device, int north, int south) {
@@ -603,7 +686,7 @@ static void asi_update_site_items(indigo_device *device) {
 static bool asi_detect_mount(indigo_device *device) {
 	char response[128];
 	bool result = true;
-	if (asi_command(device, ":GVP#", response, sizeof(response), 0)) {
+	if (asi_command(device, ":GVP#", response, sizeof(response) - 1, 0)) {
 		INDIGO_DRIVER_LOG(DRIVER_NAME, "Product: '%s'", response);
 		strncpy(PRIVATE_DATA->product, response, 64);
 		if (!strncmp(PRIVATE_DATA->product, "AM", 2) && isdigit(PRIVATE_DATA->product[2])) {
@@ -617,6 +700,57 @@ static bool asi_detect_mount(indigo_device *device) {
 }
 
 // -------------------------------------------------------------------------------- INDIGO MOUNT device implementation
+
+// Reads the park state from :Gps# (0 not parked, 1 parking, 2 parked, anything else a park error)
+// and carries a park under way through its stages: the home slew ends with H from firmware 1.8.1
+// and with the mount standing still before, and a stage that has not started to move within
+// ZWO_PARK_START_TIMEOUT is given up.
+static void asi_update_park(indigo_device *device, bool slewing, bool at_home) {
+	char response[128] = { 0 };
+	bool parked = PRIVATE_DATA->parked;
+	bool failed = false;
+	if (asi_command(device, ":Gps#", response, sizeof(response) - 1, 0)) {
+		PRIVATE_DATA->parking = *response == '1';
+		PRIVATE_DATA->parked = *response == '2';
+		failed = *response != '0' && *response != '1' && *response != '2' && PRIVATE_DATA->park_stage == 2;
+	}
+	if (PRIVATE_DATA->park_stage != 0) {
+		if (slewing || PRIVATE_DATA->parking) {
+			PRIVATE_DATA->park_moved = true;
+		}
+		if (PRIVATE_DATA->park_stage == 1) {
+			bool home_reached = at_home && (PRIVATE_DATA->firmware >= 0x010801 || !slewing);
+			if (home_reached || (PRIVATE_DATA->firmware < 0x010801 && PRIVATE_DATA->park_moved && !slewing)) {
+				PRIVATE_DATA->park_stage = 2;
+				PRIVATE_DATA->park_moved = false;
+				PRIVATE_DATA->park_deadline = indigo_monotonic_time() + ZWO_PARK_START_TIMEOUT;
+				failed = !asi_command(device, ":hP#", NULL, 0, 0);
+			} else if (!PRIVATE_DATA->park_moved && indigo_monotonic_time() > PRIVATE_DATA->park_deadline) {
+				failed = true;
+			}
+		} else if (PRIVATE_DATA->parked) {
+			PRIVATE_DATA->park_stage = 0;
+		} else if (!PRIVATE_DATA->park_moved && indigo_monotonic_time() > PRIVATE_DATA->park_deadline) {
+			failed = true;
+		}
+	}
+	if (failed) {
+		PRIVATE_DATA->park_stage = 0;
+		indigo_set_switch(MOUNT_PARK_PROPERTY, PRIVATE_DATA->parked ? MOUNT_PARK_PARKED_ITEM : MOUNT_PARK_UNPARKED_ITEM, true);
+		MOUNT_PARK_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_property(device, MOUNT_PARK_PROPERTY, "Park failed");
+	} else if (MOUNT_PARK_PROPERTY->state == INDIGO_BUSY_STATE) {
+		if (PRIVATE_DATA->parked && PRIVATE_DATA->park_stage == 0) {
+			MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
+			indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
+		}
+	} else if (parked != PRIVATE_DATA->parked || MOUNT_PARK_PARKED_ITEM->sw.value != PRIVATE_DATA->parked) {
+		// a park or unpark made outside the driver
+		indigo_set_switch(MOUNT_PARK_PROPERTY, PRIVATE_DATA->parked ? MOUNT_PARK_PARKED_ITEM : MOUNT_PARK_UNPARKED_ITEM, true);
+		indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
+	}
+}
+
 static void position_timer_callback(indigo_device *device) {
 	if (PRIVATE_DATA->handle != NULL) {
 		char response[128];
@@ -629,7 +763,7 @@ static void position_timer_callback(indigo_device *device) {
 			MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.value = ra;
 			MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.value = dec;
 		}
-		if (success && (success = asi_command(device, ":GU#", response, sizeof(response), 0))) {
+		if (success && (success = asi_command(device, ":GU#", response, sizeof(response) - 1, 0))) {
 			MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = strchr(response, 'N') ? INDIGO_OK_STATE : INDIGO_BUSY_STATE;
 			if (strchr(response, 'n')) {
 				if (MOUNT_TRACKING_ON_ITEM->sw.value) {
@@ -656,17 +790,8 @@ static void position_timer_callback(indigo_device *device) {
 				}
 				PRIVATE_DATA->prev_home_state = false;
 			}
-			if (strchr(response, 'N')) {
-				if (PRIVATE_DATA->park_requested == true) {
-					MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
-					/* We can not detect when the mount is parked or unparked as the parked
-					   flag is never set (a firmware bug) this is why we set it to unparked
-					   when the goto park is finished
-					*/
-					indigo_set_switch(MOUNT_PARK_PROPERTY, MOUNT_PARK_UNPARKED_ITEM, true);
-					indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
-				}
-				PRIVATE_DATA->park_requested = false;
+			if (!MOUNT_PARK_PROPERTY->hidden) {
+				asi_update_park(device, strchr(response, 'N') == NULL, strchr(response, 'H') != NULL);
 			}
 		}
 
@@ -697,7 +822,7 @@ static void position_timer_callback(indigo_device *device) {
 			}
 		}
 
-		if (success && (success = asi_command(device, ":Gm#", response, sizeof(response), 0))) {
+		if (success && (success = asi_command(device, ":Gm#", response, sizeof(response) - 1, 0))) {
 			if (strchr(response, 'W') && !MOUNT_SIDE_OF_PIER_WEST_ITEM->sw.value) {
 				indigo_set_switch(MOUNT_SIDE_OF_PIER_PROPERTY, MOUNT_SIDE_OF_PIER_WEST_ITEM, true);
 				indigo_update_property(device, MOUNT_SIDE_OF_PIER_PROPERTY, NULL);
@@ -766,7 +891,7 @@ static void asi_init_mount(indigo_device *device) {
 	ZWO_BUZZER_PROPERTY->hidden = false;
 	ZWO_MAX_SLEW_SPEED_PROPERTY->hidden = false;
 	PRIVATE_DATA->firmware = 0;
-	if (asi_command(device, ":GV#", response, sizeof(response), 0)) {
+	if (asi_command(device, ":GV#", response, sizeof(response) - 1, 0)) {
 		char fv[3] = {0};
 		if (3 == sscanf(response, "%hhd.%hhd.%hhd", &fv[0], &fv[1], &fv[2])) {
 			PRIVATE_DATA->firmware = (fv[0] << 16) | (fv[1] << 8) | fv[2];
@@ -790,16 +915,30 @@ static void asi_init_mount(indigo_device *device) {
 			ZWO_MERIDIAN_TRACK_PASSED_ITEM->sw.value = track;
 			ZWO_MERIDIAN_LIMIT_ITEM->number.value = ZWO_MERIDIAN_LIMIT_ITEM->number.target = limit;
 		}
-		// PARK is dangerous with asi mounts as it drives the mount in a bad state and the only way to recover is via asi app.
-		MOUNT_PARK_PROPERTY->hidden = true;
-		indigo_set_switch(MOUNT_PARK_PROPERTY, MOUNT_PARK_UNPARKED_ITEM, true);
 		MOUNT_ALIGNMENT_RESET_PROPERTY->hidden = false;
 	} else {
 		ZWO_MERIDIAN_PROPERTY->hidden = true;
 		ZWO_MERIDIAN_LIMIT_PROPERTY->hidden = true;
-		MOUNT_PARK_PROPERTY->hidden = true;
 		MOUNT_ALIGNMENT_RESET_PROPERTY->hidden = true;
 	}
+	// Firmware 1.1.9 parks with :hP#, reports the park with :Gps# and unparks with :Spu#; 1.3.0
+	// separates the park position from home and stores the current position with :Sp01#.
+	PRIVATE_DATA->parked = PRIVATE_DATA->parking = false;
+	PRIVATE_DATA->park_stage = 0;
+	MOUNT_PARK_PROPERTY->hidden = PRIVATE_DATA->firmware < 0x010109;
+	MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
+	if (!MOUNT_PARK_PROPERTY->hidden && asi_command(device, ":Gps#", response, sizeof(response) - 1, 0)) {
+		PRIVATE_DATA->parked = *response == '2';
+		PRIVATE_DATA->parking = *response == '1';
+	}
+	indigo_set_switch(MOUNT_PARK_PROPERTY, PRIVATE_DATA->parked || PRIVATE_DATA->parking ? MOUNT_PARK_PARKED_ITEM : MOUNT_PARK_UNPARKED_ITEM, true);
+	if (PRIVATE_DATA->parking) {
+		MOUNT_PARK_PROPERTY->state = INDIGO_BUSY_STATE;
+		PRIVATE_DATA->park_stage = 2;
+		PRIVATE_DATA->park_moved = true;
+	}
+	MOUNT_PARK_SET_PROPERTY->hidden = PRIVATE_DATA->firmware < 0x010300;
+	MOUNT_PARK_SET_PROPERTY->count = 1;
 	indigo_define_property(device, ZWO_MERIDIAN_PROPERTY, NULL);
 	indigo_define_property(device, ZWO_MERIDIAN_LIMIT_PROPERTY, NULL);
 
@@ -817,7 +956,7 @@ static void asi_init_mount(indigo_device *device) {
 		asi_set_guide_rate(device, (int)MOUNT_GUIDE_RATE_DEC_ITEM->number.target, (int)MOUNT_GUIDE_RATE_DEC_ITEM->number.target);
 	}
 
-	if (asi_command(device, ":GU#", response, sizeof(response), 0)) {
+	if (asi_command(device, ":GU#", response, sizeof(response) - 1, 0)) {
 		if (strchr(response, 'G'))
 			indigo_set_switch(MOUNT_MODE_PROPERTY, EQUATORIAL_ITEM, true);
 		if (strchr(response, 'Z'))
@@ -837,7 +976,7 @@ static void asi_init_mount(indigo_device *device) {
 		asi_set_site(device, MOUNT_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value, MOUNT_GEOGRAPHIC_COORDINATES_LONGITUDE_ITEM->number.value);
 	}
 	/* Tracking rate */
-	if (asi_command(device, ":GT#", response, sizeof(response), 0)) {
+	if (asi_command(device, ":GT#", response, sizeof(response) - 1, 0)) {
 		if (strchr(response, '0')) {
 			indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SIDEREAL_ITEM, true);
 		} else if (strchr(response, '1')) {
@@ -847,7 +986,7 @@ static void asi_init_mount(indigo_device *device) {
 		}
 	}
 	/* Buzzer volume */
-	if (asi_command(device, ":GBu#", response, sizeof(response), 0)) {
+	if (asi_command(device, ":GBu#", response, sizeof(response) - 1, 0)) {
 		if (strchr(response, '0')) {
 			indigo_set_switch(ZWO_BUZZER_PROPERTY, ZWO_BUZZER_OFF_ITEM, true);
 		} else if (strchr(response, '1')) {
@@ -896,6 +1035,7 @@ static void mount_connect_callback(indigo_device *device) {
 		}
 	} else {
 		indigo_cancel_pending_handlers(device);
+		PRIVATE_DATA->park_stage = 0;
 		if (--PRIVATE_DATA->device_count <= 0) {
 			asi_stop(device);
 			asi_close(device->master_device);
@@ -925,18 +1065,39 @@ static void mount_home_callback(indigo_device *device) {
 
 static void mount_park_callback(indigo_device *device) {
 	if (MOUNT_PARK_PARKED_ITEM->sw.value) {
-		MOUNT_PARK_PARKED_ITEM->sw.value = false;
-		MOUNT_PARK_UNPARKED_ITEM->sw.value = false;
-		if (asi_set_tracking(device, false) && asi_park(device)) {
-			indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
-			/* Wait 1s to make sure the mount reports moving. We use moving flag to detect
-			   when finished because fs a firmware bug mount never reports parked.
-			*/
-			indigo_sleep(1);
-			PRIVATE_DATA->park_requested = true;
+		if (PRIVATE_DATA->parked) {
+			MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
+		} else if (asi_park(device)) {
+			// completed by asi_update_park() when :Gps# reports the mount parked
+			MOUNT_PARK_PROPERTY->state = INDIGO_BUSY_STATE;
 		} else {
+			PRIVATE_DATA->park_stage = 0;
+			indigo_set_switch(MOUNT_PARK_PROPERTY, MOUNT_PARK_UNPARKED_ITEM, true);
 			MOUNT_PARK_PROPERTY->state = INDIGO_ALERT_STATE;
-			indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
+		}
+	} else if (MOUNT_PARK_UNPARKED_ITEM->sw.value) {
+		if (!PRIVATE_DATA->parked) {
+			MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
+		} else if (asi_unpark(device)) {
+			PRIVATE_DATA->parked = false;
+			MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
+		} else {
+			indigo_set_switch(MOUNT_PARK_PROPERTY, MOUNT_PARK_PARKED_ITEM, true);
+			MOUNT_PARK_PROPERTY->state = INDIGO_ALERT_STATE;
+		}
+	}
+	indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
+}
+
+static void mount_park_set_callback(indigo_device *device) {
+	if (MOUNT_PARK_SET_CURRENT_ITEM->sw.value) {
+		MOUNT_PARK_SET_CURRENT_ITEM->sw.value = false;
+		if (asi_park_set(device)) {
+			MOUNT_PARK_SET_PROPERTY->state = INDIGO_OK_STATE;
+			indigo_update_property(device, MOUNT_PARK_SET_PROPERTY, "Current position set as park position");
+		} else {
+			MOUNT_PARK_SET_PROPERTY->state = INDIGO_ALERT_STATE;
+			indigo_update_property(device, MOUNT_PARK_SET_PROPERTY, "Setting park position failed");
 		}
 	}
 }
@@ -1002,7 +1163,14 @@ static void mount_abort_callback(indigo_device *device) {
 	if (MOUNT_ABORT_MOTION_ITEM->sw.value) {
 		MOUNT_ABORT_MOTION_ITEM->sw.value = false;
 		if (asi_stop(device)) {
-			// properties will be handled in position timer when the mount stops
+			// properties will be handled in position timer when the mount stops; a park the stop
+			// interrupted is over, and its :hP# is never sent
+			if (PRIVATE_DATA->park_stage != 0) {
+				PRIVATE_DATA->park_stage = 0;
+				indigo_set_switch(MOUNT_PARK_PROPERTY, PRIVATE_DATA->parked ? MOUNT_PARK_PARKED_ITEM : MOUNT_PARK_UNPARKED_ITEM, true);
+				MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
+				indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
+			}
 		} else {
 			MOUNT_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
 			indigo_update_property(device, MOUNT_ABORT_MOTION_PROPERTY, "Failed to abort");
@@ -1250,6 +1418,10 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_HOME_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- MOUNT_HOME
+		if (ASI_PARKED) {
+			indigo_update_property(device, MOUNT_HOME_PROPERTY, "Mount is parked");
+			return INDIGO_OK;
+		}
 		indigo_property_copy_values(MOUNT_HOME_PROPERTY, property, false);
 		if (MOUNT_HOME_ITEM->sw.value) {
 			MOUNT_HOME_PROPERTY->state = INDIGO_BUSY_STATE;
@@ -1259,11 +1431,21 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_PARK_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- MOUNT_PARK
+		if (MOUNT_PARK_PROPERTY->state == INDIGO_BUSY_STATE) {
+			return INDIGO_OK;
+		}
 		indigo_property_copy_values(MOUNT_PARK_PROPERTY, property, false);
-		if (MOUNT_PARK_PARKED_ITEM->sw.value) {
-			MOUNT_PARK_PROPERTY->state = INDIGO_BUSY_STATE;
-			indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
-			indigo_execute_handler(device, mount_park_callback);
+		MOUNT_PARK_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
+		indigo_execute_handler(device, mount_park_callback);
+		return INDIGO_OK;
+	} else if (indigo_property_match_changeable(MOUNT_PARK_SET_PROPERTY, property)) {
+		// -------------------------------------------------------------------------------- MOUNT_PARK_SET
+		indigo_property_copy_values(MOUNT_PARK_SET_PROPERTY, property, false);
+		if (MOUNT_PARK_SET_CURRENT_ITEM->sw.value) {
+			MOUNT_PARK_SET_PROPERTY->state = INDIGO_BUSY_STATE;
+			indigo_update_property(device, MOUNT_PARK_SET_PROPERTY, NULL);
+			indigo_execute_handler(device, mount_park_set_callback);
 		}
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_GEOGRAPHIC_COORDINATES_PROPERTY, property)) {
@@ -1275,6 +1457,11 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_EQUATORIAL_COORDINATES_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- MOUNT_EQUATORIAL_COORDINATES
+		if (ASI_PARKED) {
+			MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+			indigo_update_coordinates(device, "Mount is parked");
+			return INDIGO_OK;
+		}
 		PRIVATE_DATA->motioned = false; // WTF?
 		indigo_property_copy_targets(MOUNT_EQUATORIAL_COORDINATES_PROPERTY, property, false);
 		// Update to busy moved to callback to avoid race condition with position timer
@@ -1290,6 +1477,11 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_MOTION_DEC_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- MOUNT_MOTION_DEC
+		if (ASI_PARKED) {
+			MOUNT_MOTION_DEC_PROPERTY->state = INDIGO_ALERT_STATE;
+			indigo_update_property(device, MOUNT_MOTION_DEC_PROPERTY, "Mount is parked");
+			return INDIGO_OK;
+		}
 		indigo_property_copy_values(MOUNT_MOTION_DEC_PROPERTY, property, false);
 		MOUNT_MOTION_DEC_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, MOUNT_MOTION_DEC_PROPERTY, NULL);
@@ -1297,6 +1489,11 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_MOTION_RA_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- MOUNT_MOTION_RA
+		if (ASI_PARKED) {
+			MOUNT_MOTION_RA_PROPERTY->state = INDIGO_ALERT_STATE;
+			indigo_update_property(device, MOUNT_MOTION_RA_PROPERTY, "Mount is parked");
+			return INDIGO_OK;
+		}
 		indigo_property_copy_values(MOUNT_MOTION_RA_PROPERTY, property, false);
 		MOUNT_MOTION_RA_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, MOUNT_MOTION_RA_PROPERTY, NULL);
@@ -1318,6 +1515,11 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_TRACKING_PROPERTY, property)) {
 		// -------------------------------------------------------------------------------- MOUNT_TRACKING
+		if (ASI_PARKED) {
+			MOUNT_TRACKING_PROPERTY->state = INDIGO_ALERT_STATE;
+			indigo_update_property(device, MOUNT_TRACKING_PROPERTY, "Mount is parked");
+			return INDIGO_OK;
+		}
 		indigo_property_copy_values(MOUNT_TRACKING_PROPERTY, property, false);
 		MOUNT_TRACKING_PROPERTY->state = INDIGO_BUSY_STATE;
 		indigo_update_property(device, MOUNT_TRACKING_PROPERTY, NULL);
@@ -1412,7 +1614,7 @@ static void guider_connect_callback(indigo_device *device) {
 		if (result) {
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 			char response[128];
-			if (asi_command(device, ":GVP#", response, sizeof(response), 0)) {
+			if (asi_command(device, ":GVP#", response, sizeof(response) - 1, 0)) {
 				INDIGO_DRIVER_LOG(DRIVER_NAME, "Product: '%s'", response);
 				strncpy(PRIVATE_DATA->product, response, 64);
 				if (!strncmp(PRIVATE_DATA->product, "AM", 2) && isdigit(PRIVATE_DATA->product[2])) {

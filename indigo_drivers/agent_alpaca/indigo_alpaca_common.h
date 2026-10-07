@@ -1,4 +1,4 @@
-// Copyright (c) 2021-2025 CloudMakers, s. r. o.
+// Copyright (c) 2021-2026 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -28,13 +28,16 @@
 #define alpaca_common_h
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include <indigo/indigo_bus.h>
 
 #define ALPACA_INTERFACE_VERSION	1
 #define ALPACA_MAX_FILTERS				32
 #define ALPACA_MAX_SWITCHES				8
+#define ALPACA_SWITCH_SECTIONS		6
 #define ALPACA_MAX_ITEMS					128
+#define ALPACA_SIDEREAL_RATE			(360.0 / 86164.0905)
 
 typedef enum {
 	indigo_alpaca_error_OK = 0x000,
@@ -45,7 +48,8 @@ typedef enum {
 	indigo_alpaca_error_InvalidWhileParked = 0x408,
 	indigo_alpaca_error_InvalidWhileSlaved = 0x409,
 	indigo_alpaca_error_InvalidOperation = 0x40B,
-	indigo_alpaca_error_ActionNotImplemented = 0x40C
+	indigo_alpaca_error_ActionNotImplemented = 0x40C,
+	indigo_alpaca_error_UnspecifiedError = 0x4FF
 } indigo_alpaca_error;
 
 typedef struct indigo_alpaca_device_struct {
@@ -59,10 +63,15 @@ typedef struct indigo_alpaca_device_struct {
 	char device_uid[40];
 	pthread_mutex_t mutex;
 	bool connected;
+	bool connection_failed;
+	bool connection_busy;
 	char utcdate[64];
 	double latitude;
 	double longitude;
 	double elevation;
+	bool geographic_coordinates_busy;
+	bool geographic_coordinates_failed;
+	struct indigo_alpaca_device_struct *guider_device;
 	union {
 		struct {
 			bool canabortexposure;
@@ -74,6 +83,8 @@ typedef struct indigo_alpaca_device_struct {
 			int camerastate;
 			int cameraxsize;
 			int cameraysize;
+			bool has_ccd_info;
+			bool has_bits_per_pixel;
 			int startx;
 			int starty;
 			int numx;
@@ -111,9 +122,12 @@ typedef struct indigo_alpaca_device_struct {
 		} wheel;
 		struct {
 			bool absolute;
+			bool positionwritable;
 			bool ismoving;
 			bool tempcompavailable;
 			bool tempcomp;
+			bool tempcompsuspended;
+			bool movepending;
 			bool temperatureavailable;
 			bool halted;
 			int offset;
@@ -125,6 +139,7 @@ typedef struct indigo_alpaca_device_struct {
 		struct {
 			bool canreverse;
 			bool ismoving;
+			bool hasrawposition;
 			double mechanicalposition;
 			double position;
 			double targetposition;
@@ -147,6 +162,8 @@ typedef struct indigo_alpaca_device_struct {
 			bool atpark;
 			double siderealtime;
 			int equatorialsystem;
+			double epoch;										// MOUNT_EPOCH: the equinox of the telescope, 0 for the equinox of date
+			bool epochknown;									// MOUNT_EPOCH was seen; J2000 until then
 			double declination;
 			double rightascension;
 			double altitude;
@@ -156,6 +173,8 @@ typedef struct indigo_alpaca_device_struct {
 			double targetdeclination;
 			double targetrightascension;
 			bool slewing;
+			bool coordinates_failed;
+			unsigned coordinates_updates;
 			bool tracking;
 			int trackingrate;
 			bool trackingrates[4];
@@ -179,21 +198,21 @@ typedef struct indigo_alpaca_device_struct {
 			bool isrotating;
 			bool isshuttermoving;
 			bool isflapmoving;
+			bool isparking;
+			bool ishoming;
+			bool homed;
 		} dome;
 		struct {
-			int maxswitch_power_outlet;
-			int maxswitch_heater_outlet;
-			int maxswitch_usb_port;
-			int maxswitch_gpio_outlet;
-			int maxswitch_gpio_sensor;
-			bool canwrite[5 * ALPACA_MAX_SWITCHES];
-			char switchname[5 * ALPACA_MAX_SWITCHES][INDIGO_VALUE_SIZE];
-			double switchvalue[5 * ALPACA_MAX_SWITCHES];
-			double minswitchvalue[5 * ALPACA_MAX_SWITCHES];
-			double maxswitchvalue[5 * ALPACA_MAX_SWITCHES];
-			double switchstep[5 * ALPACA_MAX_SWITCHES];
-			bool valueset[5];
-			bool nameset[5];
+			int count[ALPACA_SWITCH_SECTIONS];			// switches of each section, see indigo_alpaca_switch.c
+			bool canwrite[ALPACA_SWITCH_SECTIONS * ALPACA_MAX_SWITCHES];
+			char switchname[ALPACA_SWITCH_SECTIONS * ALPACA_MAX_SWITCHES][INDIGO_VALUE_SIZE];
+			char switchlabel[ALPACA_SWITCH_SECTIONS * ALPACA_MAX_SWITCHES][INDIGO_VALUE_SIZE];
+			double switchvalue[ALPACA_SWITCH_SECTIONS * ALPACA_MAX_SWITCHES];
+			double minswitchvalue[ALPACA_SWITCH_SECTIONS * ALPACA_MAX_SWITCHES];
+			double maxswitchvalue[ALPACA_SWITCH_SECTIONS * ALPACA_MAX_SWITCHES];
+			double switchstep[ALPACA_SWITCH_SECTIONS * ALPACA_MAX_SWITCHES];
+			bool valueset[ALPACA_SWITCH_SECTIONS];
+			bool nameset[2];											// AUX_OUTLET_NAMES, AUX_SENSOR_NAMES
 		} sw;
 		struct {
 			bool canpulseguide;
@@ -258,7 +277,7 @@ INDIGO_EXTERN long indigo_alpaca_set_command(indigo_alpaca_device *alpaca_device
 INDIGO_EXTERN void indigo_alpaca_ccd_update_property(indigo_alpaca_device *alpaca_device, indigo_property *property);
 INDIGO_EXTERN long indigo_alpaca_ccd_get_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length);
 INDIGO_EXTERN long indigo_alpaca_ccd_set_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length, char *param_1, char *param_2);
-INDIGO_EXTERN void indigo_alpaca_ccd_get_imagearray(indigo_alpaca_device *alpaca_device, int version, indigo_uni_handle *handle, int client_transaction_id, int server_transaction_id, bool use_gzip, bool use_imagebytes);
+INDIGO_EXTERN void indigo_alpaca_ccd_get_imagearray(indigo_alpaca_device *alpaca_device, int version, indigo_uni_handle *handle, uint32_t client_transaction_id, uint32_t server_transaction_id, bool use_gzip, bool use_imagebytes);
 
 INDIGO_EXTERN void indigo_alpaca_wheel_update_property(indigo_alpaca_device *alpaca_device, indigo_property *property);
 INDIGO_EXTERN long indigo_alpaca_wheel_get_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length);
@@ -271,9 +290,11 @@ INDIGO_EXTERN long indigo_alpaca_focuser_set_command(indigo_alpaca_device *alpac
 INDIGO_EXTERN void indigo_alpaca_mount_update_property(indigo_alpaca_device *alpaca_device, indigo_property *property);
 INDIGO_EXTERN long indigo_alpaca_mount_get_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length);
 INDIGO_EXTERN long indigo_alpaca_mount_set_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length, char *param_1, char *param_2);
+INDIGO_EXTERN long indigo_alpaca_mount_get_destinationsideofpier(indigo_alpaca_device *alpaca_device, int version, double ra, double dec, char *buffer, long buffer_length);
 
 INDIGO_EXTERN void indigo_alpaca_guider_update_property(indigo_alpaca_device *alpaca_device, indigo_property *property);
 INDIGO_EXTERN long indigo_alpaca_guider_get_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length);
+INDIGO_EXTERN indigo_alpaca_error indigo_alpaca_guider_pulseguide(indigo_alpaca_device *device, int direction, int duration);
 INDIGO_EXTERN long indigo_alpaca_guider_set_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length, char *param_1, char *param_2);
 
 INDIGO_EXTERN void indigo_alpaca_lightbox_update_property(indigo_alpaca_device *alpaca_device, indigo_property *property);
@@ -294,6 +315,8 @@ INDIGO_EXTERN long indigo_alpaca_switch_set_command(indigo_alpaca_device *alpaca
 
 INDIGO_EXTERN indigo_device *indigo_agent_alpaca_device;
 INDIGO_EXTERN indigo_client *indigo_agent_alpaca_client;
+
+INDIGO_EXTERN void indigo_alpaca_connect_paired_guider(indigo_alpaca_device *mount, indigo_alpaca_device *guider);
 
 #define IS_DEVICE_TYPE(device, type) ((device->indigo_interface & type) == type)
 

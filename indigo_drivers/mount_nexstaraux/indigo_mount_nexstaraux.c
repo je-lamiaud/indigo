@@ -24,7 +24,6 @@
 #include <string.h>
 #include <math.h>
 #include <assert.h>
-#include <pthread.h>
 #include <indigo/indigo_driver_xml.h>
 #include <indigo/indigo_mount_driver.h>
 #include <indigo/indigo_align.h>
@@ -35,7 +34,7 @@
 
 #pragma mark - Common definitions
 
-#define DRIVER_VERSION       0x03000007
+#define DRIVER_VERSION       0x03000018
 #define DRIVER_NAME          "indigo_mount_nexstaraux"
 #define DRIVER_LABEL         "NexStar AUX Mount"
 #define MOUNT_DEVICE_NAME    "Mount Nexstar AUX"
@@ -48,6 +47,7 @@ typedef enum {
 	MC_GET_POSITION = 0x01,
 	MC_GOTO_FAST = 0x02,
 	MC_SET_POSITION = 0x04,
+	MC_GET_MODEL = 0x05,
 	MC_SET_POS_GUIDERATE = 0x06,
 	MC_SET_NEG_GUIDERATE = 0x07,
 	MC_LEVEL_START = 0x0b,
@@ -64,6 +64,8 @@ typedef enum {
 	MC_SEEK_INDEX = 0x19,
 	MC_MOVE_POS = 0x24,
 	MC_MOVE_NEG = 0x25,
+	MC_AUX_GUIDE = 0x26,
+	MC_IS_AUX_GUIDE_ACTIVE = 0x27,
 	MC_ENABLE_CORDWRAP = 0x38,
 	MC_DISABLE_CORDWRAP = 0x39,
 	MC_SET_CORDWRAP_POS = 0x3a,
@@ -73,6 +75,8 @@ typedef enum {
 	MC_GET_NEG_BACKLASH = 0x41,
 	MC_SET_AUTOGUIDE_RATE = 0x46,
 	MC_GET_AUTOGUIDE_RATE = 0x47,
+	MC_SEND_WARNING = 0x50,
+	MC_SEND_ERROR = 0x51,
 	MC_GET_APPROACH = 0xfc,
 	MC_SET_APPROACH = 0xfd,
 	MC_GET_VER = 0xfe,
@@ -109,6 +113,34 @@ typedef struct {
 	indigo_uni_handle *handle;
 	//+ data
 	bool stopping, slewing, centering, parking, parked;
+	// A motor controller has one velocity register per axis, shared by the
+	// tracking rate, a rate move and a goto, so stopping an axis also stops
+	// its tracking drive and the rate has to be commanded again. The guider
+	// has no MOUNT_TRACKING of its own, so the rate the mount last asked for
+	// is kept here where both logical devices can reach it.
+	uint16_t track_rate;
+	bool track_negative;
+	// The guide rates in percent of sidereal both logical devices guide at. They are the driver's
+	// own: the controller stores an autoguide rate only for the ST-4 port of the models that have
+	// one, and only those models are given it.
+	double guide_rate_ra, guide_rate_dec;
+	// What the connection found out about the motor controllers: whether they time a guide pulse
+	// themselves, whether the model has an autoguider port, whether it slews fast enough for the
+	// short approach, and from which side each axis approaches a goto target.
+	bool aux_guide, autoguider_port, fast_goto, approach_negative[2];
+	// Whether the pulse running on each axis changed the axis rate and has to give it back.
+	bool rate_pulse[2];
+	// The slow approaches made of the goto in progress, and whether the stall watch stopped it.
+	int approaches;
+	bool stalled;
+	// Where the axes stood when they were last seen to move, and when that was, so a
+	// goto that stops making progress can be given up on instead of polled forever.
+	double stall_hour_angle, stall_dec, stall_since;
+	// Set by a coordinate poll that failed while the coordinates were OK, so the next good poll
+	// can clear the ALERT it published without clearing the ALERT of a failed goto.
+	bool poll_failed;
+	// Both logical devices, so a setting they share can be published on the other one.
+	indigo_device *mount, *guider;
 	//- data
 } nexstaraux_private_data;
 
@@ -116,7 +148,97 @@ typedef struct {
 
 //+ code
 
+static void mount_equatorial_coordinates_handler(indigo_device *device);
+static void mount_motion_dec_handler(indigo_device *device);
+static void mount_motion_ra_handler(indigo_device *device);
+static void mount_park_handler(indigo_device *device);
+
 static bool nexstaraux_validate_handle(indigo_device *device);
+static bool nextstar_get_coordinates(indigo_device *device, double *ra, double *dec);
+
+// The models MC_GET_MODEL reports, with whether they have an autoguider port, which is the only
+// thing the autoguide rate of the controller is used for, and whether they slew fast enough for
+// a goto to approach its target from 1 degree away rather than 2.5.
+typedef struct {
+	const char *name;
+	bool autoguider_port;
+	bool fast_goto;
+} nexstaraux_model;
+
+static const nexstaraux_model nexstaraux_models[] = {
+	{ NULL, false, false },
+	{ "NexStar GPS", false, false },
+	{ "NexStar GPS", false, false },
+	{ "NexStar i", false, false },
+	{ "NexStar SE", false, false },
+	{ "CGE", true, false },
+	{ "Advanced GT", true, false },
+	{ "SLT", false, false },
+	{ "Legend", false, false },
+	{ "CPC", true, false },
+	{ "NexStar GT", false, false },
+	{ "NexStar SE 4/5", false, false },
+	{ "NexStar SE 6/8", true, false },
+	{ "CGE Pro", true, false },
+	{ "CGEM", true, false },
+	{ "LCM", false, false },
+	{ "SkyProdigy", false, false },
+	{ "CPC Deluxe", true, false },
+	{ "NexStar GT", false, false },
+	{ "StarSeeker GT", false, false },
+	{ "AVX", true, true },
+	{ "Cosmos GT", false, true },
+	{ "Evolution", false, true },
+	{ "CGX", true, true },
+	{ "CGX-L", true, true },
+	{ "AstroFi", false, true },
+	{ "Sky-Watcher Alt-Az", false, true },
+	{ "Sky-Watcher EQ", false, true },
+	{ "Sky-Watcher Combo", false, true },
+	{ "Origin", false, true }
+};
+
+// A bare read on a socket with a receive timeout reports the timeout as a
+// read error, which latches on the handle and silently fails every later
+// transfer. Only what has arrived is read, after waiting for it, so a missing
+// answer stays recoverable. That holds for a packet whose bytes arrive apart
+// too: a SkyPortal module sent the first two bytes of an answer and the rest
+// more than a second later, and a read of the whole packet timed out in the
+// middle and latched, which silenced the mount for the rest of the session.
+#define PACKET_TIMEOUT       3.0
+
+static bool nexstaraux_read(indigo_device *device, unsigned char *buffer, long length, double timeout) {
+	while (length > 0) {
+		if (indigo_uni_wait_for_data(PRIVATE_DATA->handle, INDIGO_DELAY(timeout)) <= 0) {
+			return false;
+		}
+		long count = indigo_uni_read_available(PRIVATE_DATA->handle, buffer, length);
+		if (count <= 0) {
+			return false;
+		}
+		buffer += count;
+		length -= count;
+	}
+	return true;
+}
+
+// A motor controller reports a low battery, a slew limit that stopped an axis, or an error on its
+// own, and expects the report to be acknowledged by the command echoed back with no data.
+static void nexstaraux_controller_report(indigo_device *device, unsigned char *packet) {
+	unsigned char ack[6] = { 0x3b, 0x03, packet[3], packet[2], packet[4], 0 };
+	ack[5] = (unsigned char)(((~(ack[1] + ack[2] + ack[3] + ack[4])) + 1) & 0xFF);
+	indigo_uni_write(PRIVATE_DATA->handle, (char *)ack, 6);
+	if (packet[4] == MC_SEND_WARNING && packet[5] == 0x00) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Mount reports a low battery");
+		indigo_send_message(device, ALERT_PROPERTY, "The mount reports a low battery");
+	} else if (packet[4] == MC_SEND_WARNING && packet[5] == 0x01) {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Mount reached its slew limit");
+		indigo_send_message(device, ALERT_PROPERTY, "The mount reached its slew limit and stopped");
+	} else {
+		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Mount reports %s 0x%02x", packet[4] == MC_SEND_WARNING ? "warning" : "error", packet[5]);
+		indigo_send_message(device, ALERT_PROPERTY, "The mount reports %s 0x%02x", packet[4] == MC_SEND_WARNING ? "warning" : "error", packet[5]);
+	}
+}
 
 static bool nexstaraux_command(indigo_device *device, targets src, targets dst, commands cmd, unsigned char *data, int length, unsigned char *reply) {
 	if (!nexstaraux_validate_handle(device)) {
@@ -137,30 +259,44 @@ static bool nexstaraux_command(indigo_device *device, targets src, targets dst, 
 		checksum += buffer[i];
 	}
 	buffer[length + 2] = (unsigned char)(((~checksum) + 1) & 0xFF);
+	// The answer to a request that timed out can still arrive, and it must not be taken for the
+	// answer to this one, which has the same command and addresses whenever it is the same request
+	// again: a tracking rate restored after a guide pulse would then be acknowledged by the answer
+	// to an earlier request while the rate itself was never set.
+	indigo_uni_discard(PRIVATE_DATA->handle);
 	if (indigo_uni_write(PRIVATE_DATA->handle, (char *)buffer, length + 3) > 0) {
 		while (true) {
 			for (int i = 0; i < 10; i++) {
-				if (indigo_uni_read(PRIVATE_DATA->handle, reply, 1) == 1) {
-					if (*reply == 0x3b) {
-						break;
-					}
-				} else {
+				if (!nexstaraux_read(device, reply, 1, 1)) {
 					return false;
+				}
+				if (*reply == 0x3b) {
+					break;
 				}
 			}
 			if (*reply != 0x3b) {
 				return false;
 			}
-			if (indigo_uni_read(PRIVATE_DATA->handle, reply + 1, 1) == 1) {
-				if (indigo_uni_read(PRIVATE_DATA->handle, (char *)(reply + 2), reply[1] + 1) > 0) {
-					if (buffer[4] != reply[4] || buffer[2] != reply[3] || buffer[3] != reply[2]) {
-						continue;
-					}
-					return true;
-				} else {
-					return false;
-				}
+			// Once a packet has begun, the rest of it is given longer to arrive.
+			if (!nexstaraux_read(device, reply + 1, 1, PACKET_TIMEOUT)) {
+				return false;
 			}
+			// Every caller passes a 16 byte buffer, and no motor controller packet is longer.
+			// A length byte that says otherwise is noise and must not be read into it.
+			if (reply[1] < 3 || reply[1] > 12) {
+				return false;
+			}
+			if (!nexstaraux_read(device, reply + 2, reply[1] + 1, PACKET_TIMEOUT)) {
+				return false;
+			}
+			// An answer to another request is skipped, not mistaken for this one.
+			if (buffer[4] != reply[4] || buffer[2] != reply[3] || buffer[3] != reply[2]) {
+				if ((reply[4] == MC_SEND_WARNING || reply[4] == MC_SEND_ERROR) && reply[1] > 3 && (reply[2] == AZM || reply[2] == ALT) && (reply[3] == APP || reply[3] == ANY)) {
+					nexstaraux_controller_report(device, reply);
+				}
+				continue;
+			}
+			return true;
 		}
 	}
 	return false;
@@ -200,11 +336,31 @@ static bool nexstaraux_open(indigo_device *device) {
 	if (PRIVATE_DATA->handle != NULL) {
 		indigo_uni_set_socket_read_timeout(PRIVATE_DATA->handle, 1000000);
 		indigo_uni_set_socket_write_timeout(PRIVATE_DATA->handle, 1000000);
-		unsigned char alt_version[16] = { 0 }, azm_version[16] = { 0 };
+		unsigned char alt_version[16] = { 0 }, azm_version[16] = { 0 }, reply[16] = { 0 };
 		if (nexstaraux_command(device, APP, ALT, MC_GET_VER, NULL, 0, alt_version) && nexstaraux_command(device, APP, AZM, MC_GET_VER, NULL, 0, azm_version)) {
 			sprintf(INFO_DEVICE_FW_REVISION_ITEM->text.value,"%d.%d / %d.%d", alt_version[5], alt_version[6], azm_version[5], azm_version[6]);
+			// Firmware 6.50 and newer times a guide pulse itself with MC_AUX_GUIDE.
+			PRIVATE_DATA->aux_guide = alt_version[5] * 256 + alt_version[6] >= 6 * 256 + 50 && azm_version[5] * 256 + azm_version[6] >= 6 * 256 + 50;
+			// The model is reported by the azimuth controller. A controller that does not answer
+			// is taken for one with an autoguider port, so the autoguide rate is still read.
+			PRIVATE_DATA->autoguider_port = true;
+			PRIVATE_DATA->fast_goto = false;
 			strcpy(MOUNT_INFO_VENDOR_ITEM->text.value, "Celestron");
 			strcpy(MOUNT_INFO_MODEL_ITEM->text.value, "NexStar AUX");
+			if (nexstaraux_command(device, APP, AZM, MC_GET_MODEL, NULL, 0, reply) && reply[1] > 3 && reply[5] < sizeof(nexstaraux_models) / sizeof(nexstaraux_models[0]) && nexstaraux_models[reply[5]].name != NULL) {
+				const nexstaraux_model *model = nexstaraux_models + reply[5];
+				strcpy(MOUNT_INFO_MODEL_ITEM->text.value, model->name);
+				if (!strncmp(model->name, "Sky-Watcher", 11)) {
+					strcpy(MOUNT_INFO_VENDOR_ITEM->text.value, "Sky-Watcher");
+				}
+				PRIVATE_DATA->autoguider_port = model->autoguider_port;
+				PRIVATE_DATA->fast_goto = model->fast_goto;
+			}
+			// The direction each axis finishes a goto in, as the hand controller is set up.
+			for (int axis = 0; axis < 2; axis++) {
+				PRIVATE_DATA->approach_negative[axis] = nexstaraux_command(device, APP, axis == 0 ? AZM : ALT, MC_GET_APPROACH, NULL, 0, reply) && reply[1] > 3 && reply[5] == 1;
+			}
+			INDIGO_DRIVER_LOG(DRIVER_NAME, "%s, firmware %s, %s guide pulses, %s autoguider port", MOUNT_INFO_MODEL_ITEM->text.value, INFO_DEVICE_FW_REVISION_ITEM->text.value, PRIVATE_DATA->aux_guide ? "controller-timed" : "rate-change", PRIVATE_DATA->autoguider_port ? "with" : "without");
 			strcpy(MOUNT_INFO_FIRMWARE_ITEM->text.value, INFO_DEVICE_FW_REVISION_ITEM->text.value);
 			indigo_update_property(device, INFO_PROPERTY, NULL);
 		} else {
@@ -224,6 +380,7 @@ static bool nexstaraux_validate_handle(indigo_device *device) {
 	}
 	if (!indigo_uni_is_valid(PRIVATE_DATA->handle)) {
 		nexstaraux_close(device);
+		// The mount is its own master and has no master_device pointer.
 		indigo_execute_handler(device->master_device, indigo_disconnect_slave_devices);
 		return false;
 	}
@@ -232,7 +389,7 @@ static bool nexstaraux_validate_handle(indigo_device *device) {
 
 static bool nexstaraux_set_tracking(indigo_device *device, bool on) {
 	unsigned char reply[16] = { 0 };
-	uint_fast16_t rate;
+	uint16_t rate;
 	if (!on) {
 		rate = 0x0000;
 	} else if (MOUNT_TRACK_RATE_LUNAR_ITEM->sw.value) {
@@ -242,35 +399,149 @@ static bool nexstaraux_set_tracking(indigo_device *device, bool on) {
 	} else {
 		rate = 0xFFFF;
 	}
-	commands set_guide_rate = MOUNT_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value >= 0 ? MC_SET_POS_GUIDERATE : MC_SET_NEG_GUIDERATE;
-	return nexstaraux_command_16(device, APP, AZM, set_guide_rate, rate, reply);
+	bool negative = MOUNT_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value < 0;
+	// The EQ setup in the protocol document stops both axes before it sets the rate, and
+	// it has to: in EQ mode only the azimuth axis carries the sidereal drive, so an
+	// altitude rate left behind by a hand controller that was tracking in alt-azimuth
+	// keeps turning the declination axis for the whole session. Measured on a NexStar SE,
+	// where the declination drifted about twelve degrees an hour with nothing commanded
+	// while the hour angle stood perfectly still.
+	if (!nexstaraux_command_16(device, APP, ALT, MC_SET_POS_GUIDERATE, 0x0000, reply)) {
+		return false;
+	}
+	if (!nexstaraux_command_16(device, APP, AZM, negative ? MC_SET_NEG_GUIDERATE : MC_SET_POS_GUIDERATE, rate, reply)) {
+		return false;
+	}
+	PRIVATE_DATA->track_rate = rate;
+	PRIVATE_DATA->track_negative = negative;
+	return true;
 }
 
-static bool nexstaraux_get_slew_state(indigo_device *device, bool *in_propress) {
+// The tracking drive is off although the client asked for it, so the mount device says so
+// instead of showing tracking on over a standing axis.
+static void nexstaraux_tracking_lost(indigo_device *device) {
+	if (device == NULL || !IS_CONNECTED) {
+		return;
+	}
+	indigo_set_switch(MOUNT_TRACKING_PROPERTY, MOUNT_TRACKING_OFF_ITEM, true);
+	MOUNT_STATE_TRACKING_ITEM->light.value = INDIGO_ALERT_STATE;
+	// A pending request owns the state, its handler publishes the result
+	if (MOUNT_TRACKING_PROPERTY->state != INDIGO_BUSY_STATE) {
+		MOUNT_TRACKING_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_property(device, MOUNT_TRACKING_PROPERTY, "Tracking could not be restored");
+	}
+	indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
+}
+
+// Gives the right ascension axis the tracking rate back after something else wrote its
+// velocity register. A lost answer is retried; when the drive cannot be restored the mount is
+// reported as not tracking.
+static bool nexstaraux_restart_tracking(indigo_device *device) {
 	unsigned char reply[16] = { 0 };
+	for (int attempt = 0; attempt < 2; attempt++) {
+		if (nexstaraux_command_16(device, APP, AZM, PRIVATE_DATA->track_negative ? MC_SET_NEG_GUIDERATE : MC_SET_POS_GUIDERATE, PRIVATE_DATA->track_rate, reply)) {
+			return true;
+		}
+	}
+	PRIVATE_DATA->track_rate = 0;
+	nexstaraux_tracking_lost(PRIVATE_DATA->mount);
+	return false;
+}
+
+// Stopping an axis writes its velocity register, which is the same register
+// the tracking rate uses, so the drive has to be started again or the mount
+// stands still after every guide pulse, released manual motion and abort.
+static bool nexstaraux_stop_axis(indigo_device *device, targets axis) {
+	unsigned char reply[16] = { 0 }, rate = 0;
+	if (!nexstaraux_command(device, APP, axis, MC_MOVE_POS, &rate, 1, reply)) {
+		return false;
+	}
+	if (axis == AZM && PRIVATE_DATA->track_rate != 0) {
+		return nexstaraux_restart_tracking(device);
+	}
+	return true;
+}
+
+// MC_SLEW_DONE answers 0x00 while the goto runs, 0xff when it is over and 0xfe when the
+// controller gave it up.
+static bool nexstaraux_get_slew_state(indigo_device *device, bool *in_progress, bool *aborted) {
+	unsigned char reply[16] = { 0 };
+	*aborted = false;
 	if (nexstaraux_command(device, APP, AZM, MC_SLEW_DONE, NULL, 0, reply)) {
+		if (reply[5] == 0xfe) {
+			*aborted = true;
+		}
 		if (reply[5] == 0x00) {
-			*in_propress = true;
+			*in_progress = true;
 			return true;
 		}
 		if (nexstaraux_command(device, APP, ALT, MC_SLEW_DONE, NULL, 0, reply)) {
-			if (reply[5] == 0x00) {
-				*in_propress = true;
-			} else {
-				*in_propress = false;
+			if (reply[5] == 0xfe) {
+				*aborted = true;
 			}
+			*in_progress = reply[5] == 0x00;
 			return true;
 		}
 	}
 	return false;
 }
 
+// A goto ends with the gears loaded the same way every time: the fast goto stops short of the
+// target on the side each axis approaches from, and the slow gotos that follow finish the way
+// the hand controller is set up to. Past the pole the approach point would be on the other
+// side of the mount, so the declination approaches from the equator there.
+#define APPROACH_FAST        1.0
+#define APPROACH_SLOW        2.5
+
+// On a wedge south of the equator the mount is the mirror image of the northern one: the polar
+// axis turns the other way, which is why the tracking drive runs negative there, and the
+// declination axis stands half a turn from the declination, so that it reads 90 degrees at
+// the southern pole. North of the equator the polar axis reads the hour angle plus twelve
+// hours and the declination axis the declination.
+static bool nexstaraux_southern(indigo_device *device) {
+	return MOUNT_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value < 0;
+}
+
+static void nexstaraux_to_axes(indigo_device *device, double ha, double dec, int32_t *raw_ha, int32_t *raw_dec) {
+	double axis_ha = nexstaraux_southern(device) ? fmod(48 - ha, 24) : fmod(ha + 12, 24);
+	double axis_dec = nexstaraux_southern(device) ? dec + 180 : dec;
+	*raw_ha = (int32_t)((axis_ha / 24.0) * 0x1000000) % 0x1000000;
+	*raw_dec = (int32_t)((axis_dec / 360.0) * 0x1000000) % 0x1000000;
+}
+
+static void nexstaraux_from_axes(indigo_device *device, int raw_ha, int raw_dec, double *ha, double *dec) {
+	double axis_ha = ((double)raw_ha / 0x1000000) * 24;
+	*ha = nexstaraux_southern(device) ? fmod(48 - axis_ha, 24) : fmod(axis_ha + 12, 24);
+	// The position is a signed fraction of a full rotation, so the upper half of the encoder
+	// range is the negative half of the axis.
+	if (raw_dec >= 0x800000) {
+		raw_dec -= 0x1000000;
+	}
+	*dec = ((double)raw_dec / 0x1000000) * 360;
+	if (nexstaraux_southern(device)) {
+		*dec -= 180;
+		if (*dec < -180) {
+			*dec += 360;
+		}
+	}
+}
+
 static bool nexstaraux_slew(indigo_device *device, double ra, double dec, bool fast) {
 	unsigned char reply[16] = { 0 };
 	double lst = indigo_lst(NULL, MOUNT_GEOGRAPHIC_COORDINATES_LONGITUDE_ITEM->number.value);
 	double ha = fmod(lst - ra + 24, 24);
-	int32_t raw_ra = (int32_t)((fmod(ha + 12, 24) / 24.0) * 0x1000000) % 0x1000000;
-	int32_t raw_dec = (int32_t)((dec / 360.0) * 0x1000000) % 0x1000000;
+	if (fast) {
+		// The approach side is a direction of the axis, which is the opposite direction of the
+		// hour angle south of the equator. The declination axis turns with the declination on
+		// both sides.
+		double approach = PRIVATE_DATA->fast_goto ? APPROACH_FAST : APPROACH_SLOW;
+		double ha_approach = (PRIVATE_DATA->approach_negative[0] ? approach : -approach) / 15;
+		ha = fmod(ha + (nexstaraux_southern(device) ? -ha_approach : ha_approach) + 24, 24);
+		double approach_dec = dec + (PRIVATE_DATA->approach_negative[1] ? approach : -approach);
+		dec = fabs(approach_dec) > 90 ? 2 * dec - approach_dec : approach_dec;
+	}
+	int32_t raw_ra = 0, raw_dec = 0;
+	nexstaraux_to_axes(device, ha, dec, &raw_ra, &raw_dec);
 	if (nexstaraux_command_24(device, APP, AZM, fast ? MC_GOTO_FAST : MC_GOTO_SLOW, raw_ra, reply) && nexstaraux_command_24(device, APP, ALT, fast ? MC_GOTO_FAST : MC_GOTO_SLOW, raw_dec, reply)) {
 		return true;
 	}
@@ -281,17 +552,43 @@ static bool nexstaraux_sync(indigo_device *device, double ra, double dec) {
 	unsigned char reply[16] = { 0 };
 	double lst = indigo_lst(NULL, MOUNT_GEOGRAPHIC_COORDINATES_LONGITUDE_ITEM->number.value);
 	double ha = fmod(lst - ra + 24, 24);
-	int32_t raw_ra = (int32_t)((fmod(ha + 12, 24) / 24.0) * 0x1000000) % 0x1000000;
-	int32_t raw_dec = (int32_t)((dec / 360.0) * 0x1000000) % 0x1000000;
+	int32_t raw_ra = 0, raw_dec = 0;
+	nexstaraux_to_axes(device, ha, dec, &raw_ra, &raw_dec);
 	if (nexstaraux_command_24(device, APP, AZM, MC_SET_POSITION, raw_ra, reply) && nexstaraux_command_24(device, APP, ALT, MC_SET_POSITION, raw_dec, reply)) {
 		return true;
 	}
 	return false;
 }
 
+// A motor controller can report a goto as complete while the axis stands short
+// of the target. A NexStar SE asked for 90 degrees of declination answered
+// MC_SLEW_DONE with 0xff at 59.9 degrees and stopped there, so the reached
+// position has to be compared with the target: publishing success would tell
+// the client the mount arrived somewhere it never reached.
+#define ARRIVAL_TOLERANCE    1.0
+
+static bool nexstaraux_reached_target(indigo_device *device) {
+	double ra = 0, dec = 0;
+	if (!nextstar_get_coordinates(device, &ra, &dec)) {
+		return false;
+	}
+	double target_ra = MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.target;
+	double target_dec = MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.target;
+	indigo_j2k_to_eq(MOUNT_EPOCH_ITEM->number.value, &target_ra, &target_dec);
+	if (fabs(dec - target_dec) > ARRIVAL_TOLERANCE) {
+		return false;
+	}
+	double difference = fmod(fabs(ra - target_ra), 24);
+	if (difference > 12) {
+		difference = 24 - difference;
+	}
+	// Next to the pole the hour angle carries almost no arc, so the right
+	// ascension is judged by the distance it actually represents.
+	return difference * 15 * cos(dec * M_PI / 180) <= ARRIVAL_TOLERANCE;
+}
+
 static bool nexstaraux_stop(indigo_device *device) {
-	unsigned char reply[16] = { 0 };
-	return nexstaraux_command_24(device, APP, AZM, MC_MOVE_POS, 0, reply) && nexstaraux_command_24(device, APP, ALT, MC_MOVE_POS, 0, reply);
+	return nexstaraux_stop_axis(device, AZM) && nexstaraux_stop_axis(device, ALT);
 }
 
 static bool nextstar_get_coordinates(indigo_device *device, double *ra, double *dec) {
@@ -300,9 +597,9 @@ static bool nextstar_get_coordinates(indigo_device *device, double *ra, double *
 		int raw_dec = reply[5] << 16 | reply[6] << 8 | reply[7];
 		if (nexstaraux_command(device, APP, AZM, MC_GET_POSITION, NULL, 0, reply)) {
 			int raw_ra = reply[5] << 16 | reply[6] << 8 | reply[7];
-			double ha = fmod(((double)raw_ra / 0x1000000) * 24 + 12, 24);
+			double ha = 0;
+			nexstaraux_from_axes(device, raw_ra, raw_dec, &ha, dec);
 			*ra = fmod(indigo_lst(NULL, MOUNT_GEOGRAPHIC_COORDINATES_LONGITUDE_ITEM->number.value) - ha + 24, 24);
-			*dec = fmod(((double)raw_dec / 0x1000000) * 360, 360);
 			return true;
 		}
 	}
@@ -321,38 +618,211 @@ static bool nexstar_get_guide_rate(indigo_device *device, double *ra, double *de
 	return false;
 }
 
+// The autoguide rate is a percentage of sidereal the controller stores in a
+// single byte, so the full scale of the property is 0xFF and not 0x100, which
+// would wrap the fastest rate round to a standing axis.
+static unsigned char nexstaraux_guide_rate_byte(double percent) {
+	double value = round(percent / 100.0 * 256);
+	if (value > 255) {
+		value = 255;
+	}
+	if (value < 0) {
+		value = 0;
+	}
+	return (unsigned char)value;
+}
+
+// The guide rates both logical devices guide at. A model with an autoguider port holds the rate
+// of the port, which is taken over on the first connection; on the others MC_GET_AUTOGUIDE_RATE
+// answers whatever the controller happens to hold, so the driver starts at half sidereal.
+static bool nexstaraux_load_guide_rate(indigo_device *device, double *ra, double *dec) {
+	if (PRIVATE_DATA->guide_rate_ra == 0 || PRIVATE_DATA->guide_rate_dec == 0) {
+		PRIVATE_DATA->guide_rate_ra = PRIVATE_DATA->guide_rate_dec = 50;
+		if (PRIVATE_DATA->autoguider_port && !nexstar_get_guide_rate(device, &PRIVATE_DATA->guide_rate_ra, &PRIVATE_DATA->guide_rate_dec)) {
+			PRIVATE_DATA->guide_rate_ra = PRIVATE_DATA->guide_rate_dec = 0;
+			return false;
+		}
+		// The property starts at one percent of sidereal.
+		PRIVATE_DATA->guide_rate_ra = fmax(PRIVATE_DATA->guide_rate_ra, 1);
+		PRIVATE_DATA->guide_rate_dec = fmax(PRIVATE_DATA->guide_rate_dec, 1);
+	}
+	*ra = PRIVATE_DATA->guide_rate_ra;
+	*dec = PRIVATE_DATA->guide_rate_dec;
+	return true;
+}
+
+// The rate is the driver's, and on a model with an autoguider port it is given to the port too.
+// A controller that acknowledges the rate and keeps another one only affects the port, so that
+// is logged rather than refused.
 static bool nexstar_set_guide_rate_handler(indigo_device *device, double ra, double dec) {
 	unsigned char reply[16] = { 0 };
-	unsigned char rate = (unsigned char)(ra / 100.0 * 256);
-	if (nexstaraux_command(device, APP, AZM, MC_SET_AUTOGUIDE_RATE, &rate, 1, reply)) {
-		rate = (unsigned char)(dec / 100.0 * 256);
-		return nexstaraux_command(device, APP, ALT, MC_SET_AUTOGUIDE_RATE, &rate, 1, reply);
+	if (PRIVATE_DATA->autoguider_port) {
+		unsigned char ra_rate = nexstaraux_guide_rate_byte(ra), dec_rate = nexstaraux_guide_rate_byte(dec);
+		if (!nexstaraux_command(device, APP, AZM, MC_SET_AUTOGUIDE_RATE, &ra_rate, 1, reply)) {
+			return false;
+		}
+		if (!nexstaraux_command(device, APP, ALT, MC_SET_AUTOGUIDE_RATE, &dec_rate, 1, reply)) {
+			return false;
+		}
+		if (!nexstaraux_command(device, APP, AZM, MC_GET_AUTOGUIDE_RATE, NULL, 0, reply)) {
+			return false;
+		}
+		bool stored = reply[5] == ra_rate;
+		if (!nexstaraux_command(device, APP, ALT, MC_GET_AUTOGUIDE_RATE, NULL, 0, reply)) {
+			return false;
+		}
+		if (!stored || reply[5] != dec_rate) {
+			INDIGO_DRIVER_LOG(DRIVER_NAME, "The autoguider port keeps its own rate");
+		}
 	}
-	return false;
+	PRIVATE_DATA->guide_rate_ra = ra;
+	PRIVATE_DATA->guide_rate_dec = dec;
+	return true;
+}
+
+// The mount and its guider guide at the same rates, so a rate one of them has set is published
+// on the other one as well. Both devices run their handlers on the queue of the mount.
+static void nexstaraux_share_guide_rate(indigo_device *device, double ra, double dec) {
+	nexstaraux_private_data *private_data = PRIVATE_DATA;
+	device = private_data->mount;
+	if (device != NULL && IS_CONNECTED && MOUNT_GUIDE_RATE_PROPERTY->state != INDIGO_BUSY_STATE) {
+		MOUNT_GUIDE_RATE_RA_ITEM->number.value = MOUNT_GUIDE_RATE_RA_ITEM->number.target = ra;
+		MOUNT_GUIDE_RATE_DEC_ITEM->number.value = MOUNT_GUIDE_RATE_DEC_ITEM->number.target = dec;
+		MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, MOUNT_GUIDE_RATE_PROPERTY, NULL);
+	}
+	device = private_data->guider;
+	if (device != NULL && IS_CONNECTED && GUIDER_RATE_PROPERTY->state != INDIGO_BUSY_STATE) {
+		GUIDER_RATE_ITEM->number.value = GUIDER_RATE_ITEM->number.target = ra;
+		GUIDER_DEC_RATE_ITEM->number.value = GUIDER_DEC_RATE_ITEM->number.target = dec;
+		GUIDER_RATE_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, GUIDER_RATE_PROPERTY, NULL);
+	}
+}
+
+static bool nexstaraux_move_axis(indigo_device *device, targets axis, int speed) {
+	unsigned char reply[16] = { 0 };
+	if (speed == 0) {
+		return nexstaraux_stop_axis(device, axis);
+	}
+	unsigned char rate = abs(speed);
+	return nexstaraux_command(device, APP, axis, speed < 0 ? MC_MOVE_NEG : MC_MOVE_POS, &rate, 1, reply);
 }
 
 static bool nexstaraux_move_ra(indigo_device *device, int speed) {
-	unsigned char reply[16];
-	unsigned char rate = abs(speed);
-	return nexstaraux_command(device, APP, AZM, speed < 0 ? MC_MOVE_NEG : MC_MOVE_POS, &rate, 1, reply);
+	return nexstaraux_move_axis(device, AZM, speed);
 }
 
 static bool nexstaraux_move_dec(indigo_device *device, int speed) {
-	unsigned char reply[16];
-	unsigned char rate = abs(speed);
-	return nexstaraux_command(device, APP, ALT, speed < 0 ? MC_MOVE_NEG : MC_MOVE_POS, &rate, 1, reply);
+	return nexstaraux_move_axis(device, ALT, speed);
 }
 
-static bool nexstaraux_guide_ra(indigo_device *device, int direction) {
-	unsigned char reply[16];
-	unsigned char rate = abs(direction);
-	return nexstaraux_command(device, APP, AZM, direction < 0 ? MC_MOVE_NEG : MC_MOVE_POS, &rate, 1, reply);
+// The sidereal, solar and lunar rates in arcseconds per second.
+#define SIDEREAL_RATE        (1296000.0 / 86164.0905)
+#define SOLAR_RATE           15.0
+#define LUNAR_RATE           14.685
+
+static double nexstaraux_track_rate(uint16_t rate) {
+	switch (rate) {
+		case 0xFFFF:
+			return SIDEREAL_RATE;
+		case 0xFFFE:
+			return SOLAR_RATE;
+		case 0xFFFD:
+			return LUNAR_RATE;
+	}
+	return 0;
 }
 
-static bool nexstaraux_guide_dec(indigo_device *device, int direction) {
-	unsigned char reply[16];
-	unsigned char rate = abs(direction);
-	return nexstaraux_command(device, APP, ALT, direction < 0 ? MC_MOVE_NEG : MC_MOVE_POS, &rate, 1, reply);
+// The 24 bit form of MC_SET_POS_GUIDERATE and MC_SET_NEG_GUIDERATE carries the axis rate in
+// 1/1024 arcsecond per second.
+static bool nexstaraux_set_axis_rate(indigo_device *device, targets axis, double arcsec) {
+	unsigned char reply[16] = { 0 };
+	double value = round(fabs(arcsec) * 1024);
+	return nexstaraux_command_24(device, APP, axis, arcsec < 0 ? MC_SET_NEG_GUIDERATE : MC_SET_POS_GUIDERATE, (uint32_t)fmin(value, 0xFFFFFF), reply);
+}
+
+// The rate an axis runs at outside a pulse: the tracking drive on the right ascension axis and
+// a standing declination axis.
+static bool nexstaraux_restore_axis_rate(indigo_device *device, targets axis) {
+	unsigned char reply[16] = { 0 };
+	if (axis == AZM && PRIVATE_DATA->track_rate != 0) {
+		return nexstaraux_restart_tracking(device);
+	}
+	return nexstaraux_command_16(device, APP, axis, MC_SET_POS_GUIDERATE, 0x0000, reply);
+}
+
+// A guide pulse adds the guide rate to the rate the axis runs at: west and north are positive,
+// and west is the direction of the tracking drive, which turns the right ascension axis the
+// negative way south of the equator. Motor controllers that implement MC_AUX_GUIDE time the
+// pulse themselves, as long as it fits the 2.55 s the command can carry; the others are given
+// the summed rate for the length of the pulse and the axis rate back when it ends. A rate move
+// must not be used: it replaces the tracking drive instead of adding to it.
+static bool nexstaraux_guide(indigo_device *device, targets axis, int direction, unsigned duration) {
+	unsigned char reply[16] = { 0 };
+	int index = axis == AZM ? 0 : 1;
+	if (direction == 0) {
+		bool result = !PRIVATE_DATA->rate_pulse[index] || nexstaraux_restore_axis_rate(device, axis);
+		PRIVATE_DATA->rate_pulse[index] = false;
+		return result;
+	}
+	double percent = axis == AZM ? PRIVATE_DATA->guide_rate_ra : PRIVATE_DATA->guide_rate_dec;
+	if (axis == AZM && PRIVATE_DATA->track_negative) {
+		direction = -direction;
+	}
+	if (PRIVATE_DATA->aux_guide && duration < 2550) {
+		if (PRIVATE_DATA->rate_pulse[index]) {
+			if (!nexstaraux_restore_axis_rate(device, axis)) {
+				return false;
+			}
+			PRIVATE_DATA->rate_pulse[index] = false;
+		}
+		unsigned char data[2] = { (unsigned char)(int8_t)(direction * (int)round(fmin(percent, 100))), (unsigned char)(duration < 10 ? 1 : duration / 10) };
+		return nexstaraux_command(device, APP, axis, MC_AUX_GUIDE, data, 2, reply);
+	}
+	double base = 0;
+	if (axis == AZM) {
+		base = (PRIVATE_DATA->track_negative ? -1 : 1) * nexstaraux_track_rate(PRIVATE_DATA->track_rate);
+	}
+	PRIVATE_DATA->rate_pulse[index] = true;
+	return nexstaraux_set_axis_rate(device, axis, base + direction * percent / 100 * SIDEREAL_RATE);
+}
+
+static bool nexstaraux_guide_ra(indigo_device *device, int direction, unsigned duration) {
+	return nexstaraux_guide(device, AZM, direction, duration);
+}
+
+static bool nexstaraux_guide_dec(indigo_device *device, int direction, unsigned duration) {
+	return nexstaraux_guide(device, ALT, direction, duration);
+}
+
+// A motor controller that cannot reach the target does not always say so: it can keep
+// answering MC_SLEW_DONE with "not done" while the axes stand still, and the goto then
+// never ends. A NexStar SE asked for the pole did exactly that, and MOUNT_PARK stayed
+// busy for a quarter of an hour with the parked guard refusing every other request.
+// Progress is judged on the hour angle rather than the right ascension, which follows
+// the sky on its own while the mount is not tracking.
+// Polling the controller in quick succession during a goto can make it miss its target and keep
+// turning, so a goto is polled twice a second. The slow approach is made three times in all,
+// because the target moves on while the mount is not tracking.
+#define SLEW_POLL            0.5
+#define APPROACHES           3
+
+#define STALL_TIMEOUT        10.0
+#define STALL_HOUR_ANGLE     0.0001
+#define STALL_DEC            0.002
+
+static bool nexstaraux_slew_stalled(indigo_device *device) {
+	double now = indigo_monotonic_time();
+	double hour_angle = MOUNT_LST_TIME_ITEM->number.value - MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.value;
+	double dec = MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.value;
+	if (PRIVATE_DATA->stall_since == 0 || fabs(hour_angle - PRIVATE_DATA->stall_hour_angle) > STALL_HOUR_ANGLE || fabs(dec - PRIVATE_DATA->stall_dec) > STALL_DEC) {
+		PRIVATE_DATA->stall_hour_angle = hour_angle;
+		PRIVATE_DATA->stall_dec = dec;
+		PRIVATE_DATA->stall_since = now;
+		return false;
+	}
+	return now - PRIVATE_DATA->stall_since > STALL_TIMEOUT;
 }
 
 static void nexstar_update_mount_state(indigo_device *device) {
@@ -361,11 +831,22 @@ static void nexstar_update_mount_state(indigo_device *device) {
 		indigo_eq_to_j2k(MOUNT_EPOCH_ITEM->number.value, &ra, &dec);
 		MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.value = ra;
 		MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.value = dec;
+		if (PRIVATE_DATA->poll_failed) {
+			PRIVATE_DATA->poll_failed = false;
+			if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state == INDIGO_ALERT_STATE) {
+				MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
+			}
+		}
 		indigo_timetoisogm(time(NULL), MOUNT_UTC_ITEM->text.value, INDIGO_VALUE_SIZE);
 		MOUNT_UTC_TIME_PROPERTY->state = INDIGO_OK_STATE;
 		indigo_update_property(device, MOUNT_UTC_TIME_PROPERTY, NULL);
 		indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
 		indigo_update_coordinates(device, NULL);
+	} else if (PRIVATE_DATA->handle != NULL && MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state == INDIGO_OK_STATE) {
+		// The last valid position stays published, marked as no longer current.
+		PRIVATE_DATA->poll_failed = true;
+		MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_coordinates(device, "Mount position could not be read");
 	}
 }
 
@@ -373,11 +854,41 @@ static void nexstar_update_mount_state(indigo_device *device) {
 
 //+ mount.code
 
+// A goto that loses an answer must not be abandoned in BUSY. The poll is retried while
+// the axes are still turning and the stall watch bounds the retrying, so a controller
+// that stops answering ends the operation instead of leaving the mount busy for ever
+// with the parked guard refusing every other request.
+static void mount_slew_failed(indigo_device *device, const char *message) {
+	PRIVATE_DATA->centering = PRIVATE_DATA->slewing = PRIVATE_DATA->stopping = false;
+	MOUNT_STATE_SLEW_ITEM->light.value = INDIGO_ALERT_STATE;
+	MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+	indigo_update_property(device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY, "%s", message);
+	if (PRIVATE_DATA->parking) {
+		PRIVATE_DATA->parking = PRIVATE_DATA->parked = false;
+		indigo_set_switch(MOUNT_PARK_PROPERTY, MOUNT_PARK_UNPARKED_ITEM, true);
+		MOUNT_PARK_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
+		MOUNT_STATE_PARK_ITEM->light.value = INDIGO_ALERT_STATE;
+	}
+	indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
+}
+
 static void mount_slew_finalizer(indigo_device *device) {
-	bool in_progress;
-	if (nexstaraux_get_slew_state(device, &in_progress)) {
-		if (in_progress) {
-			indigo_execute_handler_in(device, 0.1, mount_slew_finalizer);
+	bool in_progress = false, aborted = false;
+	if (nexstaraux_get_slew_state(device, &in_progress, &aborted)) {
+		if (in_progress && nexstaraux_slew_stalled(device)) {
+			// The axes have stopped turning although the controller still calls the
+			// goto unfinished. Stopping them makes the next poll take the completion
+			// path, which judges the result by the position the mount reached.
+			nexstaraux_stop(device);
+			PRIVATE_DATA->centering = PRIVATE_DATA->stalled = true;
+			in_progress = false;
+		}
+		if (aborted && !PRIVATE_DATA->stopping && !PRIVATE_DATA->stalled) {
+			// The controller gave the goto up, which is no arrival.
+			mount_slew_failed(device, "Mount aborted the slew");
+		} else if (in_progress) {
+			indigo_execute_handler_in(device, SLEW_POLL, mount_slew_finalizer);
 		} else {
 			if (PRIVATE_DATA->stopping) {
 				PRIVATE_DATA->centering = PRIVATE_DATA->slewing = PRIVATE_DATA->stopping = false;
@@ -392,42 +903,61 @@ static void mount_slew_finalizer(indigo_device *device) {
 					MOUNT_STATE_PARK_ITEM->light.value = INDIGO_ALERT_STATE;
 				}
 				indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
+			} else if (PRIVATE_DATA->centering && !PRIVATE_DATA->stalled && PRIVATE_DATA->approaches < APPROACHES) {
+				double ra = MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.target;
+				double dec = MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.target;
+				indigo_j2k_to_eq(MOUNT_EPOCH_ITEM->number.value, &ra, &dec);
+				if (nexstaraux_slew(device, ra, dec, false)) {
+					PRIVATE_DATA->approaches++;
+					indigo_execute_handler_in(device, SLEW_POLL, mount_slew_finalizer);
+				} else {
+					mount_slew_failed(device, "Mount refused the slow approach");
+				}
 			} else if (PRIVATE_DATA->centering) {
+				bool arrived = nexstaraux_reached_target(device);
 				if (!PRIVATE_DATA->parking) {
-					if (nexstaraux_set_tracking(device, true)) {
-						indigo_set_switch(MOUNT_TRACKING_PROPERTY, MOUNT_TRACKING_ON_ITEM, true);
-						MOUNT_TRACKING_PROPERTY->state = INDIGO_OK_STATE;
+					bool tracking = nexstaraux_set_tracking(device, true);
+					indigo_set_switch(MOUNT_TRACKING_PROPERTY, tracking ? MOUNT_TRACKING_ON_ITEM : MOUNT_TRACKING_OFF_ITEM, true);
+					// A pending request owns the state, its handler reads the target and publishes the result
+					if (MOUNT_TRACKING_PROPERTY->state != INDIGO_BUSY_STATE) {
+						MOUNT_TRACKING_PROPERTY->state = tracking ? INDIGO_OK_STATE : INDIGO_ALERT_STATE;
 						indigo_update_property(device, MOUNT_TRACKING_PROPERTY, NULL);
-						MOUNT_STATE_TRACKING_ITEM->light.value = INDIGO_OK_STATE;
-					} else {
-						indigo_set_switch(MOUNT_TRACKING_PROPERTY, MOUNT_TRACKING_OFF_ITEM, true);
-						MOUNT_TRACKING_PROPERTY->state = INDIGO_ALERT_STATE;
-						indigo_update_property(device, MOUNT_TRACKING_PROPERTY, NULL);
-						MOUNT_STATE_TRACKING_ITEM->light.value = INDIGO_ALERT_STATE;
 					}
+					MOUNT_STATE_TRACKING_ITEM->light.value = tracking ? INDIGO_OK_STATE : INDIGO_ALERT_STATE;
 				}
 				PRIVATE_DATA->centering = PRIVATE_DATA->slewing = false;
-				MOUNT_STATE_SLEW_ITEM->light.value = INDIGO_IDLE_STATE;
-				MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
-				indigo_update_property(device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY, NULL);
+				MOUNT_STATE_SLEW_ITEM->light.value = arrived ? INDIGO_IDLE_STATE : INDIGO_ALERT_STATE;
+				MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = arrived ? INDIGO_OK_STATE : INDIGO_ALERT_STATE;
+				indigo_update_property(device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY, arrived ? NULL : "Mount stopped short of the target");
 				if (PRIVATE_DATA->parking) {
 					PRIVATE_DATA->parking = false;
-					PRIVATE_DATA->parked = true;
-					MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
+					PRIVATE_DATA->parked = arrived;
+					MOUNT_PARK_PROPERTY->state = arrived ? INDIGO_OK_STATE : INDIGO_ALERT_STATE;
+					if (!arrived) {
+						indigo_set_switch(MOUNT_PARK_PROPERTY, MOUNT_PARK_UNPARKED_ITEM, true);
+					}
 					indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
-					MOUNT_STATE_PARK_ITEM->light.value = INDIGO_OK_STATE;
+					MOUNT_STATE_PARK_ITEM->light.value = arrived ? INDIGO_OK_STATE : INDIGO_ALERT_STATE;
 				}
 				indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
 			} else {
 				double ra = MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.target;
 				double dec = MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.target;
 				indigo_j2k_to_eq(MOUNT_EPOCH_ITEM->number.value, &ra, &dec);
+				PRIVATE_DATA->stall_since = 0;
 				if (nexstaraux_slew(device, ra, dec, false)) {
 					PRIVATE_DATA->centering = PRIVATE_DATA->slewing = true;
-					indigo_execute_handler_in(device, 0.1, mount_slew_finalizer);
+					PRIVATE_DATA->approaches = 1;
+					indigo_execute_handler_in(device, SLEW_POLL, mount_slew_finalizer);
+				} else {
+					mount_slew_failed(device, "Mount refused the slow approach");
 				}
 			}
 		}
+	} else if (PRIVATE_DATA->handle != NULL && !nexstaraux_slew_stalled(device)) {
+		indigo_execute_handler_in(device, SLEW_POLL, mount_slew_finalizer);
+	} else {
+		mount_slew_failed(device, "Mount stopped answering during the slew");
 	}
 }
 
@@ -436,23 +966,15 @@ static void mount_slew_finalizer(indigo_device *device) {
 //+ guider.code
 
 static void guider_guide_dec_finalizer(indigo_device *device) {
-	if (nexstaraux_guide_ra(device, 0)) {
-		GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_OK_STATE;
-	} else {
-		GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_ALERT_STATE;
-	}
+	// Only the values, the target of a pulse requested while this one ends is read by its handler.
 	GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
-	INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_OK_STATE, NULL);
+	INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, nexstaraux_guide_dec(device, 0, 0) ? INDIGO_OK_STATE : INDIGO_ALERT_STATE, NULL);
 }
 
 static void guider_guide_ra_finalizer(indigo_device *device) {
-	if (nexstaraux_guide_dec(device, 0)) {
-		GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_OK_STATE;
-	} else {
-		GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_ALERT_STATE;
-	}
-	GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_EAST_ITEM->number.value = 0;
-	INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_OK_STATE, NULL);
+	// Only the values, the target of a pulse requested while this one ends is read by its handler.
+	GUIDER_GUIDE_EAST_ITEM->number.value = GUIDER_GUIDE_WEST_ITEM->number.value = 0;
+	INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, nexstaraux_guide_ra(device, 0, 0) ? INDIGO_OK_STATE : INDIGO_ALERT_STATE, NULL);
 }
 
 //- guider.code
@@ -472,8 +994,11 @@ static void mount_timer_callback(indigo_device *device) {
 static void mount_connection_handler(indigo_device *device) {
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
 		bool connection_result = true;
-		if (PRIVATE_DATA->count++ == 0) {
+		if (PRIVATE_DATA->count == 0) {
 			connection_result = nexstaraux_open(device);
+		}
+		if (connection_result) {
+			PRIVATE_DATA->count++;
 		}
 		if (connection_result) {
 			//+ mount.on_connect
@@ -483,7 +1008,10 @@ static void mount_connection_handler(indigo_device *device) {
 			} else {
 				MOUNT_TRACKING_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
-			if (nexstar_get_guide_rate(device, &MOUNT_GUIDE_RATE_RA_ITEM->number.value, &MOUNT_GUIDE_RATE_DEC_ITEM->number.value)) {
+			// The targets follow the values, or a request changing one item would send the default of the other.
+			if (nexstaraux_load_guide_rate(device, &MOUNT_GUIDE_RATE_RA_ITEM->number.value, &MOUNT_GUIDE_RATE_DEC_ITEM->number.value)) {
+				MOUNT_GUIDE_RATE_RA_ITEM->number.target = MOUNT_GUIDE_RATE_RA_ITEM->number.value;
+				MOUNT_GUIDE_RATE_DEC_ITEM->number.target = MOUNT_GUIDE_RATE_DEC_ITEM->number.value;
 				MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_OK_STATE;
 			} else {
 				MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -492,12 +1020,11 @@ static void mount_connection_handler(indigo_device *device) {
 			//- mount.on_connect
 		}
 		if (connection_result) {
-			indigo_execute_handler(device, mount_timer_callback);
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 			indigo_send_message(device, OK_PROPERTY, "Connected to %s on %s", MOUNT_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
 		} else {
 			indigo_send_message(device, ALERT_PROPERTY, "Failed to connect to %s on %s", MOUNT_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
-			if (--PRIVATE_DATA->count == 0) {
+			if (PRIVATE_DATA->count > 0 && --PRIVATE_DATA->count == 0) {
 				nexstaraux_close(device);
 			}
 			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -505,6 +1032,33 @@ static void mount_connection_handler(indigo_device *device) {
 		}
 	} else {
 		indigo_cancel_pending_handlers(device);
+		//+ mount.on_disconnect
+		// A goto, park or manual motion of this session does not outlive it, so the axes are
+		// stopped while the connection is still open, and the next session starts clean.
+		if (PRIVATE_DATA->slewing || MOUNT_MOTION_RA_PROPERTY->state == INDIGO_BUSY_STATE || MOUNT_MOTION_DEC_PROPERTY->state == INDIGO_BUSY_STATE) {
+			nexstaraux_stop(device);
+		}
+		PRIVATE_DATA->slewing = PRIVATE_DATA->centering = PRIVATE_DATA->stopping = PRIVATE_DATA->parking = PRIVATE_DATA->parked = PRIVATE_DATA->poll_failed = false;
+		MOUNT_MOTION_WEST_ITEM->sw.value = MOUNT_MOTION_EAST_ITEM->sw.value = false;
+		MOUNT_MOTION_NORTH_ITEM->sw.value = MOUNT_MOTION_SOUTH_ITEM->sw.value = false;
+		//- mount.on_disconnect
+		// Cancelled change handlers must not leave properties BUSY: a new session starts in a clean state.
+		indigo_property *cancelled_properties[] = {
+			MOUNT_TRACKING_PROPERTY,
+			MOUNT_TRACK_RATE_PROPERTY,
+			MOUNT_EQUATORIAL_COORDINATES_PROPERTY,
+			MOUNT_PARK_PROPERTY,
+			MOUNT_ABORT_MOTION_PROPERTY,
+			MOUNT_MOTION_RA_PROPERTY,
+			MOUNT_MOTION_DEC_PROPERTY,
+			MOUNT_GUIDE_RATE_PROPERTY,
+			MOUNT_STATE_PROPERTY,
+		};
+		for (unsigned i = 0; i < sizeof(cancelled_properties) / sizeof(cancelled_properties[0]); i++) {
+			if (cancelled_properties[i] != NULL && cancelled_properties[i]->state == INDIGO_BUSY_STATE) {
+				cancelled_properties[i]->state = INDIGO_OK_STATE;
+			}
+		}
 		if (--PRIVATE_DATA->count == 0) {
 			nexstaraux_close(device);
 		}
@@ -512,6 +1066,9 @@ static void mount_connection_handler(indigo_device *device) {
 		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 	}
 	indigo_mount_change_property(device, NULL, CONNECTION_PROPERTY);
+	if (IS_CONNECTED) {
+		indigo_execute_handler(device, mount_timer_callback);
+	}
 }
 
 static void mount_tracking_handler(indigo_device *device) {
@@ -522,10 +1079,17 @@ static void mount_tracking_handler(indigo_device *device) {
 	}
 	MOUNT_TRACKING_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_TRACKING.on_change
-	if (!nexstaraux_set_tracking(device, MOUNT_TRACKING_ON_ITEM->sw.value)) {
-		MOUNT_TRACKING_PROPERTY->state = INDIGO_ALERT_STATE;
+	// The slew finalizer turns tracking on at the end of a goto and may overwrite the value between the copy of the
+	// request and this handler, the target keeps the requested value. On failure the switch shows the rate the mount
+	// was last given.
+	bool on = indigo_get_switch_target(MOUNT_TRACKING_PROPERTY, MOUNT_TRACKING_ON_ITEM_NAME);
+	if (nexstaraux_set_tracking(device, on)) {
+		indigo_apply_switch_targets(MOUNT_TRACKING_PROPERTY);
+		MOUNT_STATE_TRACKING_ITEM->light.value = on ? INDIGO_OK_STATE : INDIGO_IDLE_STATE;
+	} else {
+		indigo_set_switch(MOUNT_TRACKING_PROPERTY, PRIVATE_DATA->track_rate != 0 ? MOUNT_TRACKING_ON_ITEM : MOUNT_TRACKING_OFF_ITEM, true);
+		MOUNT_TRACKING_PROPERTY->state = MOUNT_STATE_TRACKING_ITEM->light.value = INDIGO_ALERT_STATE;
 	}
-	MOUNT_STATE_TRACKING_ITEM->light.value = MOUNT_TRACKING_PROPERTY->state == INDIGO_ALERT_STATE ? INDIGO_ALERT_STATE : MOUNT_TRACKING_ON_ITEM->sw.value ? INDIGO_OK_STATE : INDIGO_IDLE_STATE;
 	indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
 	//- mount.MOUNT_TRACKING.on_change
 	indigo_update_property(device, MOUNT_TRACKING_PROPERTY, NULL);
@@ -555,12 +1119,15 @@ static void mount_equatorial_coordinates_handler(indigo_device *device) {
 	double dec = MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.target;
 	indigo_j2k_to_eq(MOUNT_EPOCH_ITEM->number.value, &ra, &dec);
 	if (MOUNT_ON_COORDINATES_SET_TRACK_ITEM->sw.value) {
+		PRIVATE_DATA->stall_since = 0;
+		PRIVATE_DATA->approaches = 0;
+		PRIVATE_DATA->stalled = false;
 		if (nexstaraux_set_tracking(device, false) && nexstaraux_slew(device, ra, dec, true)) {
 			MOUNT_STATE_SLEW_ITEM->light.value = INDIGO_BUSY_STATE;
 			indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
 			PRIVATE_DATA->centering = PRIVATE_DATA->parking = PRIVATE_DATA->parked = false;
 			PRIVATE_DATA->slewing = true;
-			indigo_execute_handler_in(device, 0.1, mount_slew_finalizer);
+			indigo_execute_handler_in(device, SLEW_POLL, mount_slew_finalizer);
 		} else {
 			MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
@@ -577,22 +1144,49 @@ static void mount_equatorial_coordinates_handler(indigo_device *device) {
 
 static void mount_park_handler(indigo_device *device) {
 	//+ mount.MOUNT_PARK.on_change
+	if (MOUNT_PARK_UNPARKED_ITEM->sw.value) {
+		// Unparking only releases the mount; there is nothing to slew to.
+		PRIVATE_DATA->parking = PRIVATE_DATA->parked = false;
+		MOUNT_STATE_PARK_ITEM->light.value = INDIGO_IDLE_STATE;
+		indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
+		INDIGO_UPDATE_PROPERTY_STATE(MOUNT_PARK_PROPERTY, INDIGO_OK_STATE, NULL);
+		return;
+	}
 	MOUNT_PARK_PROPERTY->state = INDIGO_BUSY_STATE;
 	double ra = fmod(indigo_lst(NULL, MOUNT_GEOGRAPHIC_COORDINATES_LONGITUDE_ITEM->number.value) + 24, 24);
 	double dec = MOUNT_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value > 0 ? 90 : -90;
 	MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.target = ra;
 	MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.target = dec;
-	indigo_update_property(device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY, NULL);
 	indigo_j2k_to_eq(MOUNT_EPOCH_ITEM->number.value, &ra, &dec);
-	if (nexstaraux_set_tracking(device, false) && nexstaraux_slew(device, ra, dec, true)) {
+	PRIVATE_DATA->stall_since = 0;
+	PRIVATE_DATA->approaches = 0;
+	PRIVATE_DATA->stalled = false;
+	// A parked mount does not track, and the drive is off from the moment it is stopped for the park.
+	bool stopped = nexstaraux_set_tracking(device, false);
+	if (stopped) {
+		indigo_set_switch(MOUNT_TRACKING_PROPERTY, MOUNT_TRACKING_OFF_ITEM, true);
+		MOUNT_STATE_TRACKING_ITEM->light.value = INDIGO_IDLE_STATE;
+		// A pending request owns the state, its handler publishes the result
+		if (MOUNT_TRACKING_PROPERTY->state != INDIGO_BUSY_STATE) {
+			MOUNT_TRACKING_PROPERTY->state = INDIGO_OK_STATE;
+			indigo_update_property(device, MOUNT_TRACKING_PROPERTY, NULL);
+		}
+	}
+	if (stopped && nexstaraux_slew(device, ra, dec, true)) {
+		MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
+		indigo_update_property(device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY, NULL);
 		MOUNT_STATE_SLEW_ITEM->light.value = INDIGO_BUSY_STATE;
 		MOUNT_STATE_PARK_ITEM->light.value = INDIGO_BUSY_STATE;
 		indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
 		PRIVATE_DATA->centering = PRIVATE_DATA->parked = false;
 		PRIVATE_DATA->slewing = PRIVATE_DATA->parking = true;
-		indigo_execute_handler_in(device, 0.1, mount_slew_finalizer);
+		indigo_execute_handler_in(device, SLEW_POLL, mount_slew_finalizer);
 	} else {
+		// The controller never started the park, so the mount is where it was and not parked.
+		indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
+		indigo_set_switch(MOUNT_PARK_PROPERTY, MOUNT_PARK_UNPARKED_ITEM, true);
 		MOUNT_PARK_PROPERTY->state = INDIGO_ALERT_STATE;
+		indigo_update_property(device, MOUNT_PARK_PROPERTY, "Mount did not start the park");
 	}
 	//- mount.MOUNT_PARK.on_change
 }
@@ -601,6 +1195,24 @@ static void mount_abort_motion_handler(indigo_device *device) {
 	MOUNT_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_ABORT_MOTION.on_change
 	if (MOUNT_ABORT_MOTION_ITEM->sw.value) {
+		indigo_cancel_pending_handler(device, mount_equatorial_coordinates_handler);
+		if (!PRIVATE_DATA->slewing && MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state == INDIGO_BUSY_STATE) {
+			MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+			indigo_update_coordinates(device, NULL);
+		}
+		indigo_cancel_pending_handler(device, mount_motion_ra_handler);
+		if (MOUNT_MOTION_RA_PROPERTY->state == INDIGO_BUSY_STATE) {
+			INDIGO_UPDATE_PROPERTY_STATE(MOUNT_MOTION_RA_PROPERTY, INDIGO_ALERT_STATE, NULL);
+		}
+		indigo_cancel_pending_handler(device, mount_motion_dec_handler);
+		if (MOUNT_MOTION_DEC_PROPERTY->state == INDIGO_BUSY_STATE) {
+			INDIGO_UPDATE_PROPERTY_STATE(MOUNT_MOTION_DEC_PROPERTY, INDIGO_ALERT_STATE, NULL);
+		}
+		indigo_cancel_pending_handler(device, mount_park_handler);
+		if (MOUNT_PARK_PROPERTY->state == INDIGO_BUSY_STATE) {
+			indigo_set_switch(MOUNT_PARK_PROPERTY, PRIVATE_DATA->parked ? MOUNT_PARK_PARKED_ITEM : MOUNT_PARK_UNPARKED_ITEM, true);
+			INDIGO_UPDATE_PROPERTY_STATE(MOUNT_PARK_PROPERTY, INDIGO_ALERT_STATE, NULL);
+		}
 		MOUNT_ABORT_MOTION_ITEM->sw.value = false;
 		if (nexstaraux_stop(device)) {
 			if (MOUNT_MOTION_WEST_ITEM->sw.value || MOUNT_MOTION_EAST_ITEM->sw.value) {
@@ -615,6 +1227,7 @@ static void mount_abort_motion_handler(indigo_device *device) {
 			}
 			if (PRIVATE_DATA->slewing) {
 				PRIVATE_DATA->stopping = true;
+
 			}
 			MOUNT_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
@@ -623,12 +1236,14 @@ static void mount_abort_motion_handler(indigo_device *device) {
 	}
 	//- mount.MOUNT_ABORT_MOTION.on_change
 	indigo_update_property(device, MOUNT_ABORT_MOTION_PROPERTY, NULL);
+	indigo_mount_commit_motion_client(device, MOUNT_ABORT_MOTION_PROPERTY);
 }
 
 static void mount_motion_ra_handler(indigo_device *device) {
 	if (!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value) {
 		indigo_send_message(device, MOUNT_MOTION_RA_PROPERTY, "Mount is parked!");
 		INDIGO_UPDATE_PROPERTY_STATE(MOUNT_MOTION_RA_PROPERTY, INDIGO_ALERT_STATE, NULL);
+		indigo_mount_commit_motion_client(device, MOUNT_MOTION_RA_PROPERTY);
 		return;
 	}
 	MOUNT_MOTION_RA_PROPERTY->state = INDIGO_OK_STATE;
@@ -650,6 +1265,11 @@ static void mount_motion_ra_handler(indigo_device *device) {
 	} else {
 		speed = 0;
 	}
+	// West is the direction of the tracking drive, which turns the polar axis the negative way
+	// south of the equator.
+	if (nexstaraux_southern(device)) {
+		speed = -speed;
+	}
 	if (nexstaraux_move_ra(device, speed)) {
 		MOUNT_MOTION_RA_PROPERTY->state = speed ? INDIGO_BUSY_STATE : INDIGO_OK_STATE;
 	} else {
@@ -657,12 +1277,14 @@ static void mount_motion_ra_handler(indigo_device *device) {
 	}
 	//- mount.MOUNT_MOTION_RA.on_change
 	indigo_update_property(device, MOUNT_MOTION_RA_PROPERTY, NULL);
+	indigo_mount_commit_motion_client(device, MOUNT_MOTION_RA_PROPERTY);
 }
 
 static void mount_motion_dec_handler(indigo_device *device) {
 	if (!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value) {
 		indigo_send_message(device, MOUNT_MOTION_DEC_PROPERTY, "Mount is parked!");
 		INDIGO_UPDATE_PROPERTY_STATE(MOUNT_MOTION_DEC_PROPERTY, INDIGO_ALERT_STATE, NULL);
+		indigo_mount_commit_motion_client(device, MOUNT_MOTION_DEC_PROPERTY);
 		return;
 	}
 	MOUNT_MOTION_DEC_PROPERTY->state = INDIGO_OK_STATE;
@@ -691,12 +1313,18 @@ static void mount_motion_dec_handler(indigo_device *device) {
 	}
 	//- mount.MOUNT_MOTION_DEC.on_change
 	indigo_update_property(device, MOUNT_MOTION_DEC_PROPERTY, NULL);
+	indigo_mount_commit_motion_client(device, MOUNT_MOTION_DEC_PROPERTY);
 }
 
 static void mount_guide_rate_handler(indigo_device *device) {
 	MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_GUIDE_RATE.on_change
-	if (!nexstar_set_guide_rate_handler(device, MOUNT_GUIDE_RATE_RA_ITEM->number.target, MOUNT_GUIDE_RATE_DEC_ITEM->number.target)) {
+	if (nexstar_set_guide_rate_handler(device, MOUNT_GUIDE_RATE_RA_ITEM->number.target, MOUNT_GUIDE_RATE_DEC_ITEM->number.target)) {
+		nexstaraux_share_guide_rate(device, MOUNT_GUIDE_RATE_RA_ITEM->number.target, MOUNT_GUIDE_RATE_DEC_ITEM->number.target);
+	} else {
+		// A rate the mount did not take is replaced by the one the driver still guides at.
+		MOUNT_GUIDE_RATE_RA_ITEM->number.value = MOUNT_GUIDE_RATE_RA_ITEM->number.target = PRIVATE_DATA->guide_rate_ra;
+		MOUNT_GUIDE_RATE_DEC_ITEM->number.value = MOUNT_GUIDE_RATE_DEC_ITEM->number.target = PRIVATE_DATA->guide_rate_dec;
 		MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	//- mount.MOUNT_GUIDE_RATE.on_change
@@ -712,6 +1340,7 @@ static indigo_result mount_attach(indigo_device *device) {
 		ADDITIONAL_INSTANCES_PROPERTY->hidden = device->base_device != NULL;
 		DEVICE_PORT_PROPERTY->hidden = false;
 		//+ mount.on_attach
+		PRIVATE_DATA->mount = device;
 		INFO_PROPERTY->count = 6;
 		strcpy(DEVICE_PORT_ITEM->text.value, "nexstar://");
 		DEVICE_PORT_PROPERTY->state = INDIGO_OK_STATE;
@@ -739,31 +1368,33 @@ static indigo_result mount_enumerate_properties(indigo_device *device, indigo_cl
 
 static indigo_result mount_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (indigo_property_match_changeable(CONNECTION_PROPERTY, property)) {
-		if (!indigo_ignore_connection_change(device, property)) {
-			indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
-			INDIGO_UPDATE_PROPERTY_STATE(CONNECTION_PROPERTY, INDIGO_BUSY_STATE, NULL);
-			indigo_execute_handler(device, mount_connection_handler);
-		}
+		INDIGO_PROCESS_CONNECT(mount_connection_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_TRACKING_PROPERTY, property)) {
+		INDIGO_REJECT_CHANGE_IF(!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value, MOUNT_TRACKING_PROPERTY, "Mount is parked!");
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_TRACKING_PROPERTY, mount_tracking_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_TRACK_RATE_PROPERTY, property)) {
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_TRACK_RATE_PROPERTY, mount_track_rate_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_EQUATORIAL_COORDINATES_PROPERTY, property)) {
+		INDIGO_REJECT_CHANGE_IF(!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value, MOUNT_EQUATORIAL_COORDINATES_PROPERTY, "Mount is parked!");
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_EQUATORIAL_COORDINATES_PROPERTY, mount_equatorial_coordinates_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_PARK_PROPERTY, property)) {
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_PARK_PROPERTY, mount_park_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_ABORT_MOTION_PROPERTY, property)) {
-		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_ABORT_MOTION_PROPERTY, mount_abort_motion_handler);
+		INDIGO_COPY_VALUES_PROCESS_URGENT_CHANGE(MOUNT_ABORT_MOTION_PROPERTY, mount_abort_motion_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_MOTION_RA_PROPERTY, property)) {
+		INDIGO_REJECT_CHANGE_IF(!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value, MOUNT_MOTION_RA_PROPERTY, "Mount is parked!");
+		indigo_mount_record_motion_client(device, client, property);
 		INDIGO_COPY_VALUES_PROCESS_CHANGE_ANYTIME(MOUNT_MOTION_RA_PROPERTY, mount_motion_ra_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_MOTION_DEC_PROPERTY, property)) {
+		INDIGO_REJECT_CHANGE_IF(!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value, MOUNT_MOTION_DEC_PROPERTY, "Mount is parked!");
+		indigo_mount_record_motion_client(device, client, property);
 		INDIGO_COPY_VALUES_PROCESS_CHANGE_ANYTIME(MOUNT_MOTION_DEC_PROPERTY, mount_motion_dec_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_GUIDE_RATE_PROPERTY, property)) {
@@ -778,6 +1409,9 @@ static indigo_result mount_detach(indigo_device *device) {
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		mount_connection_handler(device);
 	}
+	//+ mount.on_detach
+	PRIVATE_DATA->mount = NULL;
+	//- mount.on_detach
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_mount_detach(device);
 }
@@ -787,12 +1421,18 @@ static indigo_result mount_detach(indigo_device *device) {
 static void guider_connection_handler(indigo_device *device) {
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
 		bool connection_result = true;
-		if (PRIVATE_DATA->count++ == 0) {
+		if (PRIVATE_DATA->count == 0) {
 			connection_result = nexstaraux_open(device->master_device);
 		}
 		if (connection_result) {
+			PRIVATE_DATA->count++;
+		}
+		if (connection_result) {
 			//+ guider.on_connect
-			if (nexstar_get_guide_rate(device, &GUIDER_RATE_ITEM->number.value, &GUIDER_DEC_RATE_ITEM->number.value)) {
+			// The targets follow the values, or a request changing one item would send the default of the other.
+			if (nexstaraux_load_guide_rate(device, &GUIDER_RATE_ITEM->number.value, &GUIDER_DEC_RATE_ITEM->number.value)) {
+				GUIDER_RATE_ITEM->number.target = GUIDER_RATE_ITEM->number.value;
+				GUIDER_DEC_RATE_ITEM->number.target = GUIDER_DEC_RATE_ITEM->number.value;
 				GUIDER_RATE_PROPERTY->state = INDIGO_OK_STATE;
 			} else {
 				GUIDER_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -804,7 +1444,7 @@ static void guider_connection_handler(indigo_device *device) {
 			indigo_send_message(device, OK_PROPERTY, "Connected to %s on %s", GUIDER_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
 		} else {
 			indigo_send_message(device, ALERT_PROPERTY, "Failed to connect to %s on %s", GUIDER_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
-			if (--PRIVATE_DATA->count == 0) {
+			if (PRIVATE_DATA->count > 0 && --PRIVATE_DATA->count == 0) {
 				nexstaraux_close(device);
 			}
 			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -812,6 +1452,29 @@ static void guider_connection_handler(indigo_device *device) {
 		}
 	} else {
 		indigo_cancel_pending_handlers(device);
+		//+ guider.on_disconnect
+		// The finalizer of a pulse cut short by the disconnect was cancelled with it, so its axis
+		// is given its rate back here instead of turning on at the guide rate.
+		if (GUIDER_GUIDE_RA_PROPERTY->state == INDIGO_BUSY_STATE) {
+			nexstaraux_guide_ra(device, 0, 0);
+		}
+		if (GUIDER_GUIDE_DEC_PROPERTY->state == INDIGO_BUSY_STATE) {
+			nexstaraux_guide_dec(device, 0, 0);
+		}
+		GUIDER_GUIDE_EAST_ITEM->number.value = GUIDER_GUIDE_WEST_ITEM->number.value = 0;
+		GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
+		//- guider.on_disconnect
+		// Cancelled change handlers must not leave properties BUSY: a new session starts in a clean state.
+		indigo_property *cancelled_properties[] = {
+			GUIDER_GUIDE_RA_PROPERTY,
+			GUIDER_GUIDE_DEC_PROPERTY,
+			GUIDER_RATE_PROPERTY,
+		};
+		for (unsigned i = 0; i < sizeof(cancelled_properties) / sizeof(cancelled_properties[0]); i++) {
+			if (cancelled_properties[i] != NULL && cancelled_properties[i]->state == INDIGO_BUSY_STATE) {
+				cancelled_properties[i]->state = INDIGO_OK_STATE;
+			}
+		}
 		if (--PRIVATE_DATA->count == 0) {
 			nexstaraux_close(device);
 		}
@@ -823,28 +1486,53 @@ static void guider_connection_handler(indigo_device *device) {
 
 static void guider_guide_ra_handler(indigo_device *device) {
 	//+ guider.GUIDER_GUIDE_RA.on_change
+	// A new request replaces the running pulse, so the finaliser of the superseded
+	// one must not end the new pulse on the old deadline.
+	// The guider moves the mount's own axes, so a parked mount is not guided either.
+	if (PRIVATE_DATA->parked || PRIVATE_DATA->parking) {
+		GUIDER_GUIDE_EAST_ITEM->number.value = GUIDER_GUIDE_WEST_ITEM->number.value = 0;
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_ALERT_STATE, "Mount is parked!");
+		return;
+	}
+	indigo_cancel_pending_handler(device, guider_guide_ra_finalizer);
+	// The finalizer of the previous pulse may have zeroed the values after the request was copied, the targets keep it.
+	GUIDER_GUIDE_EAST_ITEM->number.value = GUIDER_GUIDE_EAST_ITEM->number.target;
+	GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_WEST_ITEM->number.target;
 	GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_BUSY_STATE;
 	unsigned duration = 0;
 	int direction = 0;
 	if (GUIDER_GUIDE_EAST_ITEM->number.value > 0) {
-		direction = 1;
+		direction = -1;
 		duration = (unsigned)GUIDER_GUIDE_EAST_ITEM->number.value;
 	} else if (GUIDER_GUIDE_WEST_ITEM->number.value > 0) {
-		direction = -1;
+		direction = 1;
 		duration = (unsigned)GUIDER_GUIDE_WEST_ITEM->number.value;
-	}
-	if (nexstaraux_guide_ra(device, direction)) {
-		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, duration / 1000, guider_guide_ra_finalizer);
-	} else {
-		GUIDER_GUIDE_RA_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	GUIDER_GUIDE_EAST_ITEM->number.value = 0;
 	GUIDER_GUIDE_WEST_ITEM->number.value = 0;
+	if (nexstaraux_guide_ra(device, direction, duration)) {
+		indigo_update_property(device, GUIDER_GUIDE_RA_PROPERTY, NULL);
+		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, duration / 1000.0, guider_guide_ra_finalizer);
+	} else {
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_ALERT_STATE, NULL);
+	}
 	//- guider.GUIDER_GUIDE_RA.on_change
 }
 
 static void guider_guide_dec_handler(indigo_device *device) {
 	//+ guider.GUIDER_GUIDE_DEC.on_change
+	// A new request replaces the running pulse, so the finaliser of the superseded
+	// one must not end the new pulse on the old deadline.
+	// The guider moves the mount's own axes, so a parked mount is not guided either.
+	if (PRIVATE_DATA->parked || PRIVATE_DATA->parking) {
+		GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_ALERT_STATE, "Mount is parked!");
+		return;
+	}
+	indigo_cancel_pending_handler(device, guider_guide_dec_finalizer);
+	// The finalizer of the previous pulse may have zeroed the values after the request was copied, the targets keep it.
+	GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_NORTH_ITEM->number.target;
+	GUIDER_GUIDE_SOUTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.target;
 	GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_BUSY_STATE;
 	unsigned duration = 0;
 	int direction = 0;
@@ -855,21 +1543,26 @@ static void guider_guide_dec_handler(indigo_device *device) {
 		direction = -1;
 		duration = (unsigned)GUIDER_GUIDE_SOUTH_ITEM->number.value;
 	}
-	if (nexstaraux_guide_dec(device, direction)) {
-		indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
-		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, duration / 1000, guider_guide_dec_finalizer);
-	} else {
-		GUIDER_GUIDE_DEC_PROPERTY->state = INDIGO_ALERT_STATE;
-	}
 	GUIDER_GUIDE_NORTH_ITEM->number.value = 0;
 	GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
+	if (nexstaraux_guide_dec(device, direction, duration)) {
+		indigo_update_property(device, GUIDER_GUIDE_DEC_PROPERTY, NULL);
+		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, duration / 1000.0, guider_guide_dec_finalizer);
+	} else {
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_ALERT_STATE, NULL);
+	}
 	//- guider.GUIDER_GUIDE_DEC.on_change
 }
 
 static void guider_rate_handler(indigo_device *device) {
 	GUIDER_RATE_PROPERTY->state = INDIGO_OK_STATE;
 	//+ guider.GUIDER_RATE.on_change
-	if (!nexstar_set_guide_rate_handler(device, GUIDER_RATE_ITEM->number.target, GUIDER_DEC_RATE_ITEM->number.target)) {
+	if (nexstar_set_guide_rate_handler(device, GUIDER_RATE_ITEM->number.target, GUIDER_DEC_RATE_ITEM->number.target)) {
+		nexstaraux_share_guide_rate(device, GUIDER_RATE_ITEM->number.target, GUIDER_DEC_RATE_ITEM->number.target);
+	} else {
+		// A rate the mount did not take is replaced by the one the driver still guides at.
+		GUIDER_RATE_ITEM->number.value = GUIDER_RATE_ITEM->number.target = PRIVATE_DATA->guide_rate_ra;
+		GUIDER_DEC_RATE_ITEM->number.value = GUIDER_DEC_RATE_ITEM->number.target = PRIVATE_DATA->guide_rate_dec;
 		GUIDER_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	//- guider.GUIDER_RATE.on_change
@@ -883,6 +1576,7 @@ static indigo_result guider_enumerate_properties(indigo_device *device, indigo_c
 static indigo_result guider_attach(indigo_device *device) {
 	if (indigo_guider_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
 		//+ guider.on_attach
+		PRIVATE_DATA->guider = device;
 		GUIDER_RATE_PROPERTY->count = 2;
 		//- guider.on_attach
 		GUIDER_GUIDE_RA_PROPERTY->hidden = false;
@@ -900,17 +1594,21 @@ static indigo_result guider_enumerate_properties(indigo_device *device, indigo_c
 
 static indigo_result guider_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (indigo_property_match_changeable(CONNECTION_PROPERTY, property)) {
-		if (!indigo_ignore_connection_change(device, property)) {
-			indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
-			INDIGO_UPDATE_PROPERTY_STATE(CONNECTION_PROPERTY, INDIGO_BUSY_STATE, NULL);
-			indigo_execute_handler(device, guider_connection_handler);
-		}
+		INDIGO_PROCESS_CONNECT(guider_connection_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(GUIDER_GUIDE_RA_PROPERTY, property)) {
-		INDIGO_COPY_VALUES_PROCESS_CHANGE(GUIDER_GUIDE_RA_PROPERTY, guider_guide_ra_handler);
+		//+ guider.GUIDER_GUIDE_RA.on_change_request
+		GUIDER_GUIDE_EAST_ITEM->number.value = GUIDER_GUIDE_EAST_ITEM->number.target = 0;
+		GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_WEST_ITEM->number.target = 0;
+		//- guider.GUIDER_GUIDE_RA.on_change_request
+		INDIGO_COPY_VALUES_PROCESS_PRIORITY_CHANGE_ANYTIME(GUIDER_GUIDE_RA_PROPERTY, guider_guide_ra_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(GUIDER_GUIDE_DEC_PROPERTY, property)) {
-		INDIGO_COPY_VALUES_PROCESS_CHANGE(GUIDER_GUIDE_DEC_PROPERTY, guider_guide_dec_handler);
+		//+ guider.GUIDER_GUIDE_DEC.on_change_request
+		GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_NORTH_ITEM->number.target = 0;
+		GUIDER_GUIDE_SOUTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.target = 0;
+		//- guider.GUIDER_GUIDE_DEC.on_change_request
+		INDIGO_COPY_VALUES_PROCESS_PRIORITY_CHANGE_ANYTIME(GUIDER_GUIDE_DEC_PROPERTY, guider_guide_dec_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(GUIDER_RATE_PROPERTY, property)) {
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(GUIDER_RATE_PROPERTY, guider_rate_handler);
@@ -924,6 +1622,9 @@ static indigo_result guider_detach(indigo_device *device) {
 		indigo_set_switch(CONNECTION_PROPERTY, CONNECTION_DISCONNECTED_ITEM, true);
 		guider_connection_handler(device);
 	}
+	//+ guider.on_detach
+	PRIVATE_DATA->guider = NULL;
+	//- guider.on_detach
 	INDIGO_DEVICE_DETACH_LOG(DRIVER_NAME, device->name);
 	return indigo_guider_detach(device);
 }
@@ -949,38 +1650,41 @@ indigo_result indigo_mount_nexstaraux(indigo_driver_action action, indigo_driver
 	}
 
 	switch (action) {
-		case INDIGO_DRIVER_INIT:
+		case INDIGO_DRIVER_INIT: {
 			last_action = action;
-			private_data = indigo_safe_malloc(sizeof(nexstaraux_private_data));
-			mount = indigo_safe_malloc_copy(sizeof(indigo_device), &mount_template);
+			private_data = (nexstaraux_private_data *)indigo_safe_malloc(sizeof(nexstaraux_private_data));
+			mount = (indigo_device *)indigo_safe_malloc_copy(sizeof(indigo_device), &mount_template);
 			mount->private_data = private_data;
+			mount->master_device = mount;
 			indigo_attach_device(mount);
-			guider = indigo_safe_malloc_copy(sizeof(indigo_device), &guider_template);
+			guider = (indigo_device *)indigo_safe_malloc_copy(sizeof(indigo_device), &guider_template);
 			guider->private_data = private_data;
 			guider->master_device = mount;
 			indigo_attach_device(guider);
 			break;
 
-		case INDIGO_DRIVER_SHUTDOWN:
+		}
+		case INDIGO_DRIVER_SHUTDOWN: {
 			VERIFY_NOT_CONNECTED(mount);
 			VERIFY_NOT_CONNECTED(guider);
 			last_action = action;
-			if (mount != NULL) {
-				indigo_detach_device(mount);
-				free(mount);
-				mount = NULL;
-			}
 			if (guider != NULL) {
 				indigo_detach_device(guider);
-				free(guider);
+				indigo_safe_free(guider);
 				guider = NULL;
 			}
+			if (mount != NULL) {
+				indigo_detach_device(mount);
+				indigo_safe_free(mount);
+				mount = NULL;
+			}
 			if (private_data != NULL) {
-				free(private_data);
+				indigo_safe_free(private_data);
 				private_data = NULL;
 			}
 			break;
 
+		}
 		case INDIGO_DRIVER_INFO:
 			break;
 	}

@@ -22,3 +22,7 @@ indigo_server indigo_focuser_mjkzz
 ## Status: Untested
 
 Driver is developed and tested with the simulator.
+
+## Testing
+
+2026-10-05 15:41 3.0.0.8 mac arm64 simulator 43/43 OK

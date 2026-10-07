@@ -33,3 +33,10 @@ Driver is developed and tested with:
 * MI C3-61000
 * MI C4-16000
 * MI C5A-100M
+
+## Testing
+
+2026-09-27 08:00 3.0.0.39 linux x64 fake SDK 18/18 OK
+2026-09-27 21:39 3.0.0.39 mac arm64 fake SDK 18/18 OK
+2026-09-30 18:21 3.0.0.39 linux arm64 MI G0-0300 1/1 OK
+2026-10-02 20:56 3.0.0.39 mac arm64 MI G0-0300 1/1 OK

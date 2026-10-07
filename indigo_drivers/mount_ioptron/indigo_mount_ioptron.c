@@ -24,7 +24,6 @@
 #include <string.h>
 #include <math.h>
 #include <assert.h>
-#include <pthread.h>
 #include <indigo/indigo_driver_xml.h>
 #include <indigo/indigo_mount_driver.h>
 #include <indigo/indigo_align.h>
@@ -35,7 +34,7 @@
 
 #pragma mark - Common definitions
 
-#define DRIVER_VERSION       0x0300002F
+#define DRIVER_VERSION       0x03000040
 #define DRIVER_NAME          "indigo_mount_ioptron"
 #define DRIVER_LABEL         "iOptron Mount"
 #define MOUNT_DEVICE_NAME    "iOptron Mount"
@@ -46,6 +45,8 @@
 
 #define RA_MIN_DIF           0.1
 #define DEC_MIN_DIF          0.1
+// a park or home the mount acknowledged but did not start within this time [s] failed
+#define START_TIMEOUT        5.0
 
 typedef enum {
 	UNKNOWN = 0,
@@ -65,80 +66,126 @@ typedef struct {
 	bool has_encoders;
 	bool can_park;
 	bool can_search_home;
+	bool has_pec;
+	bool altaz;
 } mount_type;
 
 static mount_type PRODUCTS[] = {
+	// firmware 210101+ -> 3.0, codes 10, 11, 25, 26, 30, 45, 46 and 60 meant other products before
+	{   10, "210101", "SkyHunter", V3_0, false, true, false, false, false },
+	{   11, "210101", "SkyHunterAA", V3_0, false, true, false, false, true },
+	{   12, NULL, "HAE16", V3_0, false, true, true, false, false },
+	{   13, NULL, "HAE16AA", V3_0, false, true, true, false, true },
+	{   14, NULL, "HAE18", V3_0, false, true, true, false, false },
+	{   22, NULL, "HAE18AA", V3_0, false, true, true, false, true },
+	{   15, NULL, "HEM15", V3_0, false, true, true, false, false },
+	{   16, NULL, "HEM15EC", V3_0, true, true, true, false, false },
+	{   17, NULL, "HAE27BC", V3_0, false, true, true, false, false },
+	{   18, NULL, "HAE27BCEC", V3_0, true, true, true, false, false },
+	{   19, NULL, "HAE27BCAA", V3_0, false, true, true, false, true },
+	{   20, NULL, "HAE27BCECAA", V3_0, false, true, true, false, true },
+	{   25, "210101", "HEM27", V3_0, false, true, true, true, false },
+	{   30, "210101", "HEM27EC", V3_0, true, true, true, false, false },
+	{   26, "210101", "CEM26", V3_0, false, true, false, true, false },
+	{   27, NULL, "CEM26EC", V3_0, true, true, false, false, false },
+	{   28, NULL, "GEM28", V3_0, false, true, false, true, false },
+	{   29, NULL, "GEM28EC", V3_0, true, true, false, false, false },
+	{   31, NULL, "HAE29", V3_0, false, true, true, false, false },
+	{   32, NULL, "HAE29EC", V3_0, true, true, true, false, false },
+	{   33, NULL, "HAE29AA", V3_0, false, true, true, false, true },
+	{   34, NULL, "HAE29ECAA", V3_0, false, true, true, false, true },
+	{   36, NULL, "HAE29BC", V3_0, false, true, true, false, false },
+	{   37, NULL, "HAE29BCEC", V3_0, true, true, true, false, false },
+	{   38, NULL, "HAE29BCAA", V3_0, false, true, true, false, true },
+	{   39, NULL, "HAE29BCECAA", V3_0, false, true, true, false, true },
+	{   35, NULL, "HAZ31", V3_0, false, true, false, false, true },
+	{   40, "210101", "CEM40", V3_0, false, true, true, true, false },
+	{   41, "210101", "CEM40EC", V3_0, true, true, true, false, false },
+	{   42, NULL, "HEM44", V3_0, false, true, true, false, false },
+	{   45, "210101", "HEM44EC", V3_0, true, true, true, false, false },
+	{   46, "210101", "HEM44A", V3_0, false, true, true, false, false },
+	{   47, NULL, "HEM44AEC", V3_0, true, true, true, false, false },
+	{   43, NULL, "GEM45", V3_0, false, true, true, true, false },
+	{   44, NULL, "GEM45EC", V3_0, true, true, true, false, false },
+	{   48, NULL, "HAE43", V3_0, false, true, true, false, false },
+	{   49, NULL, "HAE43EC", V3_0, true, true, true, false, false },
+	{   50, NULL, "HAE43AA", V3_0, false, true, true, false, true },
+	{   51, NULL, "HAE43ECAA", V3_0, false, true, true, false, true },
+	{   53, NULL, "HAE43BC", V3_0, false, true, true, false, false },
+	{   54, NULL, "HAE43BCEC", V3_0, true, true, true, false, false },
+	{   55, NULL, "HAE43BCAA", V3_0, false, true, true, false, true },
+	{   56, NULL, "HAE43BCECAA", V3_0, false, true, true, false, true },
+	{   57, NULL, "HAE44BC", V3_0, false, true, false, false, false },
+	{   58, NULL, "HAE44BCEC", V3_0, true, true, false, false, false },
+	{   59, NULL, "HAE44BCAA", V3_0, false, true, false, false, true },
+	{   60, "210101", "HAE44BCECAA", V3_0, false, true, false, false, true },
+	{   52, NULL, "HAZ46", V3_0, false, true, false, false, true },
+	{   62, NULL, "HAE69", V3_0, false, true, true, false, false },
+	{   63, NULL, "HAE69EC", V3_0, true, true, true, false, false },
+	{   64, NULL, "HAE69AA", V3_0, false, true, true, false, true },
+	{   65, NULL, "HAE69ECAA", V3_0, false, true, true, false, true },
+	{   66, NULL, "HAE69BC", V3_0, false, true, true, false, false },
+	{   67, NULL, "HAE69BCEC", V3_0, true, true, true, false, false },
+	{   68, NULL, "HAE69BCAA", V3_0, false, true, true, false, true },
+	{   69, NULL, "HAE69BCECAA", V3_0, false, true, true, false, true },
+	{   70, NULL, "CEM70", V3_0, false, true, true, true, false },
+	{   71, NULL, "CEM70EC", V3_0, true, true, true, false, false },
+	{   72, NULL, "CEM70EC2", V3_0, true, true, true, false, false },
+	{   73, NULL, "HAZ71", V3_0, false, true, false, false, true },
+	{  120, NULL, "CEM120", V3_0, false, true, true, true, false },
+	{  121, NULL, "CEM120EC", V3_0, true, true, true, false, false },
+	{  122, NULL, "CEM120EC2", V3_0, true, true, true, false, false },
+	{  123, NULL, "HAZ130", V3_0, false, true, true, false, true },
+
 	// firmware 171001+ -> 3.0
-	{   45, "171001", "iEQ45Pro", V3_0, false, true, false },
-	{   46, "171001", "iEQ45ProAA", V3_0, false, true, false },
-	{   60, "171001", "CEM60", V3_0, false, true, true },
-	{   61, "171001", "CEM60EC", V3_0, true, true, true },
-	{   40, "210101", "CEM40", V2_5, false, true, false },
-	{   41, "210101", "CEM40EC", V2_5, true, true, false },
+	{   45, "171001", "iEQ45Pro", V3_0, false, true, false, true, false },
+	{   46, "171001", "iEQ45ProAA", V3_0, false, true, false, false, true },
+	{   60, "171001", "CEM60", V3_0, false, true, true, true, false },
+	{   61, "171001", "CEM60EC", V3_0, true, true, true, false, false },
 
 	// firmware 161101+ -> 2.5
-	{   45, "161101", "iEQ45Pro", V2_5, false, true, false },
-	{   46, "161101", "iEQ45ProAA", V2_5, false, true, false },
-	{   60, "161101", "CEM60", V1_0, false, true, true },
-	{   61, "161101", "CEM60EC", V1_0, true, true, true },
-	
+	{   45, "161101", "iEQ45Pro", V2_5, false, true, false, true, false },
+	{   46, "161101", "iEQ45ProAA", V2_5, false, true, false, false, true },
+	{   60, "161101", "CEM60", V2_5, false, true, true, true, false },
+	{   61, "161101", "CEM60EC", V2_5, true, true, true, false, false },
+
 	// fallback -> 2.5
-	{   40, NULL, "CEM40", V2_5, false, true, true },
-	{   41, NULL, "CEM40EC", V2_5, true, true, true },
-	{   30, NULL, "iEQ30Pro", V2_5, false, true, false },
-	{   25, NULL, "CEM25", V2_5, false, false, false  },
-	{   26, NULL, "CEM25EC", V2_5, false, false, false  },
-	{   11, NULL, "SmartEQPro+", V2_5, false, false, false  },
-	{ 5035, NULL, "AZMountPro", V2_5, false, false, false  },
-	{   10, NULL, "CubeII", V2_5, false, false, false  },
-	{ 5010, NULL, "CubeIIAA", V2_5, false, false, false  },
+	{   40, NULL, "CEM40", V2_5, false, true, true, true, false },
+	{   41, NULL, "CEM40EC", V2_5, true, true, true, false, false },
+	{   30, NULL, "iEQ30Pro", V2_5, false, true, false, true, false },
+	{   25, NULL, "CEM25", V2_5, false, false, false, true, false },
+	{   26, NULL, "CEM25EC", V2_5, false, false, false, true, false },
+	{   11, NULL, "SmartEQPro+", V2_5, false, false, false, true, false },
+	{ 5035, NULL, "AZMountPro", V2_5, false, false, false, false, true },
+	{   10, NULL, "CubeII", V2_5, false, false, false, true, false },
+	{ 5010, NULL, "CubeIIAA", V2_5, false, false, false, false, true },
 
 	// firmware 140807 -> 2.0
-	{   45, "140807", "iEQ45Pro", V2_0, false, true, false },
-	{   46, "140807", "iEQ45ProAA", V2_0, false, true, false },
-	{   60, "140807", "CEM60", V2_0, false, true, true },
-	{   61, "140807", "CEM60EC", V2_0, true, true, true },
-	
+	{   45, "140807", "iEQ45Pro", V2_0, false, true, false, true, false },
+	{   46, "140807", "iEQ45ProAA", V2_0, false, true, false, false, true },
+	{   60, "140807", "CEM60", V2_0, false, true, true, true, false },
+	{   61, "140807", "CEM60EC", V2_0, true, true, true, false, false },
+
 	// fallback -> 1.0
-	{   45, NULL, "iEQ45Pro", V1_0, false, true, false },
-	{   46, NULL, "iEQ45ProAA", V1_0, false, true, false },
-	{   60, NULL, "CEM60", V1_0, false, true, false },
-	{   61, NULL, "CEM60EC", V1_0, true, true, false },
-	
+	{   45, NULL, "iEQ45Pro", V1_0, false, true, false, true, false },
+	{   46, NULL, "iEQ45ProAA", V1_0, false, true, false, false, true },
+	{   60, NULL, "CEM60", V1_0, false, true, false, true, false },
+	{   61, NULL, "CEM60EC", V1_0, true, true, false, false, false },
+
 	// firmware independent
-	{   26, NULL, "CEM26", V3_0, true, true, false  },
-	{   27, NULL, "CEM26EC", V3_0, true, true, false  },
-	{ 8407, NULL, "iEQ45/iEQ30", HC_8407, false, true, false },
-	{ 8497, NULL, "iEQ45 AA", HC_8407, false, true, false },
-	{ 8408, NULL, "ZEQ25", HC_8407, false, true, false },
-	{ 8498, NULL, "SmartEQ", HC_8407, false, true, false },
-	{   70, NULL, "CEM70", V3_0, false, true, true  },
-	{   71, NULL, "CEM70EC", V3_0, true, true, true  },
-	{  120, NULL, "CEM120", V3_0, false, true, true },
-	{  121, NULL, "CEM120EC", V3_0, true, true, true },
-	{  122, NULL, "CEM120EC2", V3_0, false, true, true },
-	{ 9035, NULL, "AZMountProSM", V3_0, false, false, false },
-	{   28, NULL, "GEM28", V3_0, false, true, false },
-	{   29, NULL, "GEM28EC", V3_0, true, true, false },
-	{ 5045, NULL, "iEQ45ProAA", V3_0, false, true, false },
-	{   43, NULL, "GEM45", V3_0, false, true, true },
-	{   44, NULL, "GEM45EC", V3_0, true, true, true },
-	{   12, NULL, "HEM26", V3_0, false, true, false },
-	{   15, NULL, "HEM15", V3_0, false, true, false },
-	{   35, NULL, "HAZ31", V3_0, false, true, false },
-	{ 8035, NULL, "HAZ31SM", V3_0, false, true, false },
-	{   52, NULL, "HAZ46", V3_0, false, true, false },
-	{ 8052, NULL, "HAZ46SM", V3_0, false, true, false },
-	{   33, NULL, "HAE29", V3_0, false, true, false },
-	{   34, NULL, "HAE29AA", V3_0, false, true, false },
-	{   38, NULL, "HAE29C", V3_0, false, true, false },
-	{ 8033, NULL, "HAE29SM", V3_0, false, true, false },
-	{ 8034, NULL, "HAE29AASM", V3_0, false, true, false },
-	{   50, NULL, "HAE43", V3_0, false, true, false },
-	{   51, NULL, "HAE43AA", V3_0, false, true, false },
-	{ 8050, NULL, "HAE43SM", V3_0, false, true, false },
-	{ 8051, NULL, "HAE43AASM", V3_0, false, true, false },
-	{    0, NULL, "", V3_0, false, false, false },
+	{ 8407, NULL, "iEQ45/iEQ30", HC_8407, false, true, false, false, false },
+	{ 8497, NULL, "iEQ45 AA", HC_8407, false, true, false, false, true },
+	{ 8408, NULL, "ZEQ25", HC_8407, false, true, false, false, false },
+	{ 8498, NULL, "SmartEQ", HC_8407, false, true, false, false, false },
+	{ 9035, NULL, "AZMountProSM", V3_0, false, false, false, false, true },
+	{ 5045, NULL, "iEQ45ProAA", V3_0, false, true, false, false, true },
+	{ 8035, NULL, "HAZ31SM", V3_0, false, true, false, false, true },
+	{ 8052, NULL, "HAZ46SM", V3_0, false, true, false, false, true },
+	{ 8033, NULL, "HAE29AASM", V3_0, false, true, false, false, true },
+	{ 8034, NULL, "HAE29ECAASM", V3_0, false, true, false, false, true },
+	{ 8050, NULL, "HAE43AASM", V3_0, false, true, false, false, true },
+	{ 8051, NULL, "HAE43ECAASM", V3_0, false, true, false, false, true },
+	{    0, NULL, "", V3_0, false, false, false, false, false },
 };
 
 //- define
@@ -149,14 +196,14 @@ static mount_type PRODUCTS[] = {
 #define MOUNT_MERIDIAN_STOP_ITEM              (MOUNT_MERIDIAN_HANDLING_PROPERTY->items + 0)
 #define MOUNT_MERIDIAN_FLIP_ITEM              (MOUNT_MERIDIAN_HANDLING_PROPERTY->items + 1)
 
-#define MOUNT_MERIDIAN_HANDLING_PROPERTY_NAME "MOUNT_MERIDIAN_HANDLING"
+#define MOUNT_MERIDIAN_HANDLING_PROPERTY_NAME "X_MOUNT_MERIDIAN_HANDLING"
 #define MOUNT_MERIDIAN_STOP_ITEM_NAME         "STOP"
 #define MOUNT_MERIDIAN_FLIP_ITEM_NAME         "FLIP"
 
 #define MOUNT_MERIDIAN_LIMIT_PROPERTY      (PRIVATE_DATA->mount_meridian_limit_property)
 #define MOUNT_MERIDIAN_LIMIT_ITEM          (MOUNT_MERIDIAN_LIMIT_PROPERTY->items + 0)
 
-#define MOUNT_MERIDIAN_LIMIT_PROPERTY_NAME "MOUNT_MERIDIAN_LIMIT"
+#define MOUNT_MERIDIAN_LIMIT_PROPERTY_NAME "X_MOUNT_MERIDIAN_LIMIT"
 #define MOUNT_MERIDIAN_LIMIT_ITEM_NAME     "LIMIT"
 
 #define MOUNT_PROTOCOL_PROPERTY        (PRIVATE_DATA->mount_protocol_property)
@@ -168,7 +215,7 @@ static mount_type PRODUCTS[] = {
 #define PROTOCOL_0205_ITEM             (MOUNT_PROTOCOL_PROPERTY->items + 5)
 #define PROTOCOL_0300_ITEM             (MOUNT_PROTOCOL_PROPERTY->items + 6)
 
-#define MOUNT_PROTOCOL_PROPERTY_NAME   "PROTOCOL_VERSION"
+#define MOUNT_PROTOCOL_PROPERTY_NAME   "X_PROTOCOL_VERSION"
 #define PROTOCOL_AUTO_ITEM_NAME        "AUTO"
 #define PROTOCOL_8406_ITEM_NAME        "8406"
 #define PROTOCOL_8407_ITEM_NAME        "8407"
@@ -196,10 +243,19 @@ typedef struct {
 	bool has_encoders;
 	bool can_park;
 	bool can_search_home;
+	bool has_pec;
+	bool altaz;
+	bool z_pulses;
 	char response[128];
 	long time_difference;
 	int utc_offset;
 	bool slewing, tracking, parked, homed;
+	bool goto_issued, coordinates_failed;
+	bool goto_target_valid, goto_settling, stopping;
+	double goto_target_ra, goto_target_dec;
+	bool park_moving, home_moving;
+	double park_deadline, home_deadline;
+	indigo_device *mount_device, *guider_device;
 	//- data
 } ioptron_private_data;
 
@@ -207,7 +263,14 @@ typedef struct {
 
 //+ code
 
+static void mount_equatorial_coordinates_handler(indigo_device *device);
+static void mount_home_handler(indigo_device *device);
+static void mount_motion_dec_handler(indigo_device *device);
+static void mount_motion_ra_handler(indigo_device *device);
+static void mount_park_handler(indigo_device *device);
+
 static bool ioptron_validate_handle(indigo_device *device);
+static bool ioptron_digits(const char *text, int count);
 
 static bool ioptron_no_reply_command(indigo_device *device, char *command, ...) {
 	if (!ioptron_validate_handle(device)) {
@@ -239,17 +302,18 @@ static bool ioptron_simple_reply_command(indigo_device *device, char *command, .
 	}
 	if (result >= 0) {
 		if (!strcmp(command, ":MountInfo#")) {
-			result = indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, 4, "", "", INDIGO_DELAY(1));
+			// A short or foreign reply must not wait for the port's VTIME between bytes.
+			result = indigo_uni_read_section2(PRIVATE_DATA->handle, PRIVATE_DATA->response, 4, "", "", INDIGO_DELAY(1), INDIGO_DELAY(0.1));
 		} else if (!strcmp(command, ":CM#")) {
 			result = indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, 1, "", "", INDIGO_DELAY(10));
 		} else {
 			result = indigo_uni_read_section(PRIVATE_DATA->handle, PRIVATE_DATA->response, 1, "", "", INDIGO_DELAY(1));
 		}
 	}
-	if (result >= 0) {
+	if (result > 0) {
 		indigo_usleep(50000);
 	}
-	return result >= 0;
+	return result > 0;
 }
 
 static bool ioptron_command(indigo_device *device, char *command, ...) {
@@ -265,9 +329,9 @@ static bool ioptron_command(indigo_device *device, char *command, ...) {
 	}
 	if (result >= 0) {
 		if (!strcmp(command, ":V#")) {
-			result = indigo_uni_read_section2(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response), "#", "#", INDIGO_DELAY(0.1), INDIGO_DELAY(0.1));
+			result = indigo_uni_read_section2(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response) - 1, "#", "#", INDIGO_DELAY(0.1), INDIGO_DELAY(0.1));
 		} else {
-			result = indigo_uni_read_section2(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response), "#", "#", INDIGO_DELAY(1), INDIGO_DELAY(0.1));
+			result = indigo_uni_read_section2(PRIVATE_DATA->handle, PRIVATE_DATA->response, sizeof(PRIVATE_DATA->response) - 1, "#", "#", INDIGO_DELAY(1), INDIGO_DELAY(0.1));
 		}
 	}
 	if (result > 0) {
@@ -318,7 +382,7 @@ static bool ioptron_validate_handle(indigo_device *device) {
 	}
 	if (!indigo_uni_is_valid(PRIVATE_DATA->handle)) {
 		ioptron_close(device);
-		indigo_execute_handler(device->master_device != NULL ? device->master_device : device, indigo_disconnect_slave_devices);
+		indigo_execute_handler(device->master_device, indigo_disconnect_slave_devices);
 		return false;
 	}
 	return true;
@@ -331,6 +395,8 @@ static bool ioptron_detect_mount(indigo_device *device) {
 	PRIVATE_DATA->product = 0;
 	PRIVATE_DATA->has_encoders = false;
 	PRIVATE_DATA->can_park = true;
+	PRIVATE_DATA->has_pec = true;
+	PRIVATE_DATA->altaz = false;
 	indigo_set_text_item_value(INFO_DEVICE_MODEL_ITEM, "N/A");
 	indigo_set_text_item_value(INFO_DEVICE_FW_REVISION_ITEM, "N/A");
 	if (PROTOCOL_8406_ITEM->sw.value) {
@@ -375,6 +441,8 @@ static bool ioptron_detect_mount(indigo_device *device) {
 						PRIVATE_DATA->has_encoders = type->has_encoders;
 						PRIVATE_DATA->can_park = type->can_park;
 						PRIVATE_DATA->can_search_home = type->can_search_home;
+						PRIVATE_DATA->has_pec = type->has_pec;
+						PRIVATE_DATA->altaz = type->altaz;
 						break;
 					}
 				}
@@ -391,10 +459,10 @@ static bool ioptron_detect_mount(indigo_device *device) {
 		}
 	}
 	if (PRIVATE_DATA->protocol == UNKNOWN) {
-		if (strncmp("140807", INFO_DEVICE_FW_REVISION_ITEM->text.value, 6) >= 0) {
+		if (strncmp("140807", INFO_DEVICE_FW_REVISION_ITEM->text.value, 6) > 0) {
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Unknown mount model (%04u %s), protocol 1.0 assumed", PRIVATE_DATA->product, INFO_DEVICE_FW_REVISION_ITEM->text.value);
 			PRIVATE_DATA->protocol = V1_0;
-		} else if (strncmp("161101", INFO_DEVICE_FW_REVISION_ITEM->text.value, 6) >= 0) {
+		} else if (strncmp("161101", INFO_DEVICE_FW_REVISION_ITEM->text.value, 6) > 0) {
 			INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Unknown mount model (%04u %s), protocol 2.0 assumed", PRIVATE_DATA->product, INFO_DEVICE_FW_REVISION_ITEM->text.value);
 			PRIVATE_DATA->protocol = V2_0;
 		} else if (ioptron_command(device, ":GLS#")) {
@@ -407,8 +475,10 @@ static bool ioptron_detect_mount(indigo_device *device) {
 			}
 		}
 	} else {
-		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Mount %s (%04d, %s, %s)", INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->product, PRIVATE_DATA->can_park ? "can park" : "can't park", PRIVATE_DATA->has_encoders ? "has encoders" : "no encoders");
+		INDIGO_DRIVER_DEBUG(DRIVER_NAME, "Mount %s (%04d, %s, %s, %s, %s)", INFO_DEVICE_MODEL_ITEM->text.value, PRIVATE_DATA->product, PRIVATE_DATA->can_park ? "can park" : "can't park", PRIVATE_DATA->has_encoders ? "has encoders" : "no encoders", PRIVATE_DATA->has_pec ? "has PEC" : "no PEC", PRIVATE_DATA->altaz ? "alt-azimuth" : "equatorial");
 	}
+	// Firmware 210101 and later takes timed guide pulses as :ZS/:ZQ/:ZE/:ZC, :Mn/:Ms/:Me/:Mw are deprecated there.
+	PRIVATE_DATA->z_pulses = PRIVATE_DATA->protocol == V3_0 && ioptron_digits(INFO_DEVICE_FW_REVISION_ITEM->text.value, 6) && strncmp(INFO_DEVICE_FW_REVISION_ITEM->text.value, "210101", 6) >= 0;
 	if (PRIVATE_DATA->protocol != UNKNOWN) {
 		indigo_update_property(device, INFO_PROPERTY, NULL);
 		indigo_set_text_item_value(MOUNT_INFO_VENDOR_ITEM, "iOptron");
@@ -421,6 +491,7 @@ static bool ioptron_detect_mount(indigo_device *device) {
 
 static bool ioptron_set_utc(indigo_device *device, time_t secs, int utc_offset) {
 	PRIVATE_DATA->time_difference = time(NULL) - secs;
+	PRIVATE_DATA->utc_offset = utc_offset;
 	time_t seconds = secs + utc_offset * 3600;
 	struct tm tm;
 	indigo_gmtime(&seconds, &tm);
@@ -475,7 +546,7 @@ static bool ioptron_set_utc(indigo_device *device, time_t secs, int utc_offset) 
 			}
 		}
 	} else if (PRIVATE_DATA->protocol == V3_0) {
-		if (!ioptron_simple_reply_command(device, ":SUT%013llu#", (uint64_t)((JDNOW - JD2000) * 8.64e+7)) || *PRIVATE_DATA->response != '1') {
+		if (!ioptron_simple_reply_command(device, ":SUT%013llu#", (uint64_t)(secs - 946728000LL) * 1000ULL) || *PRIVATE_DATA->response != '1') {
 			MOUNT_SET_HOST_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
 		} else {
 			if (!ioptron_simple_reply_command(device, ":SG%+04d#", utc_offset * 60) || *PRIVATE_DATA->response != '1') {
@@ -604,12 +675,13 @@ static bool ioptron_set_utc(indigo_device *device, time_t secs, int utc_offset) 
 //		}
 
 static bool ioptron_set_site(indigo_device *device, double latitude, double longitude, double elevation) {
-	if (longitude < 0) {
-		longitude += 360;
+	char sexagesimal[128];
+	if (longitude > 180) {
+		longitude -= 360;
 	}
 	if (PRIVATE_DATA->protocol == HC_8406 || PRIVATE_DATA->protocol == HC_8407 || PRIVATE_DATA->protocol == V1_0) {
-		if (ioptron_simple_reply_command(device, ":St %s#", indigo_dtos(latitude, "%+03d*%02d:%02.0f")) && *PRIVATE_DATA->response == '1') {
-			if (ioptron_simple_reply_command(device, ":Sg %s#", indigo_dtos(longitude, "%+04d*%02d:%02.0f")) && *PRIVATE_DATA->response == '1') {
+		if (ioptron_simple_reply_command(device, ":St %s#", indigo_dtos_r(latitude, "%+03d*%02d:%02.0f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1') {
+			if (ioptron_simple_reply_command(device, ":Sg %s#", indigo_dtos_r(longitude, "%+04d*%02d:%02.0f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1') {
 				return true;
 			}
 		}
@@ -629,7 +701,15 @@ static bool ioptron_set_site(indigo_device *device, double latitude, double long
 	return false;
 }
 
+// Rounds RA to the device resolution (units per hour) and wraps it into [0, 24), so a value just below the
+// wrap point is never sent as 24 hours or as 60 seconds.
+static double ioptron_device_ra(double ra, double units_per_hour) {
+	ra = fmod(round(ra * units_per_hour) / units_per_hour, 24.0);
+	return ra < 0 ? ra + 24.0 : ra;
+}
+
 static bool ioptron_park(indigo_device *device) {
+	char sexagesimal[128];
 	if (PRIVATE_DATA->protocol == HC_8406) {
 		if (ioptron_simple_reply_command(device, ":PK#") && *PRIVATE_DATA->response == '1') {
 			return true;
@@ -640,9 +720,9 @@ static bool ioptron_park(indigo_device *device) {
 		}
 	} else if (PRIVATE_DATA->protocol == V1_0) {
 		double ra = MOUNT_LST_TIME_ITEM->number.value;
-		if (ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos(ra, "%02d:%02d:%02.0f")) && *PRIVATE_DATA->response == '1') {
+		if (ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos_r(ioptron_device_ra(ra, 3600), "%02d:%02d:%02.0f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1') {
 			double dec = MOUNT_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value >= 0 ? 90.0 : -90.0;
-			if (ioptron_simple_reply_command(device, ":Sd %s#", indigo_dtos(dec, "%+03d*%02d:%02.0f")) && *PRIVATE_DATA->response == '1') {
+			if (ioptron_simple_reply_command(device, ":Sd %s#", indigo_dtos_r(dec, "%+03d*%02d:%02.0f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1') {
 				if (ioptron_simple_reply_command(device, ":MP1#") && *PRIVATE_DATA->response == '1') {
 					return true;
 				}
@@ -650,7 +730,7 @@ static bool ioptron_park(indigo_device *device) {
 		}
 	} else if (PRIVATE_DATA->protocol == V2_0) {
 		double ra = MOUNT_LST_TIME_ITEM->number.value;
-		if (ioptron_simple_reply_command(device, ":Sr%08.0f#", ra * 60 * 60 * 1000) && *PRIVATE_DATA->response == '1') {
+		if (ioptron_simple_reply_command(device, ":Sr%08.0f#", ioptron_device_ra(ra, 3600000) * 60 * 60 * 1000) && *PRIVATE_DATA->response == '1') {
 			double dec = MOUNT_GEOGRAPHIC_COORDINATES_LATITUDE_ITEM->number.value >= 0 ? 90.0 : -90.0;
 			if (ioptron_simple_reply_command(device, ":Sd%+09.0f#", dec * 60 * 60 * 100) && *PRIVATE_DATA->response == '1') {
 				if (ioptron_simple_reply_command(device, ":MP1#") && *PRIVATE_DATA->response == '1') {
@@ -723,35 +803,76 @@ static bool ioptron_search_home(indigo_device *device) {
 	return false;
 }
 
+static bool ioptron_is_digit(char c) {
+	return c >= '0' && c <= '9';
+}
+
+static bool ioptron_digits(const char *text, int count) {
+	for (int i = 0; i < count; i++) {
+		if (!ioptron_is_digit(text[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool ioptron_signed_digits(const char *text, int count) {
+	return (*text == '+' || *text == '-') && ioptron_digits(text + 1, count);
+}
+
+// Parses "HH:MM:SS[.S]" (hours) or "sDD*MM:SS" (degrees) readback.
+static bool ioptron_parse_sexagesimal(const char *text, bool hours, double *value) {
+	int sign = 1;
+	if (!hours && (*text == '+' || *text == '-')) {
+		sign = *text++ == '-' ? -1 : 1;
+	}
+	if (!ioptron_digits(text, 2) || text[2] != (hours ? ':' : '*') || !ioptron_digits(text + 3, 2) || text[5] != ':' || !ioptron_digits(text + 6, 2)) {
+		return false;
+	}
+	double seconds = atoi(text + 6);
+	if (text[8] == '.' && ioptron_is_digit(text[9]) && text[10] == 0) {
+		seconds += (text[9] - '0') / 10.0;
+	} else if (text[8] != 0) {
+		return false;
+	}
+	int major = atoi(text);
+	int minutes = atoi(text + 3);
+	if (minutes > 59 || seconds >= 60 || major > (hours ? 23 : 90)) {
+		return false;
+	}
+	*value = sign * (major + minutes / 60.0 + seconds / 3600.0);
+	return true;
+}
+
 static bool ioptron_get_coordinates(indigo_device *device, double *ra, double *dec) {
 	if (PRIVATE_DATA->protocol == HC_8406 || PRIVATE_DATA->protocol == HC_8407) {
-		if (ioptron_command(device, ":GR#")) {
-			*ra = indigo_stod(PRIVATE_DATA->response);
-			if (ioptron_command(device, ":GD#")) {
-				*dec = indigo_stod(PRIVATE_DATA->response);
-				if (PRIVATE_DATA->product == 8498) {
-					return true;
-				}
-				if (ioptron_command(device, ":pS#")) {
-					if (PRIVATE_DATA->response[0] == 'E' || PRIVATE_DATA->response[0] == '0') {
-						indigo_set_switch(MOUNT_SIDE_OF_PIER_PROPERTY, MOUNT_SIDE_OF_PIER_EAST_ITEM, true);
-					} else if (PRIVATE_DATA->response[0] == 'W' || PRIVATE_DATA->response[0] == '1') {
-						indigo_set_switch(MOUNT_SIDE_OF_PIER_PROPERTY, MOUNT_SIDE_OF_PIER_WEST_ITEM, true);
-					}
-					return true;
-				}
+		double ra_value, dec_value;
+		if (!ioptron_command(device, ":GR#") || !ioptron_parse_sexagesimal(PRIVATE_DATA->response, true, &ra_value)) {
+			return false;
+		}
+		if (!ioptron_command(device, ":GD#") || !ioptron_parse_sexagesimal(PRIVATE_DATA->response, false, &dec_value)) {
+			return false;
+		}
+		*ra = ra_value;
+		*dec = dec_value;
+		if (PRIVATE_DATA->product != 8498 && ioptron_command(device, ":pS#")) {
+			if (!strcmp(PRIVATE_DATA->response, "East") || !strcmp(PRIVATE_DATA->response, "0")) {
+				indigo_set_switch(MOUNT_SIDE_OF_PIER_PROPERTY, MOUNT_SIDE_OF_PIER_EAST_ITEM, true);
+			} else if (!strcmp(PRIVATE_DATA->response, "West") || !strcmp(PRIVATE_DATA->response, "1")) {
+				indigo_set_switch(MOUNT_SIDE_OF_PIER_PROPERTY, MOUNT_SIDE_OF_PIER_WEST_ITEM, true);
 			}
 		}
+		return true;
 	} else if (PRIVATE_DATA->protocol == V1_0) {
 		long ra_raw, dec_raw;
-		if (ioptron_command(device, ":GEC#") && sscanf(PRIVATE_DATA->response, "%10ld%9ld", &dec_raw, &ra_raw) == 2) {
+		if (ioptron_command(device, ":GEC#") && strlen(PRIVATE_DATA->response) == 19 && ioptron_signed_digits(PRIVATE_DATA->response, 9) && ioptron_digits(PRIVATE_DATA->response + 10, 9) && sscanf(PRIVATE_DATA->response, "%10ld%9ld", &dec_raw, &ra_raw) == 2) {
 			*ra = ra_raw / 100.0 / 60.0 / 60.0;
 			*dec = dec_raw / 100.0 / 60.0 / 60.0;
 			return true;
 		}
 	} else if (PRIVATE_DATA->protocol == V2_0 || PRIVATE_DATA->protocol == V2_5) {
 		long ra_raw, dec_raw;
-		if (ioptron_command(device, ":GEC#") && sscanf(PRIVATE_DATA->response, "%9ld%8ld", &dec_raw, &ra_raw) == 2) {
+		if (ioptron_command(device, ":GEC#") && strlen(PRIVATE_DATA->response) == 17 && ioptron_signed_digits(PRIVATE_DATA->response, 8) && ioptron_digits(PRIVATE_DATA->response + 9, 8) && sscanf(PRIVATE_DATA->response, "%9ld%8ld", &dec_raw, &ra_raw) == 2) {
 			*ra = ra_raw / 1000.0 / 60.0 / 60.0;
 			*dec = dec_raw / 100.0 / 60.0 / 60.0;
 			return true;
@@ -759,10 +880,12 @@ static bool ioptron_get_coordinates(indigo_device *device, double *ra, double *d
 	} else if (PRIVATE_DATA->protocol == V3_0) {
 		long ra_raw, dec_raw;
 		char side_of_pier, pointing_state;
-		if (ioptron_command(device, ":GEP#") && sscanf(PRIVATE_DATA->response, "%9ld%9ld%c%c", &dec_raw, &ra_raw, &side_of_pier, &pointing_state) == 4) {
+		if (ioptron_command(device, ":GEP#") && strlen(PRIVATE_DATA->response) == 20 && ioptron_signed_digits(PRIVATE_DATA->response, 8) && ioptron_digits(PRIVATE_DATA->response + 9, 11) && sscanf(PRIVATE_DATA->response, "%9ld%9ld%c%c", &dec_raw, &ra_raw, &side_of_pier, &pointing_state) == 4) {
 			*ra = ra_raw / 100.0 / 60.0 / 60.0 / 15;
 			*dec = dec_raw / 100.0 / 60.0 / 60.0;
-			if (side_of_pier == '0') {
+			if (PRIVATE_DATA->altaz) {
+				// Side of pier is meaningless for an alt-azimuth mount.
+			} else if (side_of_pier == '0') {
 				indigo_set_switch(MOUNT_SIDE_OF_PIER_PROPERTY, MOUNT_SIDE_OF_PIER_EAST_ITEM, true);
 			} else if (side_of_pier == '1') {
 				indigo_set_switch(MOUNT_SIDE_OF_PIER_PROPERTY, MOUNT_SIDE_OF_PIER_WEST_ITEM, true);
@@ -784,13 +907,14 @@ static bool ioptron_set_tracking_rate(indigo_device *device, char tracking_rate,
 		result = ioptron_simple_reply_command(device, ":RT%d#", tracking_rate) && *PRIVATE_DATA->response == '1';
 		if (result) {
 			PRIVATE_DATA->last_tracking_rate = tracking_rate;
-			if (tracking_rate == 4 && PRIVATE_DATA->last_custom_tracking_rate != custom_tracking_rate) {
+			if (tracking_rate == 4 && custom_tracking_rate > 0 && PRIVATE_DATA->last_custom_tracking_rate != custom_tracking_rate) {
+				// 1.4/1.0/2.0 take an offset from sidereal in [-0.0100, +0.0100], 2.5/3.0 a multiplier
 				if (PRIVATE_DATA->protocol == HC_8407 || PRIVATE_DATA->protocol == V1_0) {
-					result = ioptron_simple_reply_command(device, ":RR %+8.4f#", custom_tracking_rate) && *PRIVATE_DATA->response == '1';
+					result = fabs(custom_tracking_rate - 1) <= 0.01 && ioptron_simple_reply_command(device, ":RR %+08.4f#", custom_tracking_rate - 1) && *PRIVATE_DATA->response == '1';
 				} else if (PRIVATE_DATA->protocol == V2_0) {
-					result = ioptron_simple_reply_command(device, ":RR%+8.4f#", custom_tracking_rate) && *PRIVATE_DATA->response == '1';
+					result = fabs(custom_tracking_rate - 1) <= 0.01 && ioptron_simple_reply_command(device, ":RR%+08.4f#", custom_tracking_rate - 1) && *PRIVATE_DATA->response == '1';
 				} else if (PRIVATE_DATA->protocol >= V2_5) {
-					result = ioptron_simple_reply_command(device, ":RR%05d#", (int)(custom_tracking_rate * 1e4)) && *PRIVATE_DATA->response == '1';
+					result = ioptron_simple_reply_command(device, ":RR%05ld#", lround(custom_tracking_rate * 1e4)) && *PRIVATE_DATA->response == '1';
 				}
 				if (result) {
 					PRIVATE_DATA->last_custom_tracking_rate = custom_tracking_rate;
@@ -803,51 +927,67 @@ static bool ioptron_set_tracking_rate(indigo_device *device, char tracking_rate,
 }
 
 static bool ioptron_slew(indigo_device *device, double ra, double dec) {
+	char sexagesimal[128];
 	bool result = false;
 	if (PRIVATE_DATA->protocol == HC_8406) {
-		result = ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos(ra, "%02d:%02d:%04.1f")) && *PRIVATE_DATA->response == '1';
+		result = ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos_r(ioptron_device_ra(ra, 36000), "%02d:%02d:%04.1f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1';
 	} else if (PRIVATE_DATA->protocol == HC_8407 || PRIVATE_DATA->protocol == UNKNOWN || PRIVATE_DATA->protocol == V1_0) {
-		result = ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos(ra, "%02d:%02d:%02.0f")) && *PRIVATE_DATA->response == '1';
+		result = ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos_r(ioptron_device_ra(ra, 3600), "%02d:%02d:%02.0f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1';
 	} else if (PRIVATE_DATA->protocol == V2_0 || PRIVATE_DATA->protocol == V2_5) {
-		result = ioptron_simple_reply_command(device, ":Sr%08.0f#", ra * 60 * 60 * 1000) && *PRIVATE_DATA->response == '1';
+		result = ioptron_simple_reply_command(device, ":Sr%08.0f#", ioptron_device_ra(ra, 3600000) * 60 * 60 * 1000) && *PRIVATE_DATA->response == '1';
 	} else if (PRIVATE_DATA->protocol == V3_0) {
-		result = ioptron_simple_reply_command(device, ":SRA%09.0f#", ra * 15 * 60 * 60 * 100) && *PRIVATE_DATA->response == '1';
+		result = ioptron_simple_reply_command(device, ":SRA%09.0f#", ioptron_device_ra(ra, 5400000) * 15 * 60 * 60 * 100) && *PRIVATE_DATA->response == '1';
 	}
 	if (result) {
 		if (PRIVATE_DATA->protocol == HC_8406 || PRIVATE_DATA->protocol == HC_8407 || PRIVATE_DATA->protocol == UNKNOWN || PRIVATE_DATA->protocol == V1_0) {
-			result= ioptron_simple_reply_command(device, ":Sd %s#", indigo_dtos(dec, "%+03d*%02d:%02.0f")) && *PRIVATE_DATA->response == '1';
+			result= ioptron_simple_reply_command(device, ":Sd %s#", indigo_dtos_r(dec, "%+03d*%02d:%02.0f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1';
 		} else if (PRIVATE_DATA->protocol >= V2_0) {
 			result = ioptron_simple_reply_command(device, ":Sd%+09.0f#", dec * 60 * 60 * 100) && *PRIVATE_DATA->response == '1';
 		}
 	}
 	if (result) {
+		bool replied = false;
 		if (PRIVATE_DATA->protocol == HC_8406) {
-			result = ioptron_simple_reply_command(device, ":MS#") && *PRIVATE_DATA->response == '0';
+			replied = ioptron_simple_reply_command(device, ":MS#");
+			result = replied && *PRIVATE_DATA->response == '0';
 		} else if (PRIVATE_DATA->protocol == HC_8407 || PRIVATE_DATA->protocol == V1_0 || PRIVATE_DATA->protocol == V2_0 || PRIVATE_DATA->protocol == V2_5) {
-			result = ioptron_simple_reply_command(device, ":MS#") && *PRIVATE_DATA->response == '1';
+			replied = ioptron_simple_reply_command(device, ":MS#");
+			result = replied && *PRIVATE_DATA->response == '1';
 		} else if (PRIVATE_DATA->protocol == V3_0) {
-			result = ioptron_simple_reply_command(device, ":MS1#") && *PRIVATE_DATA->response == '1';
+			replied = ioptron_simple_reply_command(device, ":MS1#");
+			result = replied && *PRIVATE_DATA->response == '1';
+		}
+		if (replied && !result) {
+			// HC8406 answers 1 (below the horizon) or 2 (above the upper limit) with a text, the later protocols 0.
+			if (PRIVATE_DATA->protocol == HC_8406 && *PRIVATE_DATA->response == '1') {
+				indigo_send_message(device, ALERT_PROPERTY, "Slew refused by the mount, the target is below the horizon");
+			} else if (PRIVATE_DATA->protocol == HC_8406 && *PRIVATE_DATA->response == '2') {
+				indigo_send_message(device, ALERT_PROPERTY, "Slew refused by the mount, the target is above the upper limit");
+			} else {
+				indigo_send_message(device, ALERT_PROPERTY, "Slew refused by the mount, the target is below the altitude limit or beyond the mechanical limits");
+			}
 		}
 	}
 	return result;
 }
 
 static bool ioptron_sync(indigo_device *device, double ra, double dec) {
+	char sexagesimal[128];
 	bool result = false;
 	if (PRIVATE_DATA->protocol == HC_8406) {
-		result = ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos(ra, "%02d:%02d:%04.1f")) && *PRIVATE_DATA->response == '1';
+		result = ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos_r(ioptron_device_ra(ra, 36000), "%02d:%02d:%04.1f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1';
 	} else if (PRIVATE_DATA->protocol == HC_8407 || PRIVATE_DATA->protocol == V1_0) {
-		result = ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos(ra, "%02d:%02d:%02.0f")) && *PRIVATE_DATA->response == '1';
+		result = ioptron_simple_reply_command(device, ":Sr %s#", indigo_dtos_r(ioptron_device_ra(ra, 3600), "%02d:%02d:%02.0f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1';
 	} else if (PRIVATE_DATA->protocol == V2_0 || PRIVATE_DATA->protocol == V2_5) {
-		result = ioptron_simple_reply_command(device, ":Sr%08.0f#", ra * 60 * 60 * 1000) && *PRIVATE_DATA->response == '1';
+		result = ioptron_simple_reply_command(device, ":Sr%08.0f#", ioptron_device_ra(ra, 3600000) * 60 * 60 * 1000) && *PRIVATE_DATA->response == '1';
 	} else if (PRIVATE_DATA->protocol == V3_0) {
-		result = ioptron_simple_reply_command(device, ":SRA%09.0f#", ra * 15 * 60 * 60 * 100) && *PRIVATE_DATA->response == '1';
+		result = ioptron_simple_reply_command(device, ":SRA%09.0f#", ioptron_device_ra(ra, 5400000) * 15 * 60 * 60 * 100) && *PRIVATE_DATA->response == '1';
 	}
 	if (result) {
 		if (PRIVATE_DATA->protocol == HC_8406 || PRIVATE_DATA->protocol == HC_8407 || PRIVATE_DATA->protocol == UNKNOWN || PRIVATE_DATA->protocol == V1_0) {
-			result = ioptron_simple_reply_command(device, ":Sd %s#", indigo_dtos(dec, "%+03d*%02d:%02.0f")) && *PRIVATE_DATA->response == '1';
+			result = ioptron_simple_reply_command(device, ":Sd %s#", indigo_dtos_r(dec, "%+03d*%02d:%02.0f", sexagesimal, sizeof(sexagesimal))) && *PRIVATE_DATA->response == '1';
 		} else if (PRIVATE_DATA->protocol >= V2_0) {
-			result = ioptron_simple_reply_command(device, ":Sd%+08.0f#", dec * 60 * 60 * 100) && *PRIVATE_DATA->response == '1';
+			result = ioptron_simple_reply_command(device, ":Sd%+09.0f#", dec * 60 * 60 * 100) && *PRIVATE_DATA->response == '1';
 		}
 	}
 	if (result) {
@@ -863,6 +1003,20 @@ static bool ioptron_sync(indigo_device *device, double ra, double dec) {
 
 static bool ioptron_move(indigo_device *device, int slew_rate, char direction) {
 	bool result = true;
+	if (PRIVATE_DATA->protocol == HC_8406) {
+		// GOTONOVA 8406: guide speed (:RG#) or 16x/64x/512x (:RCn#), continuous :Mx#
+		if (PRIVATE_DATA->last_slew_rate != slew_rate) {
+			if (slew_rate <= 1) {
+				result = ioptron_no_reply_command(device, ":RG#");
+			} else {
+				result = ioptron_no_reply_command(device, ":RC%d#", slew_rate <= 3 ? 0 : slew_rate <= 5 ? 1 : 3);
+			}
+			if (result) {
+				PRIVATE_DATA->last_slew_rate = slew_rate;
+			}
+		}
+		return result && ioptron_no_reply_command(device, ":M%c#", direction);
+	}
 	if (PRIVATE_DATA->last_slew_rate != slew_rate) {
 		result = ioptron_simple_reply_command(device, ":SR%d#", slew_rate) && *PRIVATE_DATA->response == '1';
 		if (result) {
@@ -890,6 +1044,26 @@ static bool ioptron_stop(indigo_device *device) {
 	return false;
 }
 
+// Stops arrow motion of one axis only; the other axis keeps moving.
+static bool ioptron_stop_axis(indigo_device *device, bool ra_axis) {
+	switch (PRIVATE_DATA->protocol) {
+		case HC_8406:
+			return ioptron_no_reply_command(device, ra_axis ? ":Qe#" : ":Qn#");
+		case HC_8407: {
+			// 1.4 has only :q# for both axes, so restart the other axis afterwards.
+			char other = ra_axis ? PRIVATE_DATA->last_motion_dec : PRIVATE_DATA->last_motion_ra;
+			if (!ioptron_no_reply_command(device, ":q#")) {
+				return false;
+			}
+			return other == 0 || ioptron_no_reply_command(device, ":m%c#", other);
+		}
+		case V1_0:
+			return ioptron_no_reply_command(device, ra_axis ? ":qR#" : ":qD#");
+		default:
+			return ioptron_simple_reply_command(device, ra_axis ? ":qR#" : ":qD#") && *PRIVATE_DATA->response == '1';
+	}
+}
+
 static bool ioptron_set_tracking(indigo_device *device, bool on) {
 	return ioptron_simple_reply_command(device, ":ST%c#", on ? '1' : '0') && *PRIVATE_DATA->response == '1';
 }
@@ -915,7 +1089,7 @@ static bool ioptron_set_guide_rate(indigo_device *device, int ra, int dec) {
 
 static bool ioptron_set_pec(indigo_device *device, bool on) {
 	bool result = false;
-	if (PRIVATE_DATA->protocol == V3_0 && !PRIVATE_DATA->has_encoders) {
+	if (PRIVATE_DATA->protocol == V3_0 && !PRIVATE_DATA->has_encoders && PRIVATE_DATA->has_pec) {
 		result = ioptron_simple_reply_command(device, ":SPP%c#",on ? '1' : '0') && *PRIVATE_DATA->response == '1';
 	}
 	return result;
@@ -923,7 +1097,7 @@ static bool ioptron_set_pec(indigo_device *device, bool on) {
 
 static bool ioptron_set_pec_training(indigo_device *device, bool on) {
 	bool result = false;
-	if (PRIVATE_DATA->protocol == V3_0 && !PRIVATE_DATA->has_encoders) {
+	if (PRIVATE_DATA->protocol == V3_0 && !PRIVATE_DATA->has_encoders && PRIVATE_DATA->has_pec) {
 		result = ioptron_simple_reply_command(device, ":SPR%c#",on ? '1' : '0') && *PRIVATE_DATA->response == '1';
 	}
 	return result;
@@ -938,122 +1112,186 @@ static bool ioptron_set_meridian_handling(indigo_device *device, bool flip, int 
 }
 
 static bool ioptron_guide_dec(indigo_device *device, int north, int south) {
+	if (PRIVATE_DATA->protocol == HC_8406) {
+		// 8406 has no timed pulses: continuous motion at guide speed, stopped by the finalizer.
+		PRIVATE_DATA->last_slew_rate = -1;
+		return ioptron_no_reply_command(device, ":RG#") && ioptron_no_reply_command(device, north > 0 ? ":Mn#" : ":Ms#");
+	}
+	if (PRIVATE_DATA->protocol == V3_0 && PRIVATE_DATA->altaz) {
+		return false;
+	}
 	if (north > 0) {
-		return ioptron_no_reply_command(device, ":Mn%05d#", north);
+		return ioptron_no_reply_command(device, PRIVATE_DATA->z_pulses ? ":ZE%05d#" : ":Mn%05d#", north);
 	} else if (south > 0) {
-		return ioptron_no_reply_command(device, ":Ms%05d#", south);
+		return ioptron_no_reply_command(device, PRIVATE_DATA->z_pulses ? ":ZC%05d#" : ":Ms%05d#", south);
 	}
 	return false;
 }
 
 static bool ioptron_guide_ra(indigo_device *device, int west, int east) {
+	if (PRIVATE_DATA->protocol == HC_8406) {
+		PRIVATE_DATA->last_slew_rate = -1;
+		return ioptron_no_reply_command(device, ":RG#") && ioptron_no_reply_command(device, west > 0 ? ":Mw#" : ":Me#");
+	}
+	if (PRIVATE_DATA->protocol == V3_0 && PRIVATE_DATA->altaz) {
+		return false;
+	}
 	if (west > 0) {
-		return ioptron_no_reply_command(device, ":Mw%03d#", west);
+		return ioptron_no_reply_command(device, PRIVATE_DATA->z_pulses ? ":ZQ%05d#" : ":Mw%05d#", west);
 	} else if (east > 0) {
-		return ioptron_no_reply_command(device, ":Me%03d#", east);
+		return ioptron_no_reply_command(device, PRIVATE_DATA->z_pulses ? ":ZS%05d#" : ":Me%05d#", east);
 	}
 	return false;
 }
 
-static bool ioptron_get_state(indigo_device *device) {
-	PRIVATE_DATA->slewing = PRIVATE_DATA->tracking = PRIVATE_DATA->parked = PRIVATE_DATA->homed = false;
-	if (PRIVATE_DATA->protocol == HC_8406) {
-		if (ioptron_simple_reply_command(device, ":SE?#") && *PRIVATE_DATA->response == '1') {
-			PRIVATE_DATA->slewing = true;
-			return true;
-		}
-	} else if (PRIVATE_DATA->protocol == HC_8407) {
-		if (PRIVATE_DATA->product != 8498) {
-			if (ioptron_simple_reply_command(device, ":AP#") && *PRIVATE_DATA->response == '1') {
-				PRIVATE_DATA->parked = true;
-			}
-		}
-		if (ioptron_simple_reply_command(device, ":AH#") && *PRIVATE_DATA->response == '1') {
-			PRIVATE_DATA->homed = true;
-		}
-		if (ioptron_simple_reply_command(device, ":AT#") && *PRIVATE_DATA->response == '1') {
-			PRIVATE_DATA->tracking = true;
-		}
-		if (ioptron_simple_reply_command(device, ":SE?#") && *PRIVATE_DATA->response == '1') {
-			PRIVATE_DATA->slewing = true;
-		}
+static bool ioptron_binary_reply(indigo_device *device, const char *command, bool *value) {
+	if (ioptron_simple_reply_command(device, (char *)command) && (*PRIVATE_DATA->response == '0' || *PRIVATE_DATA->response == '1')) {
+		*value = *PRIVATE_DATA->response == '1';
 		return true;
-	} else if (PRIVATE_DATA->protocol == V1_0 || PRIVATE_DATA->protocol == V2_0) {
-		if (ioptron_command(device, ":GAS#")) {
-			switch (PRIVATE_DATA->response[1]) {
-				case '0': // stopped (not at zero position)
-					break;
-				case '1': // tracking with PEC disabled
-				case '3': // guiding
-				case '4': // meridian flipping
-				case '5': // tracking with PEC enabled (only for non-encoder edition)
-					PRIVATE_DATA->tracking = true;
-					break;
-				case '2': // slewing
-					PRIVATE_DATA->slewing = true;
-					break;
-				case '6': // parked
-					PRIVATE_DATA->parked = true;
-					break;
-				case '7': // stopped at zero position
-					PRIVATE_DATA->homed = true;
-					break;
-			}
-			return true;
-		}
-	} else if (PRIVATE_DATA->protocol == V2_5) {
-		if (ioptron_command(device, ":GLS#")) {
-			switch (PRIVATE_DATA->response[14]) {
-				case '0': // stopped (not at zero position)
-					break;
-				case '1': // tracking with PEC disabled
-				case '3': // guiding
-				case '4': // meridian flipping
-				case '5': // tracking with PEC enabled (only for non-encoder edition)
-					PRIVATE_DATA->tracking = true;
-					break;
-				case '2': // slewing
-					PRIVATE_DATA->slewing = true;
-					break;
-				case '6': // parked
-					PRIVATE_DATA->parked = true;
-					break;
-				case '7': // stopped at zero position
-					PRIVATE_DATA->homed = true;
-					break;
-			}
-			return true;
-		}
-	} else if (PRIVATE_DATA->protocol == V3_0) {
-		if (ioptron_command(device, ":GLS#")) {
-			switch (PRIVATE_DATA->response[18]) {
-				case '0': // stopped (not at zero position)
-					break;
-				case '1': // tracking with PEC disabled
-				case '3': // guiding
-				case '4': // meridian flipping
-				case '5': // tracking with PEC enabled (only for non-encoder edition)
-					PRIVATE_DATA->tracking = true;
-					break;
-				case '2': // slewing
-					PRIVATE_DATA->slewing = true;
-					break;
-				case '6': // parked
-					PRIVATE_DATA->parked = true;
-					break;
-				case '7': // stopped at zero position
-					PRIVATE_DATA->homed = true;
-					break;
-			}
-			return true;
-		}
 	}
 	return false;
+}
+
+// Decodes the documented system status digit; unknown digits are rejected.
+static bool ioptron_decode_status(char status, bool *slewing, bool *tracking, bool *parked, bool *homed) {
+	switch (status) {
+		case '0': // stopped (not at zero position)
+			break;
+		case '1': // tracking with PEC disabled
+		case '3': // guiding
+		case '4': // meridian flipping
+		case '5': // tracking with PEC enabled (only for non-encoder edition)
+			*tracking = true;
+			break;
+		case '2': // slewing
+			*slewing = true;
+			break;
+		case '6': // parked
+			*parked = true;
+			break;
+		case '7': // stopped at zero position
+			*homed = true;
+			break;
+		default:
+			return false;
+	}
+	return true;
+}
+
+static bool ioptron_get_state(indigo_device *device) {
+	bool slewing = false, tracking = false, parked = false, homed = false;
+	bool result = false;
+	if (PRIVATE_DATA->protocol == HC_8406) {
+		result = ioptron_binary_reply(device, ":SE?#", &slewing);
+	} else if (PRIVATE_DATA->protocol == HC_8407) {
+		result = PRIVATE_DATA->product == 8498 || ioptron_binary_reply(device, ":AP#", &parked);
+		result = result && ioptron_binary_reply(device, ":AH#", &homed);
+		result = result && ioptron_binary_reply(device, ":AT#", &tracking);
+		result = result && ioptron_binary_reply(device, ":SE?#", &slewing);
+	} else if (PRIVATE_DATA->protocol == V1_0 || PRIVATE_DATA->protocol == V2_0) {
+		result = ioptron_command(device, ":GAS#") && strlen(PRIVATE_DATA->response) == 6 && ioptron_digits(PRIVATE_DATA->response, 6) && ioptron_decode_status(PRIVATE_DATA->response[1], &slewing, &tracking, &parked, &homed);
+	} else if (PRIVATE_DATA->protocol == V2_5) {
+		result = ioptron_command(device, ":GLS#") && strlen(PRIVATE_DATA->response) == 19 && ioptron_signed_digits(PRIVATE_DATA->response, 18) && ioptron_decode_status(PRIVATE_DATA->response[14], &slewing, &tracking, &parked, &homed);
+	} else if (PRIVATE_DATA->protocol == V3_0) {
+		result = ioptron_command(device, ":GLS#") && strlen(PRIVATE_DATA->response) == 23 && ioptron_signed_digits(PRIVATE_DATA->response, 22) && ioptron_decode_status(PRIVATE_DATA->response[18], &slewing, &tracking, &parked, &homed);
+	}
+	if (result) {
+		PRIVATE_DATA->slewing = slewing;
+		PRIVATE_DATA->tracking = tracking;
+		PRIVATE_DATA->parked = parked;
+		PRIVATE_DATA->homed = homed;
+	}
+	return result;
+}
+
+static bool ioptron_apply_track_rate(indigo_device *device, char code) {
+	switch (code) {
+		case '0':
+			indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SIDEREAL_ITEM, true);
+			return true;
+		case '1':
+			indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_LUNAR_ITEM, true);
+			return true;
+		case '2':
+			indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SOLAR_ITEM, true);
+			return true;
+		case '3':
+			indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_KING_ITEM, true);
+			return true;
+		case '4':
+			indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_CUSTOM_ITEM, true);
+			return true;
+	}
+	return false;
+}
+
+// Reads the tracking rate the mount uses into MOUNT_TRACK_RATE.
+static bool ioptron_read_track_rate(indigo_device *device) {
+	switch (PRIVATE_DATA->protocol) {
+		case HC_8407:
+			return ioptron_simple_reply_command(device, ":QT#") && strlen(PRIVATE_DATA->response) == 1 && ioptron_apply_track_rate(device, *PRIVATE_DATA->response);
+		case V1_0:
+		case V2_0:
+			return ioptron_command(device, ":GAS#") && strlen(PRIVATE_DATA->response) == 6 && ioptron_apply_track_rate(device, PRIVATE_DATA->response[2]);
+		case V2_5:
+			return ioptron_command(device, ":GLS#") && strlen(PRIVATE_DATA->response) == 19 && ioptron_apply_track_rate(device, PRIVATE_DATA->response[15]);
+		case V3_0:
+			return ioptron_command(device, ":GLS#") && strlen(PRIVATE_DATA->response) == 23 && ioptron_apply_track_rate(device, PRIVATE_DATA->response[19]);
+		default:
+			return false;
+	}
+}
+
+// Reads the meridian treatment the mount keeps (:GMT# "<flip><limit>") into MOUNT_MERIDIAN_HANDLING and MOUNT_MERIDIAN_LIMIT.
+static bool ioptron_read_meridian_handling(indigo_device *device) {
+	if (PRIVATE_DATA->protocol != V3_0 || PRIVATE_DATA->altaz || !ioptron_command(device, ":GMT#") || strlen(PRIVATE_DATA->response) != 3 || !ioptron_digits(PRIVATE_DATA->response, 3) || PRIVATE_DATA->response[0] > '1') {
+		return false;
+	}
+	int limit = atoi(PRIVATE_DATA->response + 1);
+	if (limit > MOUNT_MERIDIAN_LIMIT_ITEM->number.max) {
+		return false;
+	}
+	indigo_set_switch(MOUNT_MERIDIAN_HANDLING_PROPERTY, PRIVATE_DATA->response[0] == '1' ? MOUNT_MERIDIAN_FLIP_ITEM : MOUNT_MERIDIAN_STOP_ITEM, true);
+	MOUNT_MERIDIAN_LIMIT_ITEM->number.value = MOUNT_MERIDIAN_LIMIT_ITEM->number.target = limit;
+	return true;
+}
+
+static bool ioptron_get_guide_rate(indigo_device *device, int *ra, int *dec) {
+	if (!ioptron_command(device, ":AG#")) {
+		return false;
+	}
+	const char *reply = PRIVATE_DATA->response;
+	if (PRIVATE_DATA->protocol == HC_8407 || PRIVATE_DATA->protocol == V1_0) {
+		if (strlen(reply) != 4 || !ioptron_is_digit(reply[0]) || reply[1] != '.' || !ioptron_digits(reply + 2, 2)) {
+			return false;
+		}
+		*ra = *dec = (reply[0] - '0') * 100 + atoi(reply + 2);
+	} else if (PRIVATE_DATA->protocol == V2_0) {
+		if (strlen(reply) != 3 || !ioptron_digits(reply, 3)) {
+			return false;
+		}
+		*ra = *dec = atoi(reply);
+	} else if (PRIVATE_DATA->protocol == V2_5 || PRIVATE_DATA->protocol == V3_0) {
+		if (strlen(reply) != 4 || !ioptron_digits(reply, 4)) {
+			return false;
+		}
+		*dec = atoi(reply + 2);
+		*ra = (reply[0] - '0') * 10 + reply[1] - '0';
+	} else {
+		return false;
+	}
+	return true;
 }
 
 // ---------------------------------------------------------------------  generic init & state update
 
 static bool ioptron_init_mount(indigo_device *device) {
+	int guide_ra = 0, guide_dec = 0;
+	PRIVATE_DATA->last_slew_rate = -1;
+	PRIVATE_DATA->last_tracking_rate = -1;
+	PRIVATE_DATA->last_custom_tracking_rate = -1;
+	PRIVATE_DATA->goto_issued = false;
+	PRIVATE_DATA->coordinates_failed = false;
 	MOUNT_SET_HOST_TIME_PROPERTY->hidden = false;
 	MOUNT_SET_HOST_TIME_PROPERTY->state = INDIGO_OK_STATE;
 	MOUNT_UTC_TIME_PROPERTY->hidden = false;
@@ -1105,7 +1343,10 @@ static bool ioptron_init_mount(indigo_device *device) {
 			MOUNT_PARK_PROPERTY->hidden = false;
 			MOUNT_PARK_PROPERTY->count = 1;
 			MOUNT_SIDE_OF_PIER_PROPERTY->hidden = false;
+			MOUNT_SLEW_RATE_PROPERTY->hidden = false;
 		} else if (PRIVATE_DATA->protocol == HC_8407) {
+			MOUNT_GUIDE_RATE_PROPERTY->hidden = false;
+			MOUNT_GUIDE_RATE_PROPERTY->count = 1;
 			MOUNT_GUIDE_RATE_RA_ITEM->number.min = 10;
 			MOUNT_GUIDE_RATE_RA_ITEM->number.max = 100;
 			MOUNT_GUIDE_RATE_RA_ITEM->number.step = 1;
@@ -1116,29 +1357,11 @@ static bool ioptron_init_mount(indigo_device *device) {
 			MOUNT_TRACKING_PROPERTY->hidden = false;
 			MOUNT_TRACK_RATE_PROPERTY->hidden = false;
 			MOUNT_TRACK_RATE_PROPERTY->count = 5;
-			if (ioptron_simple_reply_command(device, ":QT#")) {
-				switch (*PRIVATE_DATA->response) {
-					case '0':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SIDEREAL_ITEM, true);
-						break;
-					case '1':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_LUNAR_ITEM, true);
-						break;
-					case '2':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SOLAR_ITEM, true);
-						break;
-					case '3':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_KING_ITEM, true);
-						break;
-					case '4':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_CUSTOM_ITEM, true);
-						break;
-				}
-			} else {
+			if (!ioptron_read_track_rate(device)) {
 				MOUNT_TRACK_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
-			if (ioptron_command(device, ":AG#")) {
-				MOUNT_GUIDE_RATE_RA_ITEM->number.value = atof(PRIVATE_DATA->response) * 100;
+			if (ioptron_get_guide_rate(device, &guide_ra, &guide_dec)) {
+				MOUNT_GUIDE_RATE_RA_ITEM->number.value = guide_ra;
 			} else {
 				MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -1151,30 +1374,12 @@ static bool ioptron_init_mount(indigo_device *device) {
 			MOUNT_TRACKING_PROPERTY->hidden = false;
 			MOUNT_TRACK_RATE_PROPERTY->hidden = false;
 			MOUNT_TRACK_RATE_PROPERTY->count = 5;
-			if (ioptron_command(device, ":GAS#")) {
-				switch (PRIVATE_DATA->response[2]) {
-					case '0':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SIDEREAL_ITEM, true);
-						break;
-					case '1':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_LUNAR_ITEM, true);
-						break;
-					case '2':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SOLAR_ITEM, true);
-						break;
-					case '3':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_KING_ITEM, true);
-						break;
-					case '4':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_CUSTOM_ITEM, true);
-						break;
-				}
-			} else {
+			if (!ioptron_read_track_rate(device)) {
 				MOUNT_TRACK_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
 			MOUNT_GUIDE_RATE_PROPERTY->hidden = false;
-			if (ioptron_command(device, ":AG#")) {
-				MOUNT_GUIDE_RATE_RA_ITEM->number.value = atof(PRIVATE_DATA->response) * 100;
+			if (ioptron_get_guide_rate(device, &guide_ra, &guide_dec)) {
+				MOUNT_GUIDE_RATE_RA_ITEM->number.value = guide_ra;
 			} else {
 				MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -1186,34 +1391,15 @@ static bool ioptron_init_mount(indigo_device *device) {
 			MOUNT_PARK_PROPERTY->hidden = !PRIVATE_DATA->can_park;
 			MOUNT_HOME_PROPERTY->hidden = false;
 			MOUNT_HOME_PROPERTY->count = PRIVATE_DATA->can_search_home ? 3 : 2;
-			MOUNT_PARK_SET_PROPERTY->hidden = false;
-			MOUNT_PARK_SET_PROPERTY->count = 1;
 			MOUNT_TRACKING_PROPERTY->hidden = false;
 			MOUNT_TRACK_RATE_PROPERTY->hidden = false;
-			if (ioptron_command(device, ":GAS#")) {
-				switch (PRIVATE_DATA->response[2]) {
-					case '0':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SIDEREAL_ITEM, true);
-						break;
-					case '1':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_LUNAR_ITEM, true);
-						break;
-					case '2':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SOLAR_ITEM, true);
-						break;
-					case '3':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_KING_ITEM, true);
-						break;
-					case '4':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_CUSTOM_ITEM, true);
-						break;
-				}
-			} else {
+			MOUNT_TRACK_RATE_PROPERTY->count = 5;
+			if (!ioptron_read_track_rate(device)) {
 				MOUNT_TRACK_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
 			MOUNT_GUIDE_RATE_PROPERTY->hidden = false;
-			if (ioptron_command(device, ":AG#")) {
-				MOUNT_GUIDE_RATE_RA_ITEM->number.value = atoi(PRIVATE_DATA->response);
+			if (ioptron_get_guide_rate(device, &guide_ra, &guide_dec)) {
+				MOUNT_GUIDE_RATE_RA_ITEM->number.value = guide_ra;
 			} else {
 				MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -1228,37 +1414,18 @@ static bool ioptron_init_mount(indigo_device *device) {
 			MOUNT_PARK_PROPERTY->hidden = !PRIVATE_DATA->can_park;
 			MOUNT_HOME_PROPERTY->hidden = false;
 			MOUNT_HOME_PROPERTY->count = PRIVATE_DATA->can_search_home ? 3 : 2;
-			MOUNT_PARK_SET_PROPERTY->hidden = false;
-			MOUNT_PARK_SET_PROPERTY->count = 1;
+			MOUNT_PARK_SET_PROPERTY->hidden = !PRIVATE_DATA->can_park;
 			MOUNT_TRACKING_PROPERTY->hidden = false;
 			MOUNT_TRACK_RATE_PROPERTY->hidden = false;
-			if (ioptron_command(device, ":GLS#")) {
-				switch (PRIVATE_DATA->response[15]) {
-					case '0':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SIDEREAL_ITEM, true);
-						break;
-					case '1':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_LUNAR_ITEM, true);
-						break;
-					case '2':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SOLAR_ITEM, true);
-						break;
-					case '3':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_KING_ITEM, true);
-						break;
-					case '4':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_CUSTOM_ITEM, true);
-						break;
-				}
-			} else {
+			MOUNT_TRACK_RATE_PROPERTY->count = 5;
+			if (!ioptron_read_track_rate(device)) {
 				MOUNT_TRACK_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
 			MOUNT_GUIDE_RATE_PROPERTY->hidden = false;
 			MOUNT_GUIDE_RATE_PROPERTY->count = 2;
-			if (ioptron_command(device, ":AG#")) {
-				MOUNT_GUIDE_RATE_DEC_ITEM->number.value = atoi(PRIVATE_DATA->response + 2);
-				PRIVATE_DATA->response[2] = 0;
-				MOUNT_GUIDE_RATE_RA_ITEM->number.value = atoi(PRIVATE_DATA->response);
+			if (ioptron_get_guide_rate(device, &guide_ra, &guide_dec)) {
+				MOUNT_GUIDE_RATE_RA_ITEM->number.value = guide_ra;
+				MOUNT_GUIDE_RATE_DEC_ITEM->number.value = guide_dec;
 			} else {
 				MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -1275,51 +1442,39 @@ static bool ioptron_init_mount(indigo_device *device) {
 			MOUNT_HOME_PROPERTY->hidden = false;
 			MOUNT_HOME_PROPERTY->count = PRIVATE_DATA->can_search_home ? 3 : 2;
 			MOUNT_TRACK_RATE_PROPERTY->hidden = false;
-			MOUNT_SIDE_OF_PIER_PROPERTY->hidden = false;
-			MOUNT_PEC_PROPERTY->hidden = PRIVATE_DATA->has_encoders;
-			MOUNT_PEC_TRAINING_PROPERTY->hidden = PRIVATE_DATA->has_encoders;
-			if (ioptron_command(device, ":GLS#")) {
-				switch (PRIVATE_DATA->response[19]) {
-					case '0':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SIDEREAL_ITEM, true);
-						break;
-					case '1':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_LUNAR_ITEM, true);
-						break;
-					case '2':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_SOLAR_ITEM, true);
-						break;
-					case '3':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_KING_ITEM, true);
-						break;
-					case '4':
-						indigo_set_switch(MOUNT_TRACK_RATE_PROPERTY, MOUNT_TRACK_RATE_CUSTOM_ITEM, true);
-						break;
-				}
-			} else {
+			MOUNT_TRACK_RATE_PROPERTY->count = 5;
+			// Alt-azimuth mounts have no side of pier, guide rate or meridian treatment, PEC exists only on worm-driven mounts without encoders.
+			MOUNT_SIDE_OF_PIER_PROPERTY->hidden = PRIVATE_DATA->altaz;
+			MOUNT_PEC_PROPERTY->hidden = PRIVATE_DATA->has_encoders || !PRIVATE_DATA->has_pec;
+			MOUNT_PEC_TRAINING_PROPERTY->hidden = PRIVATE_DATA->has_encoders || !PRIVATE_DATA->has_pec;
+			if (!ioptron_read_track_rate(device)) {
 				MOUNT_TRACK_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
-			MOUNT_GUIDE_RATE_PROPERTY->hidden = false;
-			MOUNT_GUIDE_RATE_PROPERTY->count = 2;
-			if (ioptron_command(device, ":AG#")) {
-				MOUNT_GUIDE_RATE_DEC_ITEM->number.value = atoi(PRIVATE_DATA->response + 2);
-				PRIVATE_DATA->response[2] = 0;
-				MOUNT_GUIDE_RATE_RA_ITEM->number.value = atoi(PRIVATE_DATA->response);
-			} else {
-				MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
+			if (!PRIVATE_DATA->altaz) {
+				MOUNT_GUIDE_RATE_PROPERTY->hidden = false;
+				MOUNT_GUIDE_RATE_PROPERTY->count = 2;
+				if (ioptron_get_guide_rate(device, &guide_ra, &guide_dec)) {
+					MOUNT_GUIDE_RATE_RA_ITEM->number.value = guide_ra;
+					MOUNT_GUIDE_RATE_DEC_ITEM->number.value = guide_dec;
+				} else {
+					MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
+				}
 			}
 			MOUNT_TRACKING_PROPERTY->hidden = false;
 			MOUNT_CUSTOM_TRACKING_RATE_PROPERTY->hidden = false;
 			MOUNT_CUSTOM_TRACKING_RATE_ITEM->number.min = 0.1;
 			MOUNT_CUSTOM_TRACKING_RATE_ITEM->number.max = 1.9;
-			if (ioptron_command(device, ":GTR#")) {
+			if (ioptron_command(device, ":GTR#") && strlen(PRIVATE_DATA->response) == 5 && ioptron_digits(PRIVATE_DATA->response, 5)) {
 				MOUNT_CUSTOM_TRACKING_RATE_ITEM->number.value = atoi(PRIVATE_DATA->response) / 10000.0;
 			} else {
 				MOUNT_CUSTOM_TRACKING_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
 			MOUNT_SLEW_RATE_PROPERTY->hidden = false;
-			MOUNT_MERIDIAN_HANDLING_PROPERTY->hidden = false;
-			MOUNT_MERIDIAN_LIMIT_PROPERTY->hidden = false;
+			MOUNT_MERIDIAN_HANDLING_PROPERTY->hidden = PRIVATE_DATA->altaz;
+			MOUNT_MERIDIAN_LIMIT_PROPERTY->hidden = PRIVATE_DATA->altaz;
+			if (!PRIVATE_DATA->altaz && !ioptron_read_meridian_handling(device)) {
+				MOUNT_MERIDIAN_HANDLING_PROPERTY->state = MOUNT_MERIDIAN_LIMIT_PROPERTY->state = INDIGO_ALERT_STATE;
+			}
 		}
 	} else {
 		return false;
@@ -1355,6 +1510,7 @@ static bool ioptron_init_mount(indigo_device *device) {
 }
 
 static bool ioptron_init_guider(indigo_device *device) {
+	int guide_ra = 0, guide_dec = 0;
 	GUIDER_RATE_PROPERTY->state = INDIGO_OK_STATE;
 	if (ioptron_detect_mount(device->master_device)) {
 		if (PRIVATE_DATA->protocol == HC_8406) {
@@ -1365,8 +1521,8 @@ static bool ioptron_init_guider(indigo_device *device) {
 			GUIDER_RATE_ITEM->number.step = 1;
 			GUIDER_RATE_PROPERTY->hidden = false;
 			GUIDER_RATE_PROPERTY->count = 1;
-			if (ioptron_command(device, ":AG#")) {
-				GUIDER_RATE_ITEM->number.value = atof(PRIVATE_DATA->response) * 100;
+			if (ioptron_get_guide_rate(device, &guide_ra, &guide_dec)) {
+				GUIDER_RATE_ITEM->number.value = guide_ra;
 			} else {
 				GUIDER_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -1376,8 +1532,8 @@ static bool ioptron_init_guider(indigo_device *device) {
 			GUIDER_RATE_ITEM->number.step = 1;
 			GUIDER_RATE_PROPERTY->hidden = false;
 			GUIDER_RATE_PROPERTY->count = 1;
-			if (ioptron_command(device, ":AG#")) {
-				GUIDER_RATE_ITEM->number.value = atof(PRIVATE_DATA->response) * 100;
+			if (ioptron_get_guide_rate(device, &guide_ra, &guide_dec)) {
+				GUIDER_RATE_ITEM->number.value = guide_ra;
 			} else {
 				GUIDER_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -1387,11 +1543,14 @@ static bool ioptron_init_guider(indigo_device *device) {
 			GUIDER_RATE_ITEM->number.step = 1;
 			GUIDER_RATE_PROPERTY->hidden = false;
 			GUIDER_RATE_PROPERTY->count = 1;
-			if (ioptron_command(device, ":AG#")) {
-				GUIDER_RATE_ITEM->number.value = atoi(PRIVATE_DATA->response);
+			if (ioptron_get_guide_rate(device, &guide_ra, &guide_dec)) {
+				GUIDER_RATE_ITEM->number.value = guide_ra;
 			} else {
 				GUIDER_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
+		} else if (PRIVATE_DATA->protocol == V3_0 && PRIVATE_DATA->altaz) {
+			// Alt-azimuth mounts take neither a guide rate nor timed pulses.
+			GUIDER_RATE_PROPERTY->hidden = true;
 		} else if (PRIVATE_DATA->protocol == V2_5 || PRIVATE_DATA->protocol == V3_0) {
 			GUIDER_RATE_ITEM->number.min = 1;
 			GUIDER_RATE_ITEM->number.max = 90;
@@ -1401,10 +1560,9 @@ static bool ioptron_init_guider(indigo_device *device) {
 			GUIDER_DEC_RATE_ITEM->number.step = 1;
 			GUIDER_RATE_PROPERTY->hidden = false;
 			GUIDER_RATE_PROPERTY->count = 2;
-			if (ioptron_command(device, ":AG#")) {
-				GUIDER_DEC_RATE_ITEM->number.value = atoi(PRIVATE_DATA->response + 2);
-				PRIVATE_DATA->response[2] = 0;
-				GUIDER_RATE_ITEM->number.value = atoi(PRIVATE_DATA->response);
+			if (ioptron_get_guide_rate(device, &guide_ra, &guide_dec)) {
+				GUIDER_RATE_ITEM->number.value = guide_ra;
+				GUIDER_DEC_RATE_ITEM->number.value = guide_dec;
 			} else {
 				GUIDER_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 			}
@@ -1417,22 +1575,107 @@ static bool ioptron_init_guider(indigo_device *device) {
 	return true;
 }
 
+// The guide rate is one controller setting shared by the mount and the guider device: a change accepted
+// through one of them is published by the other one too. Both devices run on the mount's queue.
+static void ioptron_publish_guider_rate(indigo_device *device, int ra, int dec) {
+	if (device != NULL && IS_CONNECTED && !GUIDER_RATE_PROPERTY->hidden) {
+		GUIDER_RATE_ITEM->number.value = GUIDER_RATE_ITEM->number.target = ra;
+		if (GUIDER_RATE_PROPERTY->count > 1) {
+			GUIDER_DEC_RATE_ITEM->number.value = GUIDER_DEC_RATE_ITEM->number.target = dec;
+		}
+		GUIDER_RATE_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, GUIDER_RATE_PROPERTY, NULL);
+	}
+}
+
+static void ioptron_publish_mount_guide_rate(indigo_device *device, int ra, int dec) {
+	if (device != NULL && IS_CONNECTED && !MOUNT_GUIDE_RATE_PROPERTY->hidden) {
+		MOUNT_GUIDE_RATE_RA_ITEM->number.value = MOUNT_GUIDE_RATE_RA_ITEM->number.target = ra;
+		if (MOUNT_GUIDE_RATE_PROPERTY->count > 1) {
+			MOUNT_GUIDE_RATE_DEC_ITEM->number.value = MOUNT_GUIDE_RATE_DEC_ITEM->number.target = dec;
+		}
+		MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_OK_STATE;
+		indigo_update_property(device, MOUNT_GUIDE_RATE_PROPERTY, NULL);
+	}
+}
+
+// A fingerprint of the state and item values of a switch or light property (at most 15 items), so the
+// status poll publishes a property only when the mount reported a change.
+static unsigned ioptron_fingerprint(indigo_property *property) {
+	unsigned fingerprint = property->state;
+	for (int i = 0; i < property->count && i < 15; i++) {
+		fingerprint = (fingerprint << 2) | (property->type == INDIGO_LIGHT_VECTOR ? property->items[i].light.value : property->items[i].sw.value);
+	}
+	return fingerprint;
+}
+
+// True when the readback is within RA_MIN_DIF / DEC_MIN_DIF degrees of the target of the last GOTO.
+static bool ioptron_at_target(indigo_device *device) {
+	double ra_difference = fabs(MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.value - PRIVATE_DATA->goto_target_ra);
+	if (ra_difference > 12) {
+		ra_difference = 24 - ra_difference;
+	}
+	double dec_difference = fabs(MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.value - PRIVATE_DATA->goto_target_dec);
+	return ra_difference * 15 * cos(PRIVATE_DATA->goto_target_dec * M_PI / 180) <= RA_MIN_DIF && dec_difference <= DEC_MIN_DIF;
+}
+
 static void ioptron_update_mount_state(indigo_device *device) {
+	indigo_property *polled[] = { MOUNT_STATE_PROPERTY, MOUNT_TRACKING_PROPERTY, MOUNT_PARK_PROPERTY, MOUNT_HOME_PROPERTY, MOUNT_SIDE_OF_PIER_PROPERTY };
+	unsigned fingerprints[5];
+	for (int i = 0; i < 5; i++) {
+		fingerprints[i] = ioptron_fingerprint(polled[i]);
+	}
+	const char *coordinates_message = NULL, *park_message = NULL, *home_message = NULL;
 	double ra = 0, dec = 0;
-	if (ioptron_get_coordinates(device, &ra, &dec)) {
+	bool coordinates_read = ioptron_get_coordinates(device, &ra, &dec);
+	if (coordinates_read) {
 		indigo_eq_to_j2k(MOUNT_EPOCH_ITEM->number.value, &ra, &dec);
 		MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.value = ra;
 		MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.value = dec;
+		if (PRIVATE_DATA->coordinates_failed) {
+			PRIVATE_DATA->coordinates_failed = false;
+			if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state == INDIGO_ALERT_STATE) {
+				MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
+			}
+		}
+	} else if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state != INDIGO_BUSY_STATE) {
+		// keep the last valid coordinates, report the failed readback
+		PRIVATE_DATA->coordinates_failed = true;
+		MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	if (ioptron_get_state(device)) {
 		if (PRIVATE_DATA->slewing) {
-			MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = MOUNT_STATE_SLEW_ITEM->light.value = INDIGO_BUSY_STATE;
+			MOUNT_STATE_SLEW_ITEM->light.value = INDIGO_BUSY_STATE;
+			if (!PRIVATE_DATA->stopping) {
+				// a running slew (driver or hand controller initiated) completes when it stops, an aborted
+				// one keeps its ALERT while the mount decelerates
+				PRIVATE_DATA->goto_issued = true;
+				MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_BUSY_STATE;
+			}
+		} else if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state == INDIGO_BUSY_STATE && !PRIVATE_DATA->goto_issued) {
+			// a GOTO was accepted but its slew command has not been sent yet
 		} else {
-			if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state != INDIGO_ALERT_STATE) {
-				MOUNT_STATE_SLEW_ITEM->light.value = INDIGO_IDLE_STATE;
-				MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
-			} else {
-				 MOUNT_STATE_SLEW_ITEM->light.value = INDIGO_ALERT_STATE;
+			PRIVATE_DATA->stopping = false;
+			MOUNT_STATE_SLEW_ITEM->light.value = INDIGO_IDLE_STATE;
+			if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state == INDIGO_BUSY_STATE) {
+				// the controller reports the end of the slew, the readback decides whether it reached the target
+				if (!coordinates_read) {
+					PRIVATE_DATA->coordinates_failed = true;
+					MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+				} else if (PRIVATE_DATA->goto_target_valid && !ioptron_at_target(device) && !PRIVATE_DATA->goto_settling) {
+					// the coordinates were read before the status, judge the arrival on the next readback
+					PRIVATE_DATA->goto_settling = true;
+				} else if (PRIVATE_DATA->goto_target_valid && !ioptron_at_target(device)) {
+					MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+					coordinates_message = "Slew ended short of the target";
+				} else {
+					MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
+				}
+			}
+			if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state != INDIGO_BUSY_STATE) {
+				PRIVATE_DATA->goto_issued = false;
+				PRIVATE_DATA->goto_target_valid = false;
+				PRIVATE_DATA->goto_settling = false;
 			}
 		}
 		if (MOUNT_TRACKING_PROPERTY->state != INDIGO_BUSY_STATE) { // to avoid race never change tracking state if BUSY
@@ -1451,6 +1694,16 @@ static void ioptron_update_mount_state(indigo_device *device) {
 			} else if (MOUNT_PARK_PROPERTY->count == 2 && MOUNT_PARK_UNPARKED_ITEM->sw.value && !PRIVATE_DATA->parked) {
 				MOUNT_STATE_PARK_ITEM->light.value = INDIGO_IDLE_STATE;
 				MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
+			} else if (MOUNT_PARK_PARKED_ITEM->sw.value) {
+				if (PRIVATE_DATA->slewing) {
+					PRIVATE_DATA->park_moving = true;
+				} else if (PRIVATE_DATA->park_moving || indigo_monotonic_time() > PRIVATE_DATA->park_deadline) {
+					// the mount stopped before it parked, or acknowledged the park and never started it
+					indigo_set_switch(MOUNT_PARK_PROPERTY, MOUNT_PARK_UNPARKED_ITEM, true);
+					MOUNT_PARK_PROPERTY->state = INDIGO_ALERT_STATE;
+					MOUNT_STATE_PARK_ITEM->light.value = INDIGO_IDLE_STATE;
+					park_message = "Park did not complete";
+				}
 			}
 		} else { // otherwise mirror state reported by mount
 			if (PRIVATE_DATA->parked) {
@@ -1464,6 +1717,14 @@ static void ioptron_update_mount_state(indigo_device *device) {
 		if (MOUNT_HOME_PROPERTY->state == INDIGO_BUSY_STATE) { // to avoid race never change parking state if BUSY with this exception
 			if (PRIVATE_DATA->homed) {
 				MOUNT_HOME_PROPERTY->state = MOUNT_STATE_HOME_ITEM->light.value = INDIGO_OK_STATE;
+			} else if (PRIVATE_DATA->slewing) {
+				PRIVATE_DATA->home_moving = true;
+			} else if (PRIVATE_DATA->home_moving || indigo_monotonic_time() > PRIVATE_DATA->home_deadline) {
+				// the mount stopped before it reached home, or acknowledged homing and never started it
+				indigo_set_switch(MOUNT_HOME_PROPERTY, MOUNT_AWAY_ITEM, true);
+				MOUNT_HOME_PROPERTY->state = INDIGO_ALERT_STATE;
+				MOUNT_STATE_HOME_ITEM->light.value = INDIGO_IDLE_STATE;
+				home_message = "Homing did not complete";
 			}
 		} else { // otherwise mirror state reported by mount
 			if (!PRIVATE_DATA->homed) {
@@ -1475,16 +1736,22 @@ static void ioptron_update_mount_state(indigo_device *device) {
 			}
 		}
 	}
-	sprintf(MOUNT_UTC_OFFSET_ITEM->text.value, "%d", PRIVATE_DATA->utc_offset);
-	indigo_timetoisogm(time(NULL) - PRIVATE_DATA->time_difference, MOUNT_UTC_ITEM->text.value, INDIGO_VALUE_SIZE);
-	MOUNT_UTC_TIME_PROPERTY->state = INDIGO_OK_STATE;
-	indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
-	indigo_update_property(device, MOUNT_TRACKING_PROPERTY, NULL);
-	indigo_update_property(device, MOUNT_PARK_PROPERTY, NULL);
-	indigo_update_property(device, MOUNT_HOME_PROPERTY, NULL);
-	indigo_update_property(device, MOUNT_SIDE_OF_PIER_PROPERTY, NULL);
+	if (MOUNT_UTC_TIME_PROPERTY->state != INDIGO_BUSY_STATE) { // never overwrite a requested time before it is applied
+		sprintf(MOUNT_UTC_OFFSET_ITEM->text.value, "%d", PRIVATE_DATA->utc_offset);
+		indigo_timetoisogm(time(NULL) - PRIVATE_DATA->time_difference, MOUNT_UTC_ITEM->text.value, INDIGO_VALUE_SIZE);
+		MOUNT_UTC_TIME_PROPERTY->state = INDIGO_OK_STATE;
+	}
+	// Changes are published once, an unchanged property is not republished by every poll.
+	const char *messages[] = { NULL, NULL, park_message, home_message, NULL };
+	for (int i = 0; i < 5; i++) {
+		if (messages[i] != NULL) {
+			indigo_update_property(device, polled[i], "%s", messages[i]);
+		} else if (ioptron_fingerprint(polled[i]) != fingerprints[i]) {
+			indigo_update_property(device, polled[i], NULL);
+		}
+	}
 	indigo_update_property(device, MOUNT_UTC_TIME_PROPERTY, NULL);
-	indigo_update_coordinates(device, NULL);
+	indigo_update_coordinates(device, coordinates_message);
 }
 
 //- code
@@ -1492,11 +1759,19 @@ static void ioptron_update_mount_state(indigo_device *device) {
 //+ guider.code
 
 static void guider_guide_dec_finalizer(indigo_device *device) {
+	if (PRIVATE_DATA->protocol == HC_8406) {
+		ioptron_no_reply_command(device, ":Qn#");
+	}
+	// Only the values, the target of a pulse requested while this one ends is read by its handler.
 	GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
 	INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_OK_STATE, NULL);
 }
 
 static void guider_guide_ra_finalizer(indigo_device *device) {
+	if (PRIVATE_DATA->protocol == HC_8406) {
+		ioptron_no_reply_command(device, ":Qe#");
+	}
+	// Only the values, the target of a pulse requested while this one ends is read by its handler.
 	GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_EAST_ITEM->number.value = 0;
 	INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_OK_STATE, NULL);
 }
@@ -1520,8 +1795,11 @@ static void mount_timer_callback(indigo_device *device) {
 static void mount_connection_handler(indigo_device *device) {
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
 		bool connection_result = true;
-		if (PRIVATE_DATA->count++ == 0) {
+		if (PRIVATE_DATA->count == 0) {
 			connection_result = ioptron_open(device);
+		}
+		if (connection_result) {
+			PRIVATE_DATA->count++;
 		}
 		if (connection_result) {
 			//+ mount.on_connect
@@ -1531,13 +1809,11 @@ static void mount_connection_handler(indigo_device *device) {
 		if (connection_result) {
 			indigo_define_property(device, MOUNT_MERIDIAN_HANDLING_PROPERTY, NULL);
 			indigo_define_property(device, MOUNT_MERIDIAN_LIMIT_PROPERTY, NULL);
-			indigo_define_property(device, MOUNT_PROTOCOL_PROPERTY, NULL);
-			indigo_execute_handler(device, mount_timer_callback);
 			CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 			indigo_send_message(device, OK_PROPERTY, "Connected to %s on %s", MOUNT_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
 		} else {
 			indigo_send_message(device, ALERT_PROPERTY, "Failed to connect to %s on %s", MOUNT_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
-			if (--PRIVATE_DATA->count == 0) {
+			if (PRIVATE_DATA->count > 0 && --PRIVATE_DATA->count == 0) {
 				ioptron_close(device);
 			}
 			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -1545,9 +1821,47 @@ static void mount_connection_handler(indigo_device *device) {
 		}
 	} else {
 		indigo_cancel_pending_handlers(device);
+		//+ mount.on_disconnect
+		// A slew, park, homing or arrow motion still running is stopped before the port closes.
+		if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state == INDIGO_BUSY_STATE || MOUNT_PARK_PROPERTY->state == INDIGO_BUSY_STATE || MOUNT_HOME_PROPERTY->state == INDIGO_BUSY_STATE || MOUNT_MOTION_DEC_PROPERTY->state == INDIGO_BUSY_STATE || MOUNT_MOTION_RA_PROPERTY->state == INDIGO_BUSY_STATE) {
+			ioptron_stop(device);
+		}
+		PRIVATE_DATA->goto_issued = PRIVATE_DATA->goto_target_valid = PRIVATE_DATA->stopping = false;
+		PRIVATE_DATA->last_motion_ra = PRIVATE_DATA->last_motion_dec = 0;
+		MOUNT_MOTION_NORTH_ITEM->sw.value = MOUNT_MOTION_SOUTH_ITEM->sw.value = false;
+		MOUNT_MOTION_EAST_ITEM->sw.value = MOUNT_MOTION_WEST_ITEM->sw.value = false;
+		//- mount.on_disconnect
+		// Cancelled change handlers must not leave properties BUSY: a new session starts in a clean state.
+		indigo_property *cancelled_properties[] = {
+			MOUNT_PARK_SET_PROPERTY,
+			MOUNT_PARK_PROPERTY,
+			MOUNT_HOME_PROPERTY,
+			MOUNT_GEOGRAPHIC_COORDINATES_PROPERTY,
+			MOUNT_EQUATORIAL_COORDINATES_PROPERTY,
+			MOUNT_ABORT_MOTION_PROPERTY,
+			MOUNT_MOTION_DEC_PROPERTY,
+			MOUNT_MOTION_RA_PROPERTY,
+			MOUNT_SET_HOST_TIME_PROPERTY,
+			MOUNT_UTC_TIME_PROPERTY,
+			MOUNT_TRACKING_PROPERTY,
+			MOUNT_GUIDE_RATE_PROPERTY,
+			MOUNT_PEC_PROPERTY,
+			MOUNT_PEC_TRAINING_PROPERTY,
+			MOUNT_MERIDIAN_HANDLING_PROPERTY,
+			MOUNT_MERIDIAN_LIMIT_PROPERTY,
+			MOUNT_STATE_PROPERTY,
+			MOUNT_TRACK_RATE_PROPERTY,
+		};
+		for (unsigned i = 0; i < sizeof(cancelled_properties) / sizeof(cancelled_properties[0]); i++) {
+			if (cancelled_properties[i] != NULL && cancelled_properties[i]->state == INDIGO_BUSY_STATE) {
+				cancelled_properties[i]->state = INDIGO_OK_STATE;
+			}
+		}
+		if (MOUNT_PROTOCOL_PROPERTY != NULL && MOUNT_PROTOCOL_PROPERTY->state == INDIGO_BUSY_STATE) {
+			INDIGO_UPDATE_PROPERTY_STATE(MOUNT_PROTOCOL_PROPERTY, INDIGO_OK_STATE, NULL);
+		}
 		indigo_delete_property(device, MOUNT_MERIDIAN_HANDLING_PROPERTY, NULL);
 		indigo_delete_property(device, MOUNT_MERIDIAN_LIMIT_PROPERTY, NULL);
-		indigo_delete_property(device, MOUNT_PROTOCOL_PROPERTY, NULL);
 		if (--PRIVATE_DATA->count == 0) {
 			ioptron_close(device);
 		}
@@ -1555,6 +1869,9 @@ static void mount_connection_handler(indigo_device *device) {
 		CONNECTION_PROPERTY->state = INDIGO_OK_STATE;
 	}
 	indigo_mount_change_property(device, NULL, CONNECTION_PROPERTY);
+	if (IS_CONNECTED) {
+		indigo_execute_handler(device, mount_timer_callback);
+	}
 }
 
 static void mount_park_set_handler(indigo_device *device) {
@@ -1566,8 +1883,8 @@ static void mount_park_set_handler(indigo_device *device) {
 			MOUNT_PARK_SET_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	} else if (MOUNT_PARK_SET_CURRENT_ITEM->sw.value) {
+		MOUNT_PARK_SET_CURRENT_ITEM->sw.value = false;
 		if (!ioptron_park_set_current(device)) {
-			MOUNT_PARK_SET_CURRENT_ITEM->sw.value = false;
 			MOUNT_PARK_SET_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	}
@@ -1578,22 +1895,34 @@ static void mount_park_set_handler(indigo_device *device) {
 static void mount_park_handler(indigo_device *device) {
 	MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_PARK.on_change
+	// The status poll mirrors the park state the mount reports and may overwrite the value between the copy of
+	// the request and this handler, the targets keep the request. A failure shows the park state the mount
+	// last reported.
+	indigo_apply_switch_targets(MOUNT_PARK_PROPERTY);
 	if (MOUNT_PARK_PARKED_ITEM->sw.value) {
 		if (MOUNT_PARK_PROPERTY->count == 1) {
 			MOUNT_PARK_PARKED_ITEM->sw.value = false;
 		}
 		if (!ioptron_park(device)) {
+			if (MOUNT_PARK_PROPERTY->count == 2) {
+				indigo_set_switch(MOUNT_PARK_PROPERTY, PRIVATE_DATA->parked ? MOUNT_PARK_PARKED_ITEM : MOUNT_PARK_UNPARKED_ITEM, true);
+			}
 			MOUNT_PARK_PROPERTY->state = INDIGO_ALERT_STATE;
 		} else if (MOUNT_PARK_PROPERTY->count == 1) {
 			MOUNT_PARK_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
 			MOUNT_PARK_PROPERTY->state = INDIGO_BUSY_STATE;
+			PRIVATE_DATA->park_moving = false;
+			PRIVATE_DATA->park_deadline = indigo_monotonic_time() + START_TIMEOUT;
 		}
 		MOUNT_STATE_PARK_ITEM->light.value = MOUNT_PARK_PROPERTY->state;
 	} else {
 		if (ioptron_unpark(device)) {
 			MOUNT_STATE_PARK_ITEM->light.value = INDIGO_IDLE_STATE;
 		} else {
+			if (MOUNT_PARK_PROPERTY->count == 2) {
+				indigo_set_switch(MOUNT_PARK_PROPERTY, PRIVATE_DATA->parked ? MOUNT_PARK_PARKED_ITEM : MOUNT_PARK_UNPARKED_ITEM, true);
+			}
 			MOUNT_PARK_PROPERTY->state = MOUNT_STATE_PARK_ITEM->light.value = INDIGO_ALERT_STATE;
 		}
 	}
@@ -1605,9 +1934,16 @@ static void mount_park_handler(indigo_device *device) {
 static void mount_home_handler(indigo_device *device) {
 	//+ mount.MOUNT_HOME.on_change
 	MOUNT_HOME_PROPERTY->state = INDIGO_BUSY_STATE;
+	// The status poll mirrors the home state the mount reports and may replace HOME with AWAY between the copy
+	// of the request and this handler, the targets keep the request. A failure shows the home state the mount
+	// last reported.
+	indigo_apply_switch_targets(MOUNT_HOME_PROPERTY);
+	PRIVATE_DATA->home_moving = false;
+	PRIVATE_DATA->home_deadline = indigo_monotonic_time() + START_TIMEOUT;
 	if (MOUNT_HOME_ITEM->sw.value) {
 		MOUNT_HOME_ITEM->sw.value = false;
 		if (!ioptron_home(device)) {
+			indigo_set_switch(MOUNT_HOME_PROPERTY, PRIVATE_DATA->homed ? MOUNT_HOME_ITEM : MOUNT_AWAY_ITEM, true);
 			MOUNT_HOME_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	} else if (MOUNT_AWAY_ITEM->sw.value) {
@@ -1616,6 +1952,7 @@ static void mount_home_handler(indigo_device *device) {
 	} else if (MOUNT_HOME_SEARCH_ITEM->sw.value) {
 		MOUNT_HOME_SEARCH_ITEM->sw.value = false;
 		if (!ioptron_search_home(device)) {
+			indigo_set_switch(MOUNT_HOME_PROPERTY, PRIVATE_DATA->homed ? MOUNT_HOME_ITEM : MOUNT_AWAY_ITEM, true);
 			MOUNT_HOME_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	}
@@ -1667,10 +2004,18 @@ static void mount_equatorial_coordinates_handler(indigo_device *device) {
 		if (!rate_set) {
 			indigo_send_message(device, BUSY_PROPERTY, "Failed to set tracking rate before slew, continuing with slew anyway");
 		}
-		if (!ioptron_slew(device, ra, dec)) {
+		PRIVATE_DATA->stopping = false;
+		if (ioptron_slew(device, ra, dec)) {
+			PRIVATE_DATA->goto_issued = true;
+			PRIVATE_DATA->goto_target_valid = true;
+			PRIVATE_DATA->goto_settling = false;
+			PRIVATE_DATA->goto_target_ra = MOUNT_EQUATORIAL_COORDINATES_RA_ITEM->number.target;
+			PRIVATE_DATA->goto_target_dec = MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM->number.target;
+		} else {
 			MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	} else if (MOUNT_ON_COORDINATES_SET_SYNC_ITEM->sw.value) {
+		PRIVATE_DATA->goto_target_valid = false;
 		if (ioptron_sync(device, ra, dec)) {
 			MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
@@ -1685,8 +2030,26 @@ static void mount_abort_motion_handler(indigo_device *device) {
 	MOUNT_ABORT_MOTION_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_ABORT_MOTION.on_change
 	if (MOUNT_ABORT_MOTION_ITEM->sw.value) {
+		indigo_cancel_pending_handler(device, mount_equatorial_coordinates_handler);
+		indigo_cancel_pending_handler(device, mount_motion_ra_handler);
+		indigo_cancel_pending_handler(device, mount_motion_dec_handler);
+		indigo_cancel_pending_handler(device, mount_park_handler);
+		if (MOUNT_PARK_PROPERTY->state == INDIGO_BUSY_STATE) {
+			indigo_set_switch(MOUNT_PARK_PROPERTY, PRIVATE_DATA->parked ? MOUNT_PARK_PARKED_ITEM : MOUNT_PARK_UNPARKED_ITEM, true);
+			INDIGO_UPDATE_PROPERTY_STATE(MOUNT_PARK_PROPERTY, INDIGO_ALERT_STATE, NULL);
+		}
+		indigo_cancel_pending_handler(device, mount_home_handler);
+		if (MOUNT_HOME_PROPERTY->state == INDIGO_BUSY_STATE) {
+			MOUNT_HOME_ITEM->sw.value = false;
+			MOUNT_AWAY_ITEM->sw.value = MOUNT_HOME_SEARCH_ITEM->sw.value = false;
+			INDIGO_UPDATE_PROPERTY_STATE(MOUNT_HOME_PROPERTY, INDIGO_ALERT_STATE, NULL);
+		}
 		MOUNT_ABORT_MOTION_ITEM->sw.value = false;
+		PRIVATE_DATA->goto_issued = false;
+		PRIVATE_DATA->goto_target_valid = false;
 		if (ioptron_stop(device)) {
+			// the status poll keeps an aborted slew ALERT while the mount decelerates
+			PRIVATE_DATA->stopping = true;
 			PRIVATE_DATA->last_motion_dec = 0;
 			MOUNT_MOTION_NORTH_ITEM->sw.value = false;
 			MOUNT_MOTION_SOUTH_ITEM->sw.value = false;
@@ -1695,20 +2058,25 @@ static void mount_abort_motion_handler(indigo_device *device) {
 			MOUNT_MOTION_WEST_ITEM->sw.value = false;
 			MOUNT_MOTION_EAST_ITEM->sw.value = false;
 			INDIGO_UPDATE_PROPERTY_STATE(MOUNT_MOTION_RA_PROPERTY, INDIGO_OK_STATE, NULL);
-			MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_OK_STATE;
-			indigo_update_coordinates(device, NULL);
+			if (MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state == INDIGO_BUSY_STATE) {
+				// an aborted slew never reached its target, an abort while idle leaves the coordinates alone
+				MOUNT_EQUATORIAL_COORDINATES_PROPERTY->state = INDIGO_ALERT_STATE;
+				indigo_update_coordinates(device, "Slew aborted");
+			}
 		} else {
 			MOUNT_ABORT_MOTION_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	}
 	//- mount.MOUNT_ABORT_MOTION.on_change
 	indigo_update_property(device, MOUNT_ABORT_MOTION_PROPERTY, NULL);
+	indigo_mount_commit_motion_client(device, MOUNT_ABORT_MOTION_PROPERTY);
 }
 
 static void mount_motion_dec_handler(indigo_device *device) {
 	if (!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value) {
 		indigo_send_message(device, MOUNT_MOTION_DEC_PROPERTY, "Mount is parked!");
 		INDIGO_UPDATE_PROPERTY_STATE(MOUNT_MOTION_DEC_PROPERTY, INDIGO_ALERT_STATE, NULL);
+		indigo_mount_commit_motion_client(device, MOUNT_MOTION_DEC_PROPERTY);
 		return;
 	}
 	//+ mount.MOUNT_MOTION_DEC.on_change
@@ -1723,16 +2091,16 @@ static void mount_motion_dec_handler(indigo_device *device) {
 	} else if (MOUNT_SLEW_RATE_MAX_ITEM->sw.value) {
 		slew_rate = 9;
 	}
-	if (MOUNT_MOTION_NORTH_ITEM->sw.value) {
-		if (!ioptron_move(device, slew_rate, 'n')) {
-			MOUNT_MOTION_DEC_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
-	} else if (MOUNT_MOTION_SOUTH_ITEM->sw.value) {
-		if (!ioptron_move(device, slew_rate, 's')) {
+	if (MOUNT_MOTION_NORTH_ITEM->sw.value || MOUNT_MOTION_SOUTH_ITEM->sw.value) {
+		char direction = MOUNT_MOTION_NORTH_ITEM->sw.value ? 'n' : 's';
+		if (ioptron_move(device, slew_rate, direction)) {
+			PRIVATE_DATA->last_motion_dec = direction;
+		} else {
 			MOUNT_MOTION_DEC_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	} else {
-		if (ioptron_stop(device)) {
+		PRIVATE_DATA->last_motion_dec = 0;
+		if (ioptron_stop_axis(device, false)) {
 			MOUNT_MOTION_DEC_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
 			MOUNT_MOTION_DEC_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -1740,12 +2108,14 @@ static void mount_motion_dec_handler(indigo_device *device) {
 	}
 	//- mount.MOUNT_MOTION_DEC.on_change
 	indigo_update_property(device, MOUNT_MOTION_DEC_PROPERTY, NULL);
+	indigo_mount_commit_motion_client(device, MOUNT_MOTION_DEC_PROPERTY);
 }
 
 static void mount_motion_ra_handler(indigo_device *device) {
 	if (!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value) {
 		indigo_send_message(device, MOUNT_MOTION_RA_PROPERTY, "Mount is parked!");
 		INDIGO_UPDATE_PROPERTY_STATE(MOUNT_MOTION_RA_PROPERTY, INDIGO_ALERT_STATE, NULL);
+		indigo_mount_commit_motion_client(device, MOUNT_MOTION_RA_PROPERTY);
 		return;
 	}
 	//+ mount.MOUNT_MOTION_RA.on_change
@@ -1760,16 +2130,16 @@ static void mount_motion_ra_handler(indigo_device *device) {
 	} else if (MOUNT_SLEW_RATE_MAX_ITEM->sw.value) {
 		slew_rate = 9;
 	}
-	if (MOUNT_MOTION_WEST_ITEM->sw.value) {
-		if (!ioptron_move(device, slew_rate, 'w')) {
-			MOUNT_MOTION_RA_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
-	} else if (MOUNT_MOTION_EAST_ITEM->sw.value) {
-		if (!ioptron_move(device, slew_rate, 'e')) {
+	if (MOUNT_MOTION_WEST_ITEM->sw.value || MOUNT_MOTION_EAST_ITEM->sw.value) {
+		char direction = MOUNT_MOTION_WEST_ITEM->sw.value ? 'w' : 'e';
+		if (ioptron_move(device, slew_rate, direction)) {
+			PRIVATE_DATA->last_motion_ra = direction;
+		} else {
 			MOUNT_MOTION_RA_PROPERTY->state = INDIGO_ALERT_STATE;
 		}
 	} else {
-		if (ioptron_stop(device)) {
+		PRIVATE_DATA->last_motion_ra = 0;
+		if (ioptron_stop_axis(device, true)) {
 			MOUNT_MOTION_RA_PROPERTY->state = INDIGO_OK_STATE;
 		} else {
 			MOUNT_MOTION_RA_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -1777,6 +2147,7 @@ static void mount_motion_ra_handler(indigo_device *device) {
 	}
 	//- mount.MOUNT_MOTION_RA.on_change
 	indigo_update_property(device, MOUNT_MOTION_RA_PROPERTY, NULL);
+	indigo_mount_commit_motion_client(device, MOUNT_MOTION_RA_PROPERTY);
 }
 
 static void mount_set_host_time_handler(indigo_device *device) {
@@ -1799,15 +2170,16 @@ static void mount_set_host_time_handler(indigo_device *device) {
 static void mount_utc_time_handler(indigo_device *device) {
 	MOUNT_UTC_TIME_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_UTC_TIME.on_change
-	time_t secs = indigo_isogmtotime(MOUNT_UTC_ITEM->text.value);
+	int offset = 0;
+	time_t secs = indigo_mount_get_utc_target(device, &offset);
 	if (secs == -1) {
 		INDIGO_DRIVER_ERROR(DRIVER_NAME, "Wrong date/time format!");
 		MOUNT_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
+	} else if (ioptron_set_utc(device, secs, offset)) {
+		indigo_timetoisogm(secs, MOUNT_UTC_ITEM->text.value, INDIGO_VALUE_SIZE);
+		sprintf(MOUNT_UTC_OFFSET_ITEM->text.value, "%d", offset);
 	} else {
-		int offset = atoi(MOUNT_UTC_OFFSET_ITEM->text.value);
-		if (!ioptron_set_utc(device, secs, offset)) {
-			MOUNT_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
-		}
+		MOUNT_UTC_TIME_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	//- mount.MOUNT_UTC_TIME.on_change
 	indigo_update_property(device, MOUNT_UTC_TIME_PROPERTY, NULL);
@@ -1821,9 +2193,14 @@ static void mount_tracking_handler(indigo_device *device) {
 	}
 	MOUNT_TRACKING_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_TRACKING.on_change
-	if (ioptron_set_tracking(device, MOUNT_TRACKING_ON_ITEM->sw.value)) {
-		MOUNT_STATE_TRACKING_ITEM->light.value = MOUNT_TRACKING_ON_ITEM->sw.value ? INDIGO_OK_STATE : INDIGO_IDLE_STATE;
+	// The status poll may overwrite the value between the copy of the request and this handler,
+	// the target keeps the requested value. On failure the switch shows the last polled mount state.
+	bool on = indigo_get_switch_target(MOUNT_TRACKING_PROPERTY, MOUNT_TRACKING_ON_ITEM_NAME);
+	if (ioptron_set_tracking(device, on)) {
+		indigo_apply_switch_targets(MOUNT_TRACKING_PROPERTY);
+		MOUNT_STATE_TRACKING_ITEM->light.value = on ? INDIGO_OK_STATE : INDIGO_IDLE_STATE;
 	} else {
+		indigo_set_switch(MOUNT_TRACKING_PROPERTY, PRIVATE_DATA->tracking ? MOUNT_TRACKING_ON_ITEM : MOUNT_TRACKING_OFF_ITEM, true);
 		MOUNT_TRACKING_PROPERTY->state = MOUNT_STATE_TRACKING_ITEM->light.value = INDIGO_ALERT_STATE;
 	}
 	indigo_update_property(device, MOUNT_STATE_PROPERTY, NULL);
@@ -1834,7 +2211,9 @@ static void mount_tracking_handler(indigo_device *device) {
 static void mount_guide_rate_handler(indigo_device *device) {
 	MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_GUIDE_RATE.on_change
-	if (!ioptron_set_guide_rate(device, (int)MOUNT_GUIDE_RATE_RA_ITEM->number.value, (int)MOUNT_GUIDE_RATE_DEC_ITEM->number.value)) {
+	if (ioptron_set_guide_rate(device, (int)MOUNT_GUIDE_RATE_RA_ITEM->number.value, (int)MOUNT_GUIDE_RATE_DEC_ITEM->number.value)) {
+		ioptron_publish_guider_rate(PRIVATE_DATA->guider_device, (int)MOUNT_GUIDE_RATE_RA_ITEM->number.value, (int)MOUNT_GUIDE_RATE_DEC_ITEM->number.value);
+	} else {
 		MOUNT_GUIDE_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	//- mount.MOUNT_GUIDE_RATE.on_change
@@ -1895,6 +2274,8 @@ static void mount_meridian_handling_handler(indigo_device *device) {
 	MOUNT_MERIDIAN_HANDLING_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_MERIDIAN_HANDLING.on_change
 	if (!ioptron_set_meridian_handling(device,  MOUNT_MERIDIAN_FLIP_ITEM->sw.value, (int)MOUNT_MERIDIAN_LIMIT_ITEM->number.target)) {
+		// a refused change shows the treatment the mount keeps
+		ioptron_read_meridian_handling(device);
 		MOUNT_MERIDIAN_HANDLING_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	//- mount.MOUNT_MERIDIAN_HANDLING.on_change
@@ -1905,6 +2286,8 @@ static void mount_meridian_limit_handler(indigo_device *device) {
 	MOUNT_MERIDIAN_LIMIT_PROPERTY->state = INDIGO_OK_STATE;
 	//+ mount.MOUNT_MERIDIAN_LIMIT.on_change
 	if (!ioptron_set_meridian_handling(device,  MOUNT_MERIDIAN_FLIP_ITEM->sw.value, (int)MOUNT_MERIDIAN_LIMIT_ITEM->number.target)) {
+		// a refused change shows the treatment the mount keeps
+		ioptron_read_meridian_handling(device);
 		MOUNT_MERIDIAN_LIMIT_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	//- mount.MOUNT_MERIDIAN_LIMIT.on_change
@@ -1927,6 +2310,8 @@ static void mount_track_rate_handler(indigo_device *device) {
 		rate_set = ioptron_set_tracking_rate(device, 4, MOUNT_CUSTOM_TRACKING_RATE_ITEM->number.value);
 	}
 	if (!rate_set) {
+		// a refused rate shows the rate the mount still uses
+		ioptron_read_track_rate(device);
 		MOUNT_TRACK_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	//- mount.MOUNT_TRACK_RATE.on_change
@@ -1950,6 +2335,7 @@ static indigo_result mount_attach(indigo_device *device) {
 		indigo_enumerate_serial_ports(device, DEVICE_PORTS_PROPERTY);
 		DEVICE_BAUDRATE_PROPERTY->hidden = false;
 		//+ mount.on_attach
+		PRIVATE_DATA->mount_device = device;
 		INFO_PROPERTY->count = 6;
 		MOUNT_ON_COORDINATES_SET_PROPERTY->count = 2;
 		MOUNT_TRACK_RATE_PROPERTY->count = 5;
@@ -2006,18 +2392,14 @@ static indigo_result mount_enumerate_properties(indigo_device *device, indigo_cl
 	if (IS_CONNECTED) {
 		INDIGO_DEFINE_MATCHING_PROPERTY(MOUNT_MERIDIAN_HANDLING_PROPERTY);
 		INDIGO_DEFINE_MATCHING_PROPERTY(MOUNT_MERIDIAN_LIMIT_PROPERTY);
-		INDIGO_DEFINE_MATCHING_PROPERTY(MOUNT_PROTOCOL_PROPERTY);
 	}
+	INDIGO_DEFINE_MATCHING_PROPERTY(MOUNT_PROTOCOL_PROPERTY);
 	return indigo_mount_enumerate_properties(device, client, property);
 }
 
 static indigo_result mount_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (indigo_property_match_changeable(CONNECTION_PROPERTY, property)) {
-		if (!indigo_ignore_connection_change(device, property)) {
-			indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
-			INDIGO_UPDATE_PROPERTY_STATE(CONNECTION_PROPERTY, INDIGO_BUSY_STATE, NULL);
-			indigo_execute_handler(device, mount_connection_handler);
-		}
+		INDIGO_PROCESS_CONNECT(mount_connection_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_PARK_SET_PROPERTY, property)) {
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_PARK_SET_PROPERTY, mount_park_set_handler);
@@ -2032,24 +2414,35 @@ static indigo_result mount_change_property(indigo_device *device, indigo_client 
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_GEOGRAPHIC_COORDINATES_PROPERTY, mount_geographic_coordinates_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_EQUATORIAL_COORDINATES_PROPERTY, property)) {
+		INDIGO_REJECT_CHANGE_IF(!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value, MOUNT_EQUATORIAL_COORDINATES_PROPERTY, "Mount is parked!");
 		INDIGO_COPY_TARGETS_PROCESS_CHANGE(MOUNT_EQUATORIAL_COORDINATES_PROPERTY, mount_equatorial_coordinates_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_ABORT_MOTION_PROPERTY, property)) {
-		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_ABORT_MOTION_PROPERTY, mount_abort_motion_handler);
+		INDIGO_COPY_VALUES_PROCESS_URGENT_CHANGE(MOUNT_ABORT_MOTION_PROPERTY, mount_abort_motion_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_MOTION_DEC_PROPERTY, property)) {
+		INDIGO_REJECT_CHANGE_IF(!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value, MOUNT_MOTION_DEC_PROPERTY, "Mount is parked!");
+		indigo_mount_record_motion_client(device, client, property);
 		INDIGO_COPY_VALUES_PROCESS_CHANGE_ANYTIME(MOUNT_MOTION_DEC_PROPERTY, mount_motion_dec_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_MOTION_RA_PROPERTY, property)) {
+		INDIGO_REJECT_CHANGE_IF(!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value, MOUNT_MOTION_RA_PROPERTY, "Mount is parked!");
+		indigo_mount_record_motion_client(device, client, property);
 		INDIGO_COPY_VALUES_PROCESS_CHANGE_ANYTIME(MOUNT_MOTION_RA_PROPERTY, mount_motion_ra_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_SET_HOST_TIME_PROPERTY, property)) {
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_SET_HOST_TIME_PROPERTY, mount_set_host_time_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_UTC_TIME_PROPERTY, property)) {
+		//+ mount.MOUNT_UTC_TIME.on_change_request
+		// The status poll refreshes the items from the mount clock, so the handler sends the
+		// requested time recorded here instead of the copied items.
+		indigo_mount_set_utc_target(device, property);
+		//- mount.MOUNT_UTC_TIME.on_change_request
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_UTC_TIME_PROPERTY, mount_utc_time_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_TRACKING_PROPERTY, property)) {
+		INDIGO_REJECT_CHANGE_IF(!MOUNT_PARK_PROPERTY->hidden && MOUNT_PARK_PARKED_ITEM->sw.value, MOUNT_TRACKING_PROPERTY, "Mount is parked!");
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(MOUNT_TRACKING_PROPERTY, mount_tracking_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(MOUNT_GUIDE_RATE_PROPERTY, property)) {
@@ -2098,8 +2491,11 @@ static indigo_result mount_detach(indigo_device *device) {
 static void guider_connection_handler(indigo_device *device) {
 	if (CONNECTION_CONNECTED_ITEM->sw.value) {
 		bool connection_result = true;
-		if (PRIVATE_DATA->count++ == 0) {
+		if (PRIVATE_DATA->count == 0) {
 			connection_result = ioptron_open(device->master_device);
+		}
+		if (connection_result) {
+			PRIVATE_DATA->count++;
 		}
 		if (connection_result) {
 			//+ guider.on_connect
@@ -2111,7 +2507,7 @@ static void guider_connection_handler(indigo_device *device) {
 			indigo_send_message(device, OK_PROPERTY, "Connected to %s on %s", GUIDER_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
 		} else {
 			indigo_send_message(device, ALERT_PROPERTY, "Failed to connect to %s on %s", GUIDER_DEVICE_NAME, DEVICE_PORT_ITEM->text.value);
-			if (--PRIVATE_DATA->count == 0) {
+			if (PRIVATE_DATA->count > 0 && --PRIVATE_DATA->count == 0) {
 				ioptron_close(device);
 			}
 			CONNECTION_PROPERTY->state = INDIGO_ALERT_STATE;
@@ -2119,6 +2515,28 @@ static void guider_connection_handler(indigo_device *device) {
 		}
 	} else {
 		indigo_cancel_pending_handlers(device);
+		//+ guider.on_disconnect
+		// HC8406 pulses are arrow motion stopped by the finalizer, which the disconnect has just cancelled.
+		if (PRIVATE_DATA->protocol == HC_8406) {
+			if (GUIDER_GUIDE_DEC_PROPERTY->state == INDIGO_BUSY_STATE) {
+				ioptron_no_reply_command(device, ":Qn#");
+			}
+			if (GUIDER_GUIDE_RA_PROPERTY->state == INDIGO_BUSY_STATE) {
+				ioptron_no_reply_command(device, ":Qe#");
+			}
+		}
+		//- guider.on_disconnect
+		// Cancelled change handlers must not leave properties BUSY: a new session starts in a clean state.
+		indigo_property *cancelled_properties[] = {
+			GUIDER_GUIDE_DEC_PROPERTY,
+			GUIDER_GUIDE_RA_PROPERTY,
+			GUIDER_RATE_PROPERTY,
+		};
+		for (unsigned i = 0; i < sizeof(cancelled_properties) / sizeof(cancelled_properties[0]); i++) {
+			if (cancelled_properties[i] != NULL && cancelled_properties[i]->state == INDIGO_BUSY_STATE) {
+				cancelled_properties[i]->state = INDIGO_OK_STATE;
+			}
+		}
 		if (--PRIVATE_DATA->count == 0) {
 			ioptron_close(device);
 		}
@@ -2130,30 +2548,44 @@ static void guider_connection_handler(indigo_device *device) {
 
 static void guider_guide_dec_handler(indigo_device *device) {
 	//+ guider.GUIDER_GUIDE_DEC.on_change
+	// A new request replaces the running pulse, so the finaliser of the superseded
+	// one must not end the new pulse on the old deadline.
+	indigo_cancel_pending_handler(device, guider_guide_dec_finalizer);
+	// The finalizer of the previous pulse may have zeroed the values after the request was copied, the targets keep it.
+	GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_NORTH_ITEM->number.target;
+	GUIDER_GUIDE_SOUTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.target;
 	int north = (int)GUIDER_GUIDE_NORTH_ITEM->number.value;
 	int south = (int)GUIDER_GUIDE_SOUTH_ITEM->number.value;
-	ioptron_guide_dec(device, north, south);
-	if (north > 0) {
-		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, ((double)north) / 1000.0, guider_guide_dec_finalizer);
-	} else if (south > 0) {
-		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, ((double)south) / 1000.0, guider_guide_dec_finalizer);
+	if (north <= 0 && south <= 0) {
+		GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_OK_STATE, NULL);
+	} else if (ioptron_guide_dec(device, north, south)) {
+		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, ((double)(north > 0 ? north : south)) / 1000.0, guider_guide_dec_finalizer);
 	} else {
-		guider_guide_dec_finalizer(device);
+		GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.value = 0;
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_DEC_PROPERTY, INDIGO_ALERT_STATE, NULL);
 	}
 	//- guider.GUIDER_GUIDE_DEC.on_change
 }
 
 static void guider_guide_ra_handler(indigo_device *device) {
 	//+ guider.GUIDER_GUIDE_RA.on_change
+	// A new request replaces the running pulse, so the finaliser of the superseded
+	// one must not end the new pulse on the old deadline.
+	indigo_cancel_pending_handler(device, guider_guide_ra_finalizer);
+	// The finalizer of the previous pulse may have zeroed the values after the request was copied, the targets keep it.
+	GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_WEST_ITEM->number.target;
+	GUIDER_GUIDE_EAST_ITEM->number.value = GUIDER_GUIDE_EAST_ITEM->number.target;
 	int west = (int)GUIDER_GUIDE_WEST_ITEM->number.value;
 	int east = (int)GUIDER_GUIDE_EAST_ITEM->number.value;
-	ioptron_guide_ra(device, west, east);
-	if (west > 0) {
-		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, ((double)west) / 1000.0, guider_guide_ra_finalizer);
-	} else if (east > 0) {
-		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, ((double)east) / 1000.0, guider_guide_ra_finalizer);
+	if (west <= 0 && east <= 0) {
+		GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_EAST_ITEM->number.value = 0;
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_OK_STATE, NULL);
+	} else if (ioptron_guide_ra(device, west, east)) {
+		indigo_execute_priority_handler_in(device, INDIGO_TASK_PRIORITY_URGENT, ((double)(west > 0 ? west : east)) / 1000.0, guider_guide_ra_finalizer);
 	} else {
-		guider_guide_ra_finalizer(device);
+		GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_EAST_ITEM->number.value = 0;
+		INDIGO_UPDATE_PROPERTY_STATE(GUIDER_GUIDE_RA_PROPERTY, INDIGO_ALERT_STATE, NULL);
 	}
 	//- guider.GUIDER_GUIDE_RA.on_change
 }
@@ -2161,7 +2593,9 @@ static void guider_guide_ra_handler(indigo_device *device) {
 static void guider_rate_handler(indigo_device *device) {
 	GUIDER_RATE_PROPERTY->state = INDIGO_OK_STATE;
 	//+ guider.GUIDER_RATE.on_change
-	if (!ioptron_set_guide_rate(device, (int)GUIDER_RATE_ITEM->number.value, (int)GUIDER_DEC_RATE_ITEM->number.value)) {
+	if (ioptron_set_guide_rate(device, (int)GUIDER_RATE_ITEM->number.value, (int)GUIDER_DEC_RATE_ITEM->number.value)) {
+		ioptron_publish_mount_guide_rate(PRIVATE_DATA->mount_device, (int)GUIDER_RATE_ITEM->number.value, (int)GUIDER_DEC_RATE_ITEM->number.value);
+	} else {
 		GUIDER_RATE_PROPERTY->state = INDIGO_ALERT_STATE;
 	}
 	//- guider.GUIDER_RATE.on_change
@@ -2174,6 +2608,9 @@ static indigo_result guider_enumerate_properties(indigo_device *device, indigo_c
 
 static indigo_result guider_attach(indigo_device *device) {
 	if (indigo_guider_attach(device, DRIVER_NAME, DRIVER_VERSION) == INDIGO_OK) {
+		//+ guider.on_attach
+		PRIVATE_DATA->guider_device = device;
+		//- guider.on_attach
 		GUIDER_GUIDE_DEC_PROPERTY->hidden = false;
 		GUIDER_GUIDE_RA_PROPERTY->hidden = false;
 		GUIDER_RATE_PROPERTY->hidden = false;
@@ -2189,17 +2626,21 @@ static indigo_result guider_enumerate_properties(indigo_device *device, indigo_c
 
 static indigo_result guider_change_property(indigo_device *device, indigo_client *client, indigo_property *property) {
 	if (indigo_property_match_changeable(CONNECTION_PROPERTY, property)) {
-		if (!indigo_ignore_connection_change(device, property)) {
-			indigo_property_copy_values(CONNECTION_PROPERTY, property, false);
-			INDIGO_UPDATE_PROPERTY_STATE(CONNECTION_PROPERTY, INDIGO_BUSY_STATE, NULL);
-			indigo_execute_handler(device, guider_connection_handler);
-		}
+		INDIGO_PROCESS_CONNECT(guider_connection_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(GUIDER_GUIDE_DEC_PROPERTY, property)) {
-		INDIGO_COPY_VALUES_PROCESS_CHANGE(GUIDER_GUIDE_DEC_PROPERTY, guider_guide_dec_handler);
+		//+ guider.GUIDER_GUIDE_DEC.on_change_request
+		GUIDER_GUIDE_NORTH_ITEM->number.value = GUIDER_GUIDE_NORTH_ITEM->number.target = 0;
+		GUIDER_GUIDE_SOUTH_ITEM->number.value = GUIDER_GUIDE_SOUTH_ITEM->number.target = 0;
+		//- guider.GUIDER_GUIDE_DEC.on_change_request
+		INDIGO_COPY_VALUES_PROCESS_PRIORITY_CHANGE_ANYTIME(GUIDER_GUIDE_DEC_PROPERTY, guider_guide_dec_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(GUIDER_GUIDE_RA_PROPERTY, property)) {
-		INDIGO_COPY_VALUES_PROCESS_CHANGE(GUIDER_GUIDE_RA_PROPERTY, guider_guide_ra_handler);
+		//+ guider.GUIDER_GUIDE_RA.on_change_request
+		GUIDER_GUIDE_EAST_ITEM->number.value = GUIDER_GUIDE_EAST_ITEM->number.target = 0;
+		GUIDER_GUIDE_WEST_ITEM->number.value = GUIDER_GUIDE_WEST_ITEM->number.target = 0;
+		//- guider.GUIDER_GUIDE_RA.on_change_request
+		INDIGO_COPY_VALUES_PROCESS_PRIORITY_CHANGE_ANYTIME(GUIDER_GUIDE_RA_PROPERTY, guider_guide_ra_handler);
 		return INDIGO_OK;
 	} else if (indigo_property_match_changeable(GUIDER_RATE_PROPERTY, property)) {
 		INDIGO_COPY_VALUES_PROCESS_CHANGE(GUIDER_RATE_PROPERTY, guider_rate_handler);
@@ -2238,38 +2679,41 @@ indigo_result indigo_mount_ioptron(indigo_driver_action action, indigo_driver_in
 	}
 
 	switch (action) {
-		case INDIGO_DRIVER_INIT:
+		case INDIGO_DRIVER_INIT: {
 			last_action = action;
-			private_data = indigo_safe_malloc(sizeof(ioptron_private_data));
-			mount = indigo_safe_malloc_copy(sizeof(indigo_device), &mount_template);
+			private_data = (ioptron_private_data *)indigo_safe_malloc(sizeof(ioptron_private_data));
+			mount = (indigo_device *)indigo_safe_malloc_copy(sizeof(indigo_device), &mount_template);
 			mount->private_data = private_data;
+			mount->master_device = mount;
 			indigo_attach_device(mount);
-			guider = indigo_safe_malloc_copy(sizeof(indigo_device), &guider_template);
+			guider = (indigo_device *)indigo_safe_malloc_copy(sizeof(indigo_device), &guider_template);
 			guider->private_data = private_data;
 			guider->master_device = mount;
 			indigo_attach_device(guider);
 			break;
 
-		case INDIGO_DRIVER_SHUTDOWN:
+		}
+		case INDIGO_DRIVER_SHUTDOWN: {
 			VERIFY_NOT_CONNECTED(mount);
 			VERIFY_NOT_CONNECTED(guider);
 			last_action = action;
-			if (mount != NULL) {
-				indigo_detach_device(mount);
-				free(mount);
-				mount = NULL;
-			}
 			if (guider != NULL) {
 				indigo_detach_device(guider);
-				free(guider);
+				indigo_safe_free(guider);
 				guider = NULL;
 			}
+			if (mount != NULL) {
+				indigo_detach_device(mount);
+				indigo_safe_free(mount);
+				mount = NULL;
+			}
 			if (private_data != NULL) {
-				free(private_data);
+				indigo_safe_free(private_data);
 				private_data = NULL;
 			}
 			break;
 
+		}
 		case INDIGO_DRIVER_INFO:
 			break;
 	}

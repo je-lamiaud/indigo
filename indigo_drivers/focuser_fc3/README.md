@@ -22,3 +22,7 @@ indigo_server indigo_focuser_fc3
 ## Status: Stable
 
 Tested with simulator
+
+## Testing
+
+2026-10-05 15:42 3.0.0.9 mac arm64 simulator 38/38 OK

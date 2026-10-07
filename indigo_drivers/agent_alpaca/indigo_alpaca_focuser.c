@@ -29,7 +29,7 @@
 #include "indigo_alpaca_common.h"
 
 static indigo_alpaca_error alpaca_get_interfaceversion(indigo_alpaca_device *device, int version, int *value) {
-	*value = 1;
+	*value = 3;
 	return indigo_alpaca_error_OK;
 }
 
@@ -113,7 +113,7 @@ static indigo_alpaca_error alpaca_get_tempcomp(indigo_alpaca_device *device, int
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_OK;
 	}
-	*value = device->focuser.tempcomp;
+	*value = device->focuser.tempcomp || device->focuser.tempcompsuspended;
 	pthread_mutex_unlock(&device->mutex);
 	return indigo_alpaca_error_OK;
 }
@@ -128,6 +128,7 @@ static indigo_alpaca_error alpaca_set_tempcomp(indigo_alpaca_device *device, int
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_NotImplemented;
 	}
+	device->focuser.tempcompsuspended = false;
 	indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, FOCUSER_MODE_PROPERTY_NAME, value ? FOCUSER_MODE_AUTOMATIC_ITEM_NAME : FOCUSER_MODE_MANUAL_ITEM_NAME, true);
 	pthread_mutex_unlock(&device->mutex);
 	return indigo_alpaca_wait_for_bool(&device->focuser.tempcomp, value, 30);
@@ -159,15 +160,32 @@ static indigo_alpaca_error alpaca_get_temperature(indigo_alpaca_device *device, 
 	return indigo_alpaca_error_OK;
 }
 
+// An INDIGO focuser in automatic mode has no motion properties, and IFocuserV3 requires Move to work while temperature
+// compensation is on. The compensation is suspended for the move and switched on again by the first request that finds
+// the move finished; TempComp reads true all the time.
+static void suspend_tempcomp(indigo_alpaca_device *device) {
+	if (device->focuser.tempcomp) {
+		device->focuser.tempcompsuspended = true;
+		indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, FOCUSER_MODE_PROPERTY_NAME, FOCUSER_MODE_MANUAL_ITEM_NAME, true);
+	}
+}
+
+static void resume_tempcomp(indigo_alpaca_device *device) {
+	pthread_mutex_lock(&device->mutex);
+	if (device->focuser.tempcompsuspended && !device->focuser.ismoving && !device->focuser.movepending) {
+		device->focuser.tempcompsuspended = false;
+		if (device->connected) {
+			indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, FOCUSER_MODE_PROPERTY_NAME, FOCUSER_MODE_AUTOMATIC_ITEM_NAME, true);
+		}
+	}
+	pthread_mutex_unlock(&device->mutex);
+}
+
 static indigo_alpaca_error alpaca_move(indigo_alpaca_device *device, int version, int value) {
 	pthread_mutex_lock(&device->mutex);
 	if (!device->connected) {
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_NotConnected;
-	}
-	if (device->focuser.tempcompavailable && device->focuser.tempcomp) {
-		pthread_mutex_unlock(&device->mutex);
-		return indigo_alpaca_error_InvalidOperation;
 	}
 	if (device->focuser.absolute) {
 		if (value < 0) {
@@ -177,12 +195,26 @@ static indigo_alpaca_error alpaca_move(indigo_alpaca_device *device, int version
 			value = device->focuser.maxstep;
 		}
 		if (value != device->focuser.position) {
+			suspend_tempcomp(device);
+			if (!device->focuser.positionwritable) {
+				// the driver makes FOCUSER_POSITION writable when it applies the manual mode, a change sent before that is ignored
+				device->focuser.movepending = true;
+				pthread_mutex_unlock(&device->mutex);
+				indigo_alpaca_error result = indigo_alpaca_wait_for_bool(&device->focuser.positionwritable, true, 30);
+				pthread_mutex_lock(&device->mutex);
+				device->focuser.movepending = false;
+				if (result != indigo_alpaca_error_OK || !device->connected) {
+					pthread_mutex_unlock(&device->mutex);
+					return result != indigo_alpaca_error_OK ? indigo_alpaca_error_InvalidOperation : indigo_alpaca_error_NotConnected;
+				}
+			}
 			device->focuser.ismoving = true;
 			indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, FOCUSER_ON_POSITION_SET_PROPERTY_NAME, FOCUSER_ON_POSITION_SET_GOTO_ITEM_NAME, true);
 			indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, FOCUSER_POSITION_PROPERTY_NAME, FOCUSER_POSITION_ITEM_NAME, value + device->focuser.offset);
 		}
 	} else {
 		if (value > 0) {
+			suspend_tempcomp(device);
 			device->focuser.ismoving = true;
 			indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, FOCUSER_DIRECTION_PROPERTY_NAME, FOCUSER_DIRECTION_MOVE_OUTWARD_ITEM_NAME, true);
 			indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, FOCUSER_STEPS_PROPERTY_NAME, FOCUSER_STEPS_ITEM_NAME, value);
@@ -191,6 +223,7 @@ static indigo_alpaca_error alpaca_move(indigo_alpaca_device *device, int version
 				pthread_mutex_unlock(&device->mutex);
 				return indigo_alpaca_error_InvalidValue;
 			}
+			suspend_tempcomp(device);
 			device->focuser.ismoving = true;
 			indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, FOCUSER_DIRECTION_PROPERTY_NAME, FOCUSER_DIRECTION_MOVE_INWARD_ITEM_NAME, true);
 			indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, FOCUSER_STEPS_PROPERTY_NAME, FOCUSER_STEPS_ITEM_NAME, -value);
@@ -213,19 +246,17 @@ static indigo_alpaca_error alpaca_halt(indigo_alpaca_device *device, int version
 
 void indigo_alpaca_focuser_update_property(indigo_alpaca_device *alpaca_device, indigo_property *property) {
 	if (!strcmp(property->name, FOCUSER_POSITION_PROPERTY_NAME)) {
-		if (property->perm == INDIGO_RW_PERM) {
-			alpaca_device->focuser.absolute = true;
-			for (int i = 0; i < property->count; i++) {
-				indigo_item *item = property->items + i;
-				if (!strcmp(item->name, FOCUSER_POSITION_ITEM_NAME)) {
-					alpaca_device->focuser.offset = (int)item->number.min;
-					alpaca_device->focuser.maxstep = (int)item->number.max - alpaca_device->focuser.offset;
-					alpaca_device->focuser.maxincrement = (int)item->number.max - alpaca_device->focuser.offset;
-					alpaca_device->focuser.position = (int)item->number.value - alpaca_device->focuser.offset;
-				}
+		// A relative focuser has no FOCUSER_POSITION; a read-only one belongs to an absolute focuser in automatic mode.
+		alpaca_device->focuser.absolute = true;
+		alpaca_device->focuser.positionwritable = property->perm == INDIGO_RW_PERM;
+		for (int i = 0; i < property->count; i++) {
+			indigo_item *item = property->items + i;
+			if (!strcmp(item->name, FOCUSER_POSITION_ITEM_NAME)) {
+				alpaca_device->focuser.offset = (int)item->number.min;
+				alpaca_device->focuser.maxstep = (int)item->number.max - alpaca_device->focuser.offset;
+				alpaca_device->focuser.maxincrement = (int)item->number.max - alpaca_device->focuser.offset;
+				alpaca_device->focuser.position = (int)item->number.value - alpaca_device->focuser.offset;
 			}
-		} else {
-			alpaca_device->focuser.absolute = false;
 		}
 	} else if (!strcmp(property->name, FOCUSER_STEPS_PROPERTY_NAME)) {
 		alpaca_device->focuser.ismoving = property->state == INDIGO_BUSY_STATE;
@@ -264,6 +295,7 @@ void indigo_alpaca_focuser_update_property(indigo_alpaca_device *alpaca_device, 
 }
 
 long indigo_alpaca_focuser_get_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length) {
+	resume_tempcomp(alpaca_device);
 	if (!strcmp(command, "supportedactions")) {
 		return snprintf(buffer, buffer_length, "\"Value\": [ ], \"ErrorNumber\": 0, \"ErrorMessage\": \"\"");
 	}
@@ -321,6 +353,7 @@ long indigo_alpaca_focuser_get_command(indigo_alpaca_device *alpaca_device, int 
 }
 
 long indigo_alpaca_focuser_set_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length, char *param_1, char *param_2) {
+	resume_tempcomp(alpaca_device);
 	if (!strcmp(command, "tempcomp")) {
 		bool value = !strcasecmp(param_1, "TempComp=true");
 		indigo_alpaca_error result = alpaca_set_tempcomp(alpaca_device, version, value);

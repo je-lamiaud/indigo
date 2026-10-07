@@ -1,4 +1,4 @@
-// Copyright (c) 2021-2025 CloudMakers, s. r. o.
+// Copyright (c) 2021-2026 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -74,13 +74,32 @@ char *indigo_alpaca_error_string(int code) {
 			return "Invalid operation";
 		case indigo_alpaca_error_ActionNotImplemented:
 			return "Action not implemented";
+		case indigo_alpaca_error_UnspecifiedError:
+			return "Unspecified error";
 		default:
 			return "Unknown code";
 	}
 }
 
+static void connect_guider_handler(indigo_device *device, void *data) {
+	indigo_change_switch_property_1(indigo_agent_alpaca_client, (char *)data, CONNECTION_PROPERTY_NAME, CONNECTION_CONNECTED_ITEM_NAME, true);
+	free(data);
+}
+
+// The guider follows the connection of its mount (alpaca_set_connected()). A driver may attach the guider only while the mount connects
+// (system_alpaca does), so the guider is connected when it pairs with a connected mount and when its mount becomes connected. The
+// request is sent from a timer, not from the bus callback, and carries the name, because the record may be gone by then.
+void indigo_alpaca_connect_paired_guider(indigo_alpaca_device *mount, indigo_alpaca_device *guider) {
+	if (mount->connected && !guider->connected && !guider->connection_busy) {
+		guider->connection_failed = false;
+		indigo_set_timer_with_data(indigo_agent_alpaca_device, 0, connect_guider_handler, NULL, indigo_safe_malloc_copy(strlen(guider->indigo_device) + 1, guider->indigo_device));
+	}
+}
+
 void indigo_alpaca_update_property(indigo_alpaca_device *alpaca_device, indigo_property *property) {
 	if (!strcmp(property->name, CONNECTION_PROPERTY_NAME)) {
+		alpaca_device->connection_failed = property->state == INDIGO_ALERT_STATE;
+		alpaca_device->connection_busy = property->state == INDIGO_BUSY_STATE;
 		if (property->state == INDIGO_OK_STATE) {
 			for (int i = 0; i < property->count; i++) {
 				indigo_item *item = property->items + i;
@@ -96,8 +115,10 @@ void indigo_alpaca_update_property(indigo_alpaca_device *alpaca_device, indigo_p
 		} else {
 			alpaca_device->connected = false;
 		}
+		if (alpaca_device->guider_device != NULL && IS_DEVICE_TYPE(alpaca_device, INDIGO_INTERFACE_MOUNT)) {
+			indigo_alpaca_connect_paired_guider(alpaca_device, alpaca_device->guider_device);
+		}
 	} else if (!strcmp(property->name, UTC_TIME_PROPERTY_NAME)) {
-		alpaca_device->mount.cansetguiderates = true;
 		if (property->state == INDIGO_OK_STATE) {
 			for (int i = 0; i < property->count; i++) {
 				indigo_item *item = property->items + i;
@@ -109,6 +130,8 @@ void indigo_alpaca_update_property(indigo_alpaca_device *alpaca_device, indigo_p
 			}
 		}
 	} else if (!strcmp(property->name, GEOGRAPHIC_COORDINATES_PROPERTY_NAME)) {
+		alpaca_device->geographic_coordinates_busy = property->state == INDIGO_BUSY_STATE;
+		alpaca_device->geographic_coordinates_failed = property->state == INDIGO_ALERT_STATE;
 		if (property->state == INDIGO_OK_STATE) {
 			for (int i = 0; i < property->count; i++) {
 				indigo_item *item = property->items + i;
@@ -135,7 +158,7 @@ void indigo_alpaca_update_property(indigo_alpaca_device *alpaca_device, indigo_p
 		indigo_alpaca_guider_update_property(alpaca_device, property);
 	} else if (!strncmp(property->name, "DOME_", 5)) {
 		indigo_alpaca_dome_update_property(alpaca_device, property);
-	} else if (!strncmp(property->name, "AUX_", 4)) {
+	} else if (!strncmp(property->name, "AUX_", 4) || !strcmp(property->name, "X_ALPACA_SWITCH_VALUES")) {
 		indigo_alpaca_lightbox_update_property(alpaca_device, property);
 		indigo_alpaca_switch_update_property(alpaca_device, property);
 	} // TBD other device types
@@ -213,7 +236,11 @@ static indigo_alpaca_error alpaca_get_utcdate(indigo_alpaca_device *device, int 
 	if (*device->utcdate == 0) {
 		indigo_timetoisogm(time(NULL), device->utcdate, sizeof(device->utcdate));
 	}
+	// Alpaca requires ISO 8601 UTC date with explicit 'Z' suffix
 	strcpy(value, device->utcdate);
+	if (*value && value[strlen(value) - 1] != 'Z') {
+		strcat(value, "Z");
+	}
 	pthread_mutex_unlock(&device->mutex);
 	return indigo_alpaca_error_OK;
 }
@@ -251,11 +278,53 @@ static indigo_alpaca_error alpaca_get_elevation(indigo_alpaca_device *device, in
 	return indigo_alpaca_error_OK;
 }
 
+static indigo_alpaca_error wait_for_connection(indigo_alpaca_device *device, bool value) {
+	// BUSY CONNECTION already reads as disconnected, the change is complete only when it settles
+	for (int i = 0; i < 300; i++) {
+		if (device->connected == value && !device->connection_busy) {
+			return indigo_alpaca_error_OK;
+		}
+		if (device->connection_failed) {
+			return indigo_alpaca_error_UnspecifiedError;
+		}
+		indigo_usleep(50000);
+	}
+	return indigo_alpaca_error_UnspecifiedError;
+}
+
 static indigo_alpaca_error alpaca_set_connected(indigo_alpaca_device *device, int version, bool value) {
 	pthread_mutex_lock(&device->mutex);
+	device->connection_failed = false;
 	indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, CONNECTION_PROPERTY_NAME, value ? CONNECTION_CONNECTED_ITEM_NAME : CONNECTION_DISCONNECTED_ITEM_NAME, true);
+	// guider of a mount is part of the Telescope device and follows its connection
+	indigo_alpaca_device *guider = device->guider_device;
+	if (guider) {
+		guider->connection_failed = false;
+		indigo_change_switch_property_1(indigo_agent_alpaca_client, guider->indigo_device, CONNECTION_PROPERTY_NAME, value ? CONNECTION_CONNECTED_ITEM_NAME : CONNECTION_DISCONNECTED_ITEM_NAME, true);
+	}
 	pthread_mutex_unlock(&device->mutex);
-	return indigo_alpaca_wait_for_bool(&device->connected, value, 30);
+	indigo_alpaca_error result = wait_for_connection(device, value);
+	if (result == indigo_alpaca_error_OK && guider == NULL && value) {
+		// a guider attached while the mount connected is connected by indigo_alpaca_connect_paired_guider()
+		pthread_mutex_lock(&device->mutex);
+		guider = device->guider_device;
+		pthread_mutex_unlock(&device->mutex);
+	}
+	if (result == indigo_alpaca_error_OK && guider) {
+		result = wait_for_connection(guider, value);
+	}
+	return result;
+}
+
+// a site change is complete only when the driver has processed it, a serial mount answers after the request returns
+static indigo_alpaca_error wait_for_geographic_coordinates(indigo_alpaca_device *device) {
+	for (int i = 0; i < 100; i++) {
+		if (!device->geographic_coordinates_busy) {
+			return device->geographic_coordinates_failed ? indigo_alpaca_error_ValueNotSet : indigo_alpaca_error_OK;
+		}
+		indigo_usleep(100000);
+	}
+	return indigo_alpaca_error_ValueNotSet;
 }
 
 static indigo_alpaca_error alpaca_set_latitude(indigo_alpaca_device *device, int version, double value) {
@@ -268,9 +337,10 @@ static indigo_alpaca_error alpaca_set_latitude(indigo_alpaca_device *device, int
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_InvalidValue;
 	}
+	device->geographic_coordinates_busy = true;
 	indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, GEOGRAPHIC_COORDINATES_PROPERTY_NAME, GEOGRAPHIC_COORDINATES_LATITUDE_ITEM_NAME, value);
 	pthread_mutex_unlock(&device->mutex);
-	return indigo_alpaca_error_OK;
+	return wait_for_geographic_coordinates(device);
 }
 
 static indigo_alpaca_error alpaca_set_longitude(indigo_alpaca_device *device, int version, double value) {
@@ -286,9 +356,10 @@ static indigo_alpaca_error alpaca_set_longitude(indigo_alpaca_device *device, in
 	if (value < 0) {
 		value += 360;
 	}
+	device->geographic_coordinates_busy = true;
 	indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, GEOGRAPHIC_COORDINATES_PROPERTY_NAME, GEOGRAPHIC_COORDINATES_LONGITUDE_ITEM_NAME, value);
 	pthread_mutex_unlock(&device->mutex);
-	return indigo_alpaca_error_OK;
+	return wait_for_geographic_coordinates(device);
 }
 
 static indigo_alpaca_error alpaca_set_elevation(indigo_alpaca_device *device, int version, double value) {
@@ -301,9 +372,10 @@ static indigo_alpaca_error alpaca_set_elevation(indigo_alpaca_device *device, in
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_InvalidValue;
 	}
+	device->geographic_coordinates_busy = true;
 	indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, GEOGRAPHIC_COORDINATES_PROPERTY_NAME, GEOGRAPHIC_COORDINATES_ELEVATION_ITEM_NAME, value);
 	pthread_mutex_unlock(&device->mutex);
-	return indigo_alpaca_error_OK;
+	return wait_for_geographic_coordinates(device);
 }
 
 
@@ -358,7 +430,7 @@ long indigo_alpaca_get_command(indigo_alpaca_device *alpaca_device, int version,
 		return indigo_alpaca_append_value_bool(buffer, buffer_length, value, result);
 	}
 	if (!strcmp(command, "utcdate")) {
-		char value[64] = {0};
+		char value[80] = { 0 };
 		indigo_alpaca_error result = alpaca_get_utcdate(alpaca_device, version, value);
 		return indigo_alpaca_append_value_string(buffer, buffer_length, value, result);
 	}

@@ -22,3 +22,7 @@ indigo_server indigo_focuser_astromechanics
 ## Status: Untested
 
 Tested with simulator only
+
+## Testing
+
+2026-10-05 20:03 3.0.0.8 mac arm64 simulator 21/21 OK

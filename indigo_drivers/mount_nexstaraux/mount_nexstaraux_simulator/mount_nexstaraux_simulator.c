@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -36,26 +37,91 @@ typedef struct {
 	bool headless;
 	bool trace;
 	const char *ready_file;
+	const char *profile;
 } simulator_options;
 
+// Both axes count 2^24 units per revolution, so one sidereal day of the
+// tracking drive is exactly one turn of the right ascension axis.
+#define UNITS_PER_TURN 0x1000000
+#define SIDEREAL_SPEED (UNITS_PER_TURN / 86164.0905)
+#define SOLAR_SPEED (UNITS_PER_TURN / 86400.0)
+#define LUNAR_SPEED (UNITS_PER_TURN / 89428.0)
+#define DEGREES_PER_SECOND (UNITS_PER_TURN / 360.0)
+#define ARCSECONDS_PER_SECOND (UNITS_PER_TURN / 1296000.0)
+
+// The rates MC_MOVE_POS and MC_MOVE_NEG select, in units per second. These are the
+// rates of the NexStar hand controller's rate card: one to seven are multiples of
+// the sidereal rate and eight and nine are fixed angular rates. Rate two was
+// measured on a NexStar SE at one times sidereal, which is what fixes the card to
+// this table rather than to the doubling one might otherwise assume. Rate zero is
+// the stop the protocol document describes.
+static const double move_rates[10] = {
+	0,
+	0.5 * SIDEREAL_SPEED,
+	1 * SIDEREAL_SPEED,
+	4 * SIDEREAL_SPEED,
+	8 * SIDEREAL_SPEED,
+	16 * SIDEREAL_SPEED,
+	32 * SIDEREAL_SPEED,
+	64 * SIDEREAL_SPEED,
+	1.0 * DEGREES_PER_SECOND,
+	4.0 * DEGREES_PER_SECOND
+};
+
+// A motor controller has one velocity register per axis. A guide rate, a rate
+// move and a goto all write it, so whichever command came last is the one the
+// axis obeys - which is why a rate move of zero stops the tracking drive as
+// well, and why the tracking rate has to be sent again afterwards. This was
+// confirmed on a NexStar mount through a SkyPortal module: a guide pulse, a
+// released manual motion and an abort all leave the right ascension axis
+// standing still until the guide rate is written again.
 typedef struct {
-	uint32_t position;
-	uint32_t target;
+	double position;
+	double target;
+	double start;
+	double speed;
 	bool slewing;
+	bool stalled;
 	uint8_t guide_rate;
+	// A pulse of MC_AUX_GUIDE is added to whatever the velocity register holds
+	// and ends on its own when its time is up.
+	double pulse_speed;
+	double pulse_until;
+	uint8_t approach;
 } axis_state;
 
 static simulator_options options = {
 	.headless = false,
 	.trace = false,
-	.ready_file = NULL
+	.ready_file = NULL,
+	.profile = "normal"
 };
-static axis_state azm = { 0x800000, 0x800000, false, 0x80 };
-static axis_state alt = { 0x000000, 0x000000, false, 0x80 };
+// The approach directions are the ones of the boot exchange in the protocol document:
+// positive on the azimuth axis and negative on the altitude axis.
+static axis_state azm = { 0x800000, 0x800000, 0x800000, 0, false, false, 0x80, 0, 0, 0 };
+static axis_state alt = { 0x000000, 0x000000, 0x000000, 0, false, false, 0x80, 0, 0, 1 };
+static bool answer_version = true;
+// Firmware 6.50 and newer implements MC_AUX_GUIDE. The model is what MC_GET_MODEL
+// answers; 12 is a NexStar SE 6/8, which has an autoguider port and stores the
+// autoguide rate.
+static uint8_t firmware_major = 3, firmware_minor = 6;
+static uint8_t model = 12;
+// A NexStar SE stops a goto at a limit and answers MC_SLEW_DONE with 0xff while the
+// axis stands short of the target, and it acknowledges MC_SET_AUTOGUIDE_RATE while
+// keeping the rate it had. Both are per model, so they are selectable and off by
+// default; the well behaved controller stays the one the other cases run against.
+static double stall_after = 0;
+static bool stall_reports_done = true;
+static bool store_guide_rate = true;
+static double slew_rate = 0x200000;
+static FILE *events = NULL;
+static double last_update;
 static const char *simulator_name = "mount_nexstaraux";
 static volatile sig_atomic_t running = 1;
 static int server_fd = -1;
 static int client_fd = -1;
+// The next answer is sent in two parts with a pause between them.
+static bool split_next = false;
 
 static void usage(const char *name) {
 	printf("NexStar AUX mount TCP simulator\n");
@@ -63,7 +129,16 @@ static void usage(const char *name) {
 	printf("  --headless              Disable terminal-oriented output\n");
 	printf("  --ready-file <path>     Write INDIGO_SIMULATOR_PORT after TCP setup\n");
 	printf("  --trace                 Log protocol packets\n");
+	printf("  --profile <name>        normal, no-version, slow-slew, stalling, never-arrives,\n");
+	printf("                          deaf-guide-rate or aux-guide, default is normal\n");
 	printf("  -h, --help              Show this help and exit\n");
+	printf("\n");
+	printf("INDIGO_NEXSTARAUX_EVENTS names a file receiving '<dst> <cmd> <data>' per request.\n");
+	printf("INDIGO_NEXSTARAUX_FAULT names a file holding '<dst> <cmd> <action> [count]', where action is\n");
+	printf("silent, garbage, close, aborted (MC_SLEW_DONE answers 0xfe), warn<n> (a warning\n");
+	printf("report with data <n> is sent before the answer), split (the answer is sent in two\n");
+	printf("parts 1.5 s apart) or late (MC_GET_POSITION answers a quarter turn 1.5 s late)\n");
+	printf("which is applied to the next count matching requests (default one) and then removed.\n");
 }
 
 static bool parse_args(int argc, char *argv[]) {
@@ -82,6 +157,12 @@ static bool parse_args(int argc, char *argv[]) {
 				return false;
 			}
 			options.ready_file = argv[i];
+		} else if (!strcmp(argv[i], "--profile")) {
+			if (++i == argc) {
+				fprintf(stderr, "--profile requires a name\n");
+				return false;
+			}
+			options.profile = argv[i];
 		} else {
 			fprintf(stderr, "Unknown option '%s'\n", argv[i]);
 			return false;
@@ -101,6 +182,136 @@ static void signal_handler(int sig) {
 		close(server_fd);
 		server_fd = -1;
 	}
+}
+
+static double now_seconds(void) {
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
+static void apply_profile(void) {
+	if (!strcmp(options.profile, "no-version")) {
+		answer_version = false;
+	} else if (!strcmp(options.profile, "slow-slew")) {
+		slew_rate = 0x8000;
+	} else if (!strcmp(options.profile, "stalling")) {
+		// The axis gives up a third of the way and reports the goto as complete.
+		stall_after = 1.0 / 3.0;
+	} else if (!strcmp(options.profile, "deaf-guide-rate")) {
+		// A NexStar SE 4/5 has no autoguider port and keeps no autoguide rate.
+		store_guide_rate = false;
+		model = 11;
+	} else if (!strcmp(options.profile, "aux-guide")) {
+		// An Evolution with firmware that times guide pulses itself.
+		firmware_major = 7;
+		firmware_minor = 11;
+		model = 22;
+	} else if (!strcmp(options.profile, "never-arrives")) {
+		// The axis gives up and the controller keeps calling the goto unfinished.
+		stall_after = 1.0 / 3.0;
+		stall_reports_done = false;
+	}
+}
+
+// The encoder is a circle, so the way from one position to another is the shorter
+// of the two, expressed as a signed offset of at most half a turn.
+static double shortest_way(double delta) {
+	while (delta > UNITS_PER_TURN / 2) {
+		delta -= UNITS_PER_TURN;
+	}
+	while (delta < -UNITS_PER_TURN / 2) {
+		delta += UNITS_PER_TURN;
+	}
+	return delta;
+}
+
+static void advance_axis(axis_state *axis, double elapsed) {
+	if (axis->slewing) {
+		// The distance left has to be measured round the circle on every step. An
+		// axis whose goto crosses zero wraps its position, and a difference taken
+		// without the wrap then grows to almost a full turn, which no step can
+		// ever cover: the goto runs forever and MC_SLEW_DONE never reports done.
+		double remaining = shortest_way(axis->target - axis->position);
+		double step = axis->speed * elapsed;
+		// A controller that gives up leaves the axis where it stopped and still
+		// reports the goto as done, which is what the driver has to notice.
+		if (stall_after > 0 && fabs(shortest_way(axis->position - axis->start)) >= stall_after * fabs(shortest_way(axis->target - axis->start))) {
+			axis->slewing = stall_reports_done ? false : axis->slewing;
+			axis->stalled = true;
+			axis->speed = 0;
+		} else if (fabs(step) >= fabs(remaining)) {
+			axis->position = axis->target;
+			axis->slewing = false;
+			axis->speed = 0;
+		} else {
+			axis->position += step;
+		}
+	} else if (axis->speed != 0) {
+		axis->position += axis->speed * elapsed;
+	}
+	if (axis->pulse_until > 0) {
+		double current = now_seconds();
+		double pulse = fmin(elapsed, axis->pulse_until - (current - elapsed));
+		if (pulse > 0) {
+			axis->position += axis->pulse_speed * pulse;
+		}
+		if (current >= axis->pulse_until) {
+			axis->pulse_until = 0;
+			axis->pulse_speed = 0;
+		}
+	}
+	while (axis->position < 0) {
+		axis->position += UNITS_PER_TURN;
+	}
+	while (axis->position >= UNITS_PER_TURN) {
+		axis->position -= UNITS_PER_TURN;
+	}
+}
+
+static void advance_motion(void) {
+	double current = now_seconds();
+	double elapsed = current - last_update;
+	last_update = current;
+	if (elapsed <= 0) {
+		return;
+	}
+	advance_axis(&azm, elapsed);
+	advance_axis(&alt, elapsed);
+}
+
+// Fault injection. The control file names the destination and the command of
+// the request that has to misbehave, and optionally how many matching requests
+// in a row do; the default is one.
+static const char *pending_fault(uint8_t dst, uint8_t command) {
+	static char action[32];
+	const char *path = getenv("INDIGO_NEXSTARAUX_FAULT");
+	if (path == NULL) {
+		return NULL;
+	}
+	FILE *file = fopen(path, "r");
+	if (file == NULL) {
+		return NULL;
+	}
+	unsigned fault_dst = 0, fault_command = 0;
+	int count = 1;
+	action[0] = '\0';
+	int fields = fscanf(file, "%x %x %31s %d", &fault_dst, &fault_command, action, &count);
+	bool matched = fields >= 3 && fault_dst == dst && fault_command == command;
+	fclose(file);
+	if (!matched) {
+		return NULL;
+	}
+	if (count > 1) {
+		file = fopen(path, "w");
+		if (file != NULL) {
+			fprintf(file, "%02x %02x %s %d\n", fault_dst, fault_command, action, count - 1);
+			fclose(file);
+		}
+	} else {
+		unlink(path);
+	}
+	return action;
 }
 
 static uint8_t checksum(const uint8_t *data, size_t length) {
@@ -149,6 +360,16 @@ static void send_reply(uint8_t src, uint8_t dst, uint8_t command, const uint8_t 
 	}
 	packet[5 + data_length] = checksum(packet + 1, data_length + 4);
 	trace_packet("<-", packet, data_length + 6);
+	if (split_next) {
+		// A SkyPortal module was seen to send the start of an answer and the rest more
+		// than a second later. The pause falls inside the addresses and the command, so
+		// a read of the packet body finds part of it there and has to wait for the rest.
+		split_next = false;
+		write_all(client_fd, packet, 4);
+		usleep(1500000);
+		write_all(client_fd, packet + 4, data_length + 2);
+		return;
+	}
 	write_all(client_fd, packet, data_length + 6);
 }
 
@@ -165,26 +386,36 @@ static axis_state *axis_for(uint8_t dst) {
 static void handle_axis_command(uint8_t src, uint8_t dst, uint8_t command, const uint8_t *data, size_t data_length) {
 	axis_state *axis = axis_for(dst);
 	uint8_t reply[4] = { 0 };
+	uint32_t position;
 	if (axis == NULL) {
 		return;
 	}
+	advance_motion();
 	switch (command) {
 		case 0x01:
-			reply[0] = (uint8_t)(axis->position >> 16);
-			reply[1] = (uint8_t)(axis->position >> 8);
-			reply[2] = (uint8_t)axis->position;
+			position = (uint32_t)axis->position;
+			reply[0] = (uint8_t)(position >> 16);
+			reply[1] = (uint8_t)(position >> 8);
+			reply[2] = (uint8_t)position;
 			send_reply(dst, src, command, reply, 3);
 			break;
 		case 0x02:
 		case 0x17:
 			if (data_length >= 3) {
 				axis->target = ((uint32_t)data[0] << 16) | ((uint32_t)data[1] << 8) | data[2];
-				axis->position = axis->target;
-				axis->slewing = false;
+				axis->start = axis->position;
+				axis->stalled = false;
+				// The shorter way round the 24 bit circle is the one the mount takes.
+				double delta = shortest_way(axis->target - axis->position);
+				axis->slewing = delta != 0;
+				axis->speed = axis->slewing ? (delta > 0 ? slew_rate : -slew_rate) : 0;
 			}
 			send_reply(dst, src, command, NULL, 0);
 			break;
 		case 0x04:
+			// Writing the encoder makes a running goto meaningless, but it does
+			// not touch the velocity register: a mount that is tracking keeps
+			// tracking across a synchronization.
 			if (data_length >= 3) {
 				axis->position = ((uint32_t)data[0] << 16) | ((uint32_t)data[1] << 8) | data[2];
 				axis->target = axis->position;
@@ -192,18 +423,83 @@ static void handle_axis_command(uint8_t src, uint8_t dst, uint8_t command, const
 			}
 			send_reply(dst, src, command, NULL, 0);
 			break;
+		case 0x05:
+			reply[0] = model;
+			send_reply(dst, src, command, reply, 1);
+			break;
 		case 0x06:
 		case 0x07:
+			// The guide rate writes the axis velocity register, so it cancels a
+			// slew the same way a rate move does. The twenty four bit form
+			// carries the rate in 1/1024 arcsecond per second; sixteen bits are
+			// its upper two bytes, except for the three named rates.
+			axis->slewing = false;
+			axis->target = axis->position;
+			axis->speed = 0;
+			if (data_length >= 2) {
+				double magnitude = 0;
+				uint16_t value = (uint16_t)((data[0] << 8) | data[1]);
+				if (data_length >= 3) {
+					magnitude = (((uint32_t)data[0] << 16) | ((uint32_t)data[1] << 8) | data[2]) / 1024.0 * ARCSECONDS_PER_SECOND;
+				} else if (value == 0xFFFF) {
+					magnitude = SIDEREAL_SPEED;
+				} else if (value == 0xFFFE) {
+					magnitude = SOLAR_SPEED;
+				} else if (value == 0xFFFD) {
+					magnitude = LUNAR_SPEED;
+				} else {
+					magnitude = value / 4.0 * ARCSECONDS_PER_SECOND;
+				}
+				axis->speed = (command == 0x06 ? 1 : -1) * magnitude;
+			}
+			send_reply(dst, src, command, NULL, 0);
+			break;
 		case 0x24:
 		case 0x25:
+			// A rate move writes the same velocity register, so it overrides a
+			// slew and a tracking drive alike; rate zero stops the axis.
+			axis->slewing = false;
+			if (data_length >= 1 && data[0] > 0 && data[0] < 10) {
+				axis->speed = (command == 0x24 ? 1 : -1) * move_rates[data[0]];
+			} else {
+				axis->speed = 0;
+			}
+			axis->target = axis->position;
 			send_reply(dst, src, command, NULL, 0);
 			break;
 		case 0x13:
 			reply[0] = axis->slewing ? 0x00 : 0xFF;
 			send_reply(dst, src, command, reply, 1);
 			break;
+		case 0x26:
+			// Firmware older than 6.50 does not know the command and has nothing to answer.
+			if (firmware_major * 256 + firmware_minor < 6 * 256 + 50) {
+				break;
+			}
+			if (data_length >= 2) {
+				axis->pulse_speed = (int8_t)data[0] / 100.0 * SIDEREAL_SPEED;
+				axis->pulse_until = now_seconds() + data[1] / 100.0;
+			}
+			send_reply(dst, src, command, NULL, 0);
+			break;
+		case 0x27:
+			if (firmware_major * 256 + firmware_minor < 6 * 256 + 50) {
+				break;
+			}
+			reply[0] = axis->pulse_until > now_seconds() ? 1 : 0;
+			send_reply(dst, src, command, reply, 1);
+			break;
+		case 0x50:
+		case 0x51:
+			// The acknowledgement of a warning or error report needs no answer.
+			break;
+		case 0xFC:
+			reply[0] = axis->approach;
+			send_reply(dst, src, command, reply, 1);
+			break;
 		case 0x46:
-			if (data_length >= 1) {
+			// A controller that does not implement the setting still acknowledges it.
+			if (data_length >= 1 && store_guide_rate) {
 				axis->guide_rate = data[0];
 			}
 			send_reply(dst, src, command, NULL, 0);
@@ -213,8 +509,11 @@ static void handle_axis_command(uint8_t src, uint8_t dst, uint8_t command, const
 			send_reply(dst, src, command, reply, 1);
 			break;
 		case 0xFE:
-			reply[0] = 3;
-			reply[1] = 6;
+			if (!answer_version) {
+				break;
+			}
+			reply[0] = firmware_major;
+			reply[1] = firmware_minor;
 			send_reply(dst, src, command, reply, 2);
 			break;
 		default:
@@ -237,6 +536,65 @@ static void handle_packet(const uint8_t *packet, size_t length) {
 	uint8_t command = packet[4];
 	const uint8_t *data = packet + 5;
 	size_t data_length = payload_length - 3;
+	if (events != NULL) {
+		fprintf(events, "%02X %02X", dst, command);
+		for (size_t i = 0; i < data_length; i++) {
+			fprintf(events, " %02X", data[i]);
+		}
+		fprintf(events, "\n");
+		fflush(events);
+	}
+	const char *fault = pending_fault(dst, command);
+	if (fault != NULL) {
+		if (!strcmp(fault, "close")) {
+			running = 0;
+			if (client_fd >= 0) {
+				close(client_fd);
+				client_fd = -1;
+			}
+			if (server_fd >= 0) {
+				close(server_fd);
+				server_fd = -1;
+			}
+			return;
+		}
+		if (!strcmp(fault, "silent")) {
+			return;
+		}
+		if (!strcmp(fault, "aborted")) {
+			// The controller gave the goto up and says so.
+			axis_state *axis = axis_for(dst);
+			if (axis != NULL) {
+				advance_motion();
+				axis->slewing = false;
+				axis->speed = 0;
+				axis->target = axis->position;
+			}
+			uint8_t aborted = 0xFE;
+			send_reply(dst, src, command, &aborted, 1);
+			return;
+		}
+		if (!strcmp(fault, "split")) {
+			split_next = true;
+		} else if (!strcmp(fault, "late")) {
+			// An answer that comes after the driver gave the request up, and that has to be
+			// told apart from the answer to the next request of the same kind.
+			usleep(1500000);
+			uint8_t quarter[3] = { 0x40, 0x00, 0x00 };
+			send_reply(dst, src, command, quarter, 3);
+			return;
+		} else if (!strncmp(fault, "warn", 4)) {
+			// A report the controller sends on its own, ahead of the answer.
+			uint8_t report = (uint8_t)atoi(fault + 4);
+			send_reply(dst, APP, 0x50, &report, 1);
+		} else if (!strcmp(fault, "garbage")) {
+			// An answer for a command nobody asked about, which the driver has
+			// to skip instead of accepting as its own reply.
+			uint8_t noise[3] = { 0xDE, 0xAD, 0xBE };
+			send_reply(dst, src, 0x7F, noise, 3);
+			return;
+		}
+	}
 	handle_axis_command(src, dst, command, data, data_length);
 }
 
@@ -277,6 +635,10 @@ int main(int argc, char *argv[]) {
 	if (!parse_args(argc, argv)) {
 		return 2;
 	}
+	apply_profile();
+	last_update = now_seconds();
+	const char *journal = getenv("INDIGO_NEXSTARAUX_EVENTS");
+	events = journal == NULL ? NULL : fopen(journal, "w");
 	int port = 0;
 	server_fd = open_server_socket(&port);
 	if (server_fd < 0) {
@@ -310,9 +672,10 @@ int main(int argc, char *argv[]) {
 		fd_set readfds;
 		FD_ZERO(&readfds);
 		FD_SET(client_fd, &readfds);
-		struct timeval timeout = { 0, 100000 };
+		struct timeval timeout = { 0, 20000 };
 		int selected = select(client_fd + 1, &readfds, NULL, NULL, &timeout);
 		if (selected <= 0) {
+			advance_motion();
 			continue;
 		}
 		ssize_t count = read(client_fd, buffer + used, sizeof(buffer) - used);
@@ -345,6 +708,9 @@ int main(int argc, char *argv[]) {
 	}
 	if (server_fd >= 0) {
 		close(server_fd);
+	}
+	if (events != NULL) {
+		fclose(events);
 	}
 	return 0;
 }

@@ -21,3 +21,7 @@ INDIGO Astronomy open-source license (3rd party library is closed source).
 `indigo_server indigo_focuser_astroasis`
 
 ## Status: Stable
+
+## Testing
+
+2026-10-05 16:27 3.0.0.16 mac arm64 fake SDK 40/40 OK

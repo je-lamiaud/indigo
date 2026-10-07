@@ -165,6 +165,7 @@ typedef struct {
 	long size;
 	char format[INDIGO_NAME_SIZE];
 	char image_url[INDIGO_VALUE_SIZE];
+	unsigned abort_generation;              ///< abort_generation of the solver when the image arrived
 } indigo_platesolver_task;
 
 /** Platesolver private data structure.
@@ -194,6 +195,7 @@ typedef struct {
 	indigo_spherical_point_t eq_coordinates;
 	indigo_spherical_point_t eq_start_coordinates;
 	indigo_spherical_point_t geo_coordinates;
+	double mount_epoch; // epoch of eq_coordinates and of slew targets, MOUNT_EPOCH of the related mount (0 = JNow)
 	indigo_spherical_point_t pa_reference1;
 	indigo_spherical_point_t pa_reference2;
 	indigo_spherical_point_t pa_reference3;
@@ -218,6 +220,7 @@ typedef struct {
 	bool failed;
 	bool abort_process_requested;
 	int saved_sync_mode;
+	unsigned abort_generation;              ///< incremented by every abort, a task of an older generation is aborted
 } platesolver_private_data;
 
 INDIGO_EXTERN bool indigo_platesolver_validate_executable(const char *executable);

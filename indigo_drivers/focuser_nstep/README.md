@@ -24,3 +24,7 @@ indigo_server indigo_focuser_nstep
 
 ## Status: Untested
 
+
+## Testing
+
+2026-10-05 16:14 3.0.0.10 mac arm64 simulator 23/23 OK

@@ -1,4 +1,4 @@
-// Copyright (c) 2021-2025 CloudMakers, s. r. o.
+// Copyright (c) 2021-2026 CloudMakers, s. r. o.
 // All rights reserved.
 //
 // You can use this software under the terms of 'INDIGO Astronomy
@@ -24,9 +24,22 @@
  \file alpaca_mount.c
  */
 
+#include <math.h>
+
 #include <indigo/indigo_mount_driver.h>
+#include <indigo/indigo_align.h>
 
 #include "indigo_alpaca_common.h"
+
+// MOUNT_EQUATORIAL_COORDINATES is J2000 on the INDIGO bus, and MOUNT_EPOCH tells the equinox of the telescope, which is what
+// EquatorialSystem reports; RightAscension, Declination and the targets are in that system on the Alpaca side.
+static void to_indigo(indigo_alpaca_device *device, double *ra, double *dec) {
+	indigo_eq_to_j2k(device->mount.epochknown ? device->mount.epoch : 2000, ra, dec);
+}
+
+static void from_indigo(indigo_alpaca_device *device, double *ra, double *dec) {
+	indigo_j2k_to_eq(device->mount.epochknown ? device->mount.epoch : 2000, ra, dec);
+}
 
 static indigo_alpaca_error alpaca_get_interfaceversion(indigo_alpaca_device *device, int version, int *value) {
 	*value = 3;
@@ -54,7 +67,7 @@ static indigo_alpaca_error alpaca_get_guideratedeclination(indigo_alpaca_device 
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_NotImplemented;
 	}
-	*value = device->mount.guideratedeclination;
+	*value = device->mount.guideratedeclination * ALPACA_SIDEREAL_RATE / 100;
 	pthread_mutex_unlock(&device->mutex);
 	return indigo_alpaca_error_OK;
 }
@@ -69,9 +82,53 @@ static indigo_alpaca_error alpaca_get_guideraterightascension(indigo_alpaca_devi
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_NotImplemented;
 	}
-	*value = device->mount.guideraterightascension;
+	*value = device->mount.guideraterightascension * ALPACA_SIDEREAL_RATE / 100;
 	pthread_mutex_unlock(&device->mutex);
 	return indigo_alpaca_error_OK;
+}
+
+static indigo_alpaca_error alpaca_get_canpulseguide(indigo_alpaca_device *device, int version, bool *value) {
+	pthread_mutex_lock(&device->mutex);
+	if (!device->connected) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_NotConnected;
+	}
+	*value = device->guider_device != NULL && device->guider_device->guider.canpulseguide;
+	pthread_mutex_unlock(&device->mutex);
+	return indigo_alpaca_error_OK;
+}
+
+static indigo_alpaca_error alpaca_get_ispulseguiding(indigo_alpaca_device *device, int version, bool *value) {
+	pthread_mutex_lock(&device->mutex);
+	if (!device->connected) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_NotConnected;
+	}
+	if (device->guider_device == NULL || !device->guider_device->guider.canpulseguide) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_NotImplemented;
+	}
+	*value = device->guider_device->guider.ispulseguiding;
+	pthread_mutex_unlock(&device->mutex);
+	return indigo_alpaca_error_OK;
+}
+
+static indigo_alpaca_error alpaca_pulseguide(indigo_alpaca_device *device, int version, int direction, int duration) {
+	pthread_mutex_lock(&device->mutex);
+	if (!device->connected) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_NotConnected;
+	}
+	indigo_alpaca_device *guider = device->guider_device;
+	pthread_mutex_unlock(&device->mutex);
+	// as CanPulseGuide: a guider that has no guide properties (not connected) can not guide
+	if (guider == NULL || !guider->guider.canpulseguide) {
+		return indigo_alpaca_error_NotImplemented;
+	}
+	if (device->mount.atpark) {
+		return indigo_alpaca_error_InvalidWhileParked;
+	}
+	return indigo_alpaca_guider_pulseguide(guider, direction, duration);
 }
 
 static indigo_alpaca_error alpaca_get_athome(indigo_alpaca_device *device, int version, bool *value) {
@@ -298,6 +355,36 @@ static indigo_alpaca_error alpaca_get_sideofpier(indigo_alpaca_device *device, i
 	return indigo_alpaca_error_OK;
 }
 
+static indigo_alpaca_error alpaca_get_destinationsideofpier(indigo_alpaca_device *device, int version, double ra, double dec, int *value) {
+	pthread_mutex_lock(&device->mutex);
+	if (!device->connected) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_NotConnected;
+	}
+	if (device->mount.sideofpier == 0) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_NotImplemented;
+	}
+	if (ra < 0 || ra >= 24 || dec < -90 || dec > 90) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_InvalidValue;
+	}
+	// same prediction as the INDIGO mount core: hour angle >= 0 -> OTA on the east side of the pier (pierEast = 0)
+	double ha = fmod(device->mount.siderealtime - ra + 48, 24);
+	if (ha >= 12) {
+		ha -= 24;
+	}
+	*value = ha >= 0 ? 0 : 1;
+	pthread_mutex_unlock(&device->mutex);
+	return indigo_alpaca_error_OK;
+}
+
+long indigo_alpaca_mount_get_destinationsideofpier(indigo_alpaca_device *alpaca_device, int version, double ra, double dec, char *buffer, long buffer_length) {
+	int value = 0;
+	indigo_alpaca_error result = alpaca_get_destinationsideofpier(alpaca_device, version, ra, dec, &value);
+	return indigo_alpaca_append_value_int(buffer, buffer_length, value, result);
+}
+
 static indigo_alpaca_error alpaca_get_alignmentmode(indigo_alpaca_device *device, int version, int *value) {
 	pthread_mutex_lock(&device->mutex);
 	if (!device->connected) {
@@ -323,9 +410,14 @@ static indigo_alpaca_error alpaca_set_guideratedeclination(indigo_alpaca_device 
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_NotImplemented;
 	}
-	indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_GUIDE_RATE_PROPERTY_NAME, MOUNT_GUIDE_RATE_DEC_ITEM_NAME, value);
+	double percent = round(value * 100 / ALPACA_SIDEREAL_RATE);
+	if (percent < 1 || percent > 100) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_InvalidValue;
+	}
+	indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_GUIDE_RATE_PROPERTY_NAME, MOUNT_GUIDE_RATE_DEC_ITEM_NAME, percent);
 	pthread_mutex_unlock(&device->mutex);
-	return indigo_alpaca_wait_for_double(&device->mount.guideratedeclination, value, 30);
+	return indigo_alpaca_wait_for_double(&device->mount.guideratedeclination, percent, 30);
 }
 
 static indigo_alpaca_error alpaca_set_guideraterightascension(indigo_alpaca_device *device, int version, double value) {
@@ -338,9 +430,14 @@ static indigo_alpaca_error alpaca_set_guideraterightascension(indigo_alpaca_devi
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_NotImplemented;
 	}
-	indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_GUIDE_RATE_PROPERTY_NAME, MOUNT_GUIDE_RATE_RA_ITEM_NAME, value);
+	double percent = round(value * 100 / ALPACA_SIDEREAL_RATE);
+	if (percent < 1 || percent > 100) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_InvalidValue;
+	}
+	indigo_change_number_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_GUIDE_RATE_PROPERTY_NAME, MOUNT_GUIDE_RATE_RA_ITEM_NAME, percent);
 	pthread_mutex_unlock(&device->mutex);
-	return indigo_alpaca_wait_for_double(&device->mount.guideraterightascension, value, 30);
+	return indigo_alpaca_wait_for_double(&device->mount.guideraterightascension, percent, 30);
 }
 
 static indigo_alpaca_error alpaca_set_targetdeclination(indigo_alpaca_device *device, int version, double value) {
@@ -423,6 +520,11 @@ static indigo_alpaca_error alpaca_park(indigo_alpaca_device *device, int version
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_NotImplemented;
 	}
+	// Park of a parked telescope is harmless in Alpaca; a driver may keep MOUNT_PARK busy for it and ignore an Unpark sent meanwhile
+	if (device->mount.atpark) {
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_OK;
+	}
 	indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_PARK_PROPERTY_NAME, MOUNT_PARK_PARKED_ITEM_NAME, true);
 	pthread_mutex_unlock(&device->mutex);
 	return indigo_alpaca_error_OK;
@@ -440,6 +542,10 @@ static indigo_alpaca_error alpaca_unpark(indigo_alpaca_device *device, int versi
 	}
 	if (!device->mount.canunpark) {
 		device->mount.atpark = false;
+		pthread_mutex_unlock(&device->mutex);
+		return indigo_alpaca_error_OK;
+	}
+	if (!device->mount.atpark) {
 		pthread_mutex_unlock(&device->mutex);
 		return indigo_alpaca_error_OK;
 	}
@@ -464,7 +570,8 @@ static indigo_alpaca_error alpaca_slewtotarget(indigo_alpaca_device *device, int
 	}
 	indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_ON_COORDINATES_SET_PROPERTY_NAME, MOUNT_ON_COORDINATES_SET_TRACK_ITEM_NAME, true);
 	static const char *names[] = { MOUNT_EQUATORIAL_COORDINATES_RA_ITEM_NAME, MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM_NAME };
-	const double values[] = { device->mount.targetrightascension, device->mount.targetdeclination };
+	double values[] = { device->mount.targetrightascension, device->mount.targetdeclination };
+	to_indigo(device, values, values + 1);
 	device->mount.slewing = true;
 	indigo_change_number_property(indigo_agent_alpaca_client, device->indigo_device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY_NAME, 2, names, values);
 	pthread_mutex_unlock(&device->mutex);
@@ -487,10 +594,31 @@ static indigo_alpaca_error alpaca_slewtotargetasync(indigo_alpaca_device *device
 	}
 	indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_ON_COORDINATES_SET_PROPERTY_NAME, MOUNT_ON_COORDINATES_SET_TRACK_ITEM_NAME, true);
 	static const char *names[] = { MOUNT_EQUATORIAL_COORDINATES_RA_ITEM_NAME, MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM_NAME };
-	const double values[] = { device->mount.targetrightascension, device->mount.targetdeclination };
+	double values[] = { device->mount.targetrightascension, device->mount.targetdeclination };
+	to_indigo(device, values, values + 1);
 	device->mount.slewing = true;
 	indigo_change_number_property(indigo_agent_alpaca_client, device->indigo_device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY_NAME, 2, names, values);
 	pthread_mutex_unlock(&device->mutex);
+	return indigo_alpaca_error_OK;
+}
+
+// a sync is complete when the driver has processed it and published the position read after it
+static indigo_alpaca_error wait_for_sync(indigo_alpaca_device *device) {
+	indigo_alpaca_error result = indigo_alpaca_wait_for_bool(&device->mount.slewing, false, 60);
+	if (result != indigo_alpaca_error_OK) {
+		return result;
+	}
+	if (device->mount.coordinates_failed) {
+		return indigo_alpaca_error_UnspecifiedError;
+	}
+	// a driver that completes the sync before reading the position back publishes it with the next position update
+	unsigned updates = device->mount.coordinates_updates;
+	for (int i = 0; i < 30 && device->mount.coordinates_updates == updates; i++) {
+		if (fabs(device->mount.rightascension - device->mount.targetrightascension) < 1.0 / 3600 && fabs(device->mount.declination - device->mount.targetdeclination) < 10.0 / 3600) {
+			break;
+		}
+		indigo_usleep(100000);
+	}
 	return indigo_alpaca_error_OK;
 }
 
@@ -510,10 +638,12 @@ static indigo_alpaca_error alpaca_synctotarget(indigo_alpaca_device *device, int
 	}
 	indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_ON_COORDINATES_SET_PROPERTY_NAME, MOUNT_ON_COORDINATES_SET_SYNC_ITEM_NAME, true);
 	static const char *names[] = { MOUNT_EQUATORIAL_COORDINATES_RA_ITEM_NAME, MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM_NAME };
-	const double values[] = { device->mount.targetrightascension, device->mount.targetdeclination };
+	double values[] = { device->mount.targetrightascension, device->mount.targetdeclination };
+	to_indigo(device, values, values + 1);
+	device->mount.slewing = true;
 	indigo_change_number_property(indigo_agent_alpaca_client, device->indigo_device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY_NAME, 2, names, values);
 	pthread_mutex_unlock(&device->mutex);
-	return indigo_alpaca_error_OK;
+	return wait_for_sync(device);
 }
 
 static indigo_alpaca_error alpaca_slewtocoordinates(indigo_alpaca_device *device, int version, double rightascension, double declination) {
@@ -538,7 +668,8 @@ static indigo_alpaca_error alpaca_slewtocoordinates(indigo_alpaca_device *device
 	device->mount.targetdeclination = declination;
 	indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_ON_COORDINATES_SET_PROPERTY_NAME, MOUNT_ON_COORDINATES_SET_TRACK_ITEM_NAME, true);
 	static const char *names[] = { MOUNT_EQUATORIAL_COORDINATES_RA_ITEM_NAME, MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM_NAME };
-	const double values[] = { rightascension, declination };
+	double values[] = { rightascension, declination };
+	to_indigo(device, values, values + 1);
 	device->mount.slewing = true;
 	indigo_change_number_property(indigo_agent_alpaca_client, device->indigo_device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY_NAME, 2, names, values);
 	pthread_mutex_unlock(&device->mutex);
@@ -567,7 +698,8 @@ static indigo_alpaca_error alpaca_slewtocoordinatesasync(indigo_alpaca_device *d
 	device->mount.targetdeclination = declination;
 	indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_ON_COORDINATES_SET_PROPERTY_NAME, MOUNT_ON_COORDINATES_SET_TRACK_ITEM_NAME, true);
 	static const char *names[] = { MOUNT_EQUATORIAL_COORDINATES_RA_ITEM_NAME, MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM_NAME };
-	const double values[] = { rightascension, declination };
+	double values[] = { rightascension, declination };
+	to_indigo(device, values, values + 1);
 	device->mount.slewing = true;
 	indigo_change_number_property(indigo_agent_alpaca_client, device->indigo_device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY_NAME, 2, names, values);
 	pthread_mutex_unlock(&device->mutex);
@@ -596,10 +728,12 @@ static indigo_alpaca_error alpaca_synctocoordinates(indigo_alpaca_device *device
 	device->mount.targetdeclination = declination;
 	indigo_change_switch_property_1(indigo_agent_alpaca_client, device->indigo_device, MOUNT_ON_COORDINATES_SET_PROPERTY_NAME, MOUNT_ON_COORDINATES_SET_SYNC_ITEM_NAME, true);
 	static const char *names[] = { MOUNT_EQUATORIAL_COORDINATES_RA_ITEM_NAME, MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM_NAME };
-	const double values[] = { rightascension, declination };
+	double values[] = { rightascension, declination };
+	to_indigo(device, values, values + 1);
+	device->mount.slewing = true;
 	indigo_change_number_property(indigo_agent_alpaca_client, device->indigo_device, MOUNT_EQUATORIAL_COORDINATES_PROPERTY_NAME, 2, names, values);
 	pthread_mutex_unlock(&device->mutex);
-	return indigo_alpaca_wait_for_bool(&device->mount.slewing, false, 300);
+	return wait_for_sync(device);
 }
 
 static indigo_alpaca_error alpaca_abortslew(indigo_alpaca_device *device, int version) {
@@ -658,6 +792,8 @@ void indigo_alpaca_mount_update_property(indigo_alpaca_device *alpaca_device, in
 			for (int i = 0; i < property->count; i++) {
 				indigo_item *item = property->items + i;
 				if (!strcmp(item->name, MOUNT_EPOCH_ITEM_NAME)) {
+					alpaca_device->mount.epoch = item->number.value;
+					alpaca_device->mount.epochknown = true;
 					switch ((int)item->number.value) {
 						case 0:
 							alpaca_device->mount.equatorialsystem = 1;
@@ -697,14 +833,21 @@ void indigo_alpaca_mount_update_property(indigo_alpaca_device *alpaca_device, in
 		}
 	} else if (!strcmp(property->name, MOUNT_EQUATORIAL_COORDINATES_PROPERTY_NAME)) {
 		alpaca_device->mount.slewing = property->state == INDIGO_BUSY_STATE;
+		alpaca_device->mount.coordinates_failed = property->state == INDIGO_ALERT_STATE;
+		alpaca_device->mount.coordinates_updates++;
+		double ra = alpaca_device->mount.rightascension, dec = alpaca_device->mount.declination;
+		to_indigo(alpaca_device, &ra, &dec);
 		for (int i = 0; i < property->count; i++) {
 			indigo_item *item = property->items + i;
 			if (!strcmp(item->name, MOUNT_EQUATORIAL_COORDINATES_RA_ITEM_NAME)) {
-				alpaca_device->mount.rightascension = item->number.value;
+				ra = item->number.value;
 			} else if (!strcmp(item->name, MOUNT_EQUATORIAL_COORDINATES_DEC_ITEM_NAME)) {
-				alpaca_device->mount.declination = item->number.value;
+				dec = item->number.value;
 			}
 		}
+		from_indigo(alpaca_device, &ra, &dec);
+		alpaca_device->mount.rightascension = ra;
+		alpaca_device->mount.declination = dec;
 	} else if (!strcmp(property->name, MOUNT_HORIZONTAL_COORDINATES_PROPERTY_NAME)) {
 		for (int i = 0; i < property->count; i++) {
 			indigo_item *item = property->items + i;
@@ -761,6 +904,16 @@ long indigo_alpaca_mount_get_command(indigo_alpaca_device *alpaca_device, int ve
 		int value;
 		indigo_alpaca_error result = alpaca_get_interfaceversion(alpaca_device, version, &value);
 	return indigo_alpaca_append_value_int(buffer, buffer_length, value, result);
+	}
+	if (!strcmp(command, "canpulseguide")) {
+		bool value = false;
+		indigo_alpaca_error result = alpaca_get_canpulseguide(alpaca_device, version, &value);
+		return indigo_alpaca_append_value_bool(buffer, buffer_length, value, result);
+	}
+	if (!strcmp(command, "ispulseguiding")) {
+		bool value = false;
+		indigo_alpaca_error result = alpaca_get_ispulseguiding(alpaca_device, version, &value);
+		return indigo_alpaca_append_value_bool(buffer, buffer_length, value, result);
 	}
 	if (!strcmp(command, "cansetguiderates")) {
 		bool value = false;
@@ -897,6 +1050,17 @@ long indigo_alpaca_mount_get_command(indigo_alpaca_device *alpaca_device, int ve
 }
 
 long indigo_alpaca_mount_set_command(indigo_alpaca_device *alpaca_device, int version, char *command, char *buffer, long buffer_length, char *param_1, char *param_2) {
+	if (!strcmp(command, "pulseguide")) {
+		int direction = 0;
+		int duration = 0;
+		indigo_alpaca_error result;
+		if (sscanf(param_1, "Direction=%d", &direction) == 1 && sscanf(param_2, "Duration=%d", &duration) == 1) {
+			result = alpaca_pulseguide(alpaca_device, version, direction, duration);
+		} else {
+			result = indigo_alpaca_error_InvalidValue;
+		}
+		return indigo_alpaca_append_error(buffer, buffer_length, result);
+	}
 	if (!strcmp(command, "guideratedeclination")) {
 		double value = 0;
 		indigo_alpaca_error result;

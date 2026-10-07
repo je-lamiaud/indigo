@@ -28,3 +28,21 @@ indigo_server indigo_ccd_playerone
 * Poseidon-C Pro
 * Sedna-M
 
+
+## INDIGO 3.0 generator migration
+
+Custom properties use the `X_` prefix: `PIXEL_FORMAT` becomes `X_PIXEL_FORMAT`, and `POA_ADVANCED`, `POA_PRESETS`, `POA_CUSTOM_SUFFIX`, `POA_SENSOR_MODE` become `X_ADVANCED`, `X_PRESETS`, `X_CUSTOM_SUFFIX`, `X_SENSOR_MODE`. Update scripts and saved custom-property configuration to the new names, then save configuration again. Standard properties and custom item names are unchanged.
+
+The generated implementation was validated on Mars-C II (macOS arm64, SDK 3.10.1/API 20260430), including USB removal during acquisition/guiding, suffix replug/restore and dynamic driver reload. The older Poseidon-C Pro and Sedna-M entries above are historical tests, not migration acceptance for those models. See `REFACTOR.md` and repository `TESTING.md` for current coverage and unavailable equipment/platforms.
+
+## Testing
+
+2026-09-21 21:23 3.0.0.26 mac arm64 Mars-C II 27/27 OK
+2026-09-24 09:09 3.0.0.28 linux arm64 fake SDK 50/50 OK
+2026-09-24 09:11 3.0.0.28 linux arm64 Mars-C II 27/27 OK
+2026-09-27 09:00 3.0.0.32 linux x64 fake SDK 52/52 OK
+2026-09-30 17:17 3.0.0.32 linux arm64 Mars-C II (IMX662) 27/27 OK
+2026-09-30 22:23 3.0.0.32 linux x64 Poseidon-C PRO (IMX571) 27/27 OK
+2026-09-30 22:31 3.0.0.32 linux x64 Sedna-M (IMX178) 27/27 OK
+2026-10-02 20:45 3.0.0.32 mac arm64 fake SDK 52/52 OK
+2026-10-02 20:47 3.0.0.32 mac arm64 Mars-C II (IMX662) 27/27 OK
